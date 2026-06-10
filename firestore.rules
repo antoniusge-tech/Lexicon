@@ -1,0 +1,14 @@
+rules_version = '2';
+
+// Open access: anyone with the project config can read and write groups/words.
+// No auth, no per-user data — suitable for a small shared word list between trusted people.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /groups/{groupId} {
+      allow read, write: if true;
+    }
+    match /words/{wordId} {
+      allow read, write: if true;
+    }
+  }
+}
