@@ -17,6 +17,7 @@ function App() {
   const [words, setWords] = useState([]);
   const [view, setView] = useState('study');
   const [selected, setSelected] = useState(() => window.lwLoad(LW_KEYS.selected, null) || []);
+  const [studyStats, setStudyStats] = useState({ knownCount: 0, poolCount: 0, groupCount: 0 });
 
   /* live sync with shared Firestore data */
   useEffect(() => {
@@ -56,12 +57,26 @@ function App() {
         onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))} />
       <main className="content">
         {view === 'study' ? (
-          <StudyView groups={groups} words={words} selected={selected} setSelected={setSelected}
-            countByGroup={countByGroup} groupById={groupById} goLibrary={() => setView('library')} />
+          <StudyView groups={groups} words={words} selected={selected}
+            groupById={groupById} onStatsChange={setStudyStats}
+            goLibrary={() => setView('library')} goCategory={() => setView('category')} />
+        ) : view === 'library' ? (
+          <LibraryView groups={groups} words={words} />
         ) : (
-          <LibraryView groups={groups} words={words} countByGroup={countByGroup} />
+          <CategoryView groups={groups} selected={selected} setSelected={setSelected}
+            countByGroup={countByGroup} />
         )}
       </main>
+      {view === 'study' && studyStats.poolCount > 0 && (
+        <footer className="appfooter">
+          {studyStats.knownCount} / {studyStats.poolCount} known · {studyStats.poolCount} words · {studyStats.groupCount} {studyStats.groupCount === 1 ? 'group' : 'groups'}
+        </footer>
+      )}
+      {view === 'category' && (
+        <footer className="appfooter">
+          {selected.length} {selected.length === 1 ? 'group' : 'groups'} selected
+        </footer>
+      )}
     </div>
   );
 }
@@ -78,6 +93,9 @@ function TopBar({ view, setView, theme, onToggleTheme }) {
         <button className={'nav-btn' + (view === 'study' ? ' on' : '')} onClick={() => setView('study')}>
           <Ic.Cards /> Study
         </button>
+        <button className={'nav-btn' + (view === 'category' ? ' on' : '')} onClick={() => setView('category')}>
+          <Ic.Tag /> Category
+        </button>
         <button className={'nav-btn' + (view === 'library' ? ' on' : '')} onClick={() => setView('library')}>
           <Ic.Library /> Library
         </button>
@@ -90,78 +108,127 @@ function TopBar({ view, setView, theme, onToggleTheme }) {
 }
 
 /* ---------------- Study view ---------------- */
-function StudyView({ groups, words, selected, setSelected, countByGroup, groupById, goLibrary }) {
+function StudyView({ groups, words, selected, groupById, onStatsChange, goLibrary, goCategory }) {
   const pool = useMemo(() => words.filter((w) => selected.includes(w.groupId)), [words, selected]);
 
   const [queue, setQueue] = useState([]);
   const [current, setCurrent] = useState(null);
   const [flipped, setFlipped] = useState(false);
-  const lastId = useRef(null);
+  const [progress, setProgress] = useState({}); // { [wordId]: 'known' | 'unknown' }
 
-  const buildQueue = useCallback((exclude) => {
-    let ids = pool.map((w) => w.id);
-    ids = shuffle(ids);
-    if (exclude && ids.length > 1 && ids[0] === exclude) {
-      ids.push(ids.shift());
-    }
-    return ids;
-  }, [pool]);
-
-  const draw = useCallback(() => {
-    setFlipped(false);
-    setQueue((q) => {
-      let nq = q.slice();
-      if (nq.length === 0) nq = buildQueue(lastId.current);
-      const id = nq.shift();
-      lastId.current = id;
-      setCurrent(id || null);
-      return nq;
-    });
-  }, [buildQueue]);
-
-  /* reset when pool identity changes */
+  /* start a new study session: queue = all pool words, shuffled, progress reset */
   const poolKey = pool.map((w) => w.id).join(',');
   useEffect(() => {
-    const ids = pool.map((w) => w.id);
-    if (ids.length === 0) { setCurrent(null); setQueue([]); return; }
-    if (!current || !ids.includes(current)) {
-      const q = buildQueue(null);
-      const first = q.shift();
-      lastId.current = first;
-      setCurrent(first);
-      setQueue(q);
-      setFlipped(false);
-    }
+    const ids = shuffle(pool.map((w) => w.id));
+    setProgress({});
+    setQueue(ids.slice(1));
+    setCurrent(ids[0] || null);
+    setFlipped(false);
     // eslint-disable-next-line
   }, [poolKey]);
+
+  const knownCount = useMemo(
+    () => Object.values(progress).filter((s) => s === 'known').length,
+    [progress]
+  );
+
+  useEffect(() => {
+    onStatsChange({ knownCount, poolCount: pool.length, groupCount: selected.length });
+  }, [onStatsChange, knownCount, pool.length, selected.length]);
+
+  const advance = useCallback((nextQueue) => {
+    setFlipped(false);
+    const nq = nextQueue.slice();
+    const id = nq.shift();
+    setCurrent(id || null);
+    setQueue(nq);
+  }, []);
+
+  const draw = useCallback(() => {
+    advance(queue);
+  }, [advance, queue]);
+
+  const mark = useCallback((status) => {
+    if (!current) return;
+    if (status === 'skip') { draw(); return; }
+    setProgress((p) => ({ ...p, [current]: status }));
+    const nq = status === 'unknown' ? [...queue, current] : queue;
+    advance(nq);
+  }, [current, queue, advance, draw]);
+
+  const shuffleDeck = useCallback(() => {
+    if (!current) return;
+    const shuffled = shuffle([...queue, current]);
+    setFlipped(false);
+    setCurrent(shuffled[0] || null);
+    setQueue(shuffled.slice(1));
+  }, [current, queue]);
+
+  const restart = useCallback(() => {
+    const ids = shuffle(pool.map((w) => w.id));
+    setProgress({});
+    setQueue(ids.slice(1));
+    setCurrent(ids[0] || null);
+    setFlipped(false);
+  }, [pool]);
 
   /* keyboard */
   useEffect(() => {
     const h = (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
       if (e.code === 'Space') { e.preventDefault(); setFlipped((f) => !f); }
-      else if (e.code === 'ArrowRight') { e.preventDefault(); draw(); }
+      else if (e.code === 'ArrowRight') { e.preventDefault(); mark('known'); }
+      else if (e.code === 'ArrowLeft') { e.preventDefault(); mark('unknown'); }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [draw]);
+  }, [mark]);
 
+  const entry = current ? words.find((w) => w.id === current) : null;
+  const group = entry ? groupById[entry.groupId] : null;
+  const allDone = pool.length > 0 && !entry;
+
+  return (
+    <div className="study">
+      <div className="stage">
+        {entry ? (
+          <Flashcard entry={entry} group={group} flipped={flipped}
+            onFlip={() => setFlipped((f) => !f)} onSwipe={mark} onShuffle={shuffleDeck} />
+        ) : allDone ? (
+          <div className="empty-card">
+            <Ic.Check width="30" height="30" />
+            <p className="empty-title">Все слова изучены!</p>
+            <p className="empty-sub">{pool.length} / {pool.length} known</p>
+            <button className="btn btn-primary" onClick={restart}><Ic.Shuffle /> Начать заново</button>
+          </div>
+        ) : (
+          <div className="empty-card">
+            <Ic.Cards width="30" height="30" />
+            <p className="empty-title">{pool.length === 0 && selected.length === 0 ? 'Select a group to begin' : 'No words here yet'}</p>
+            <p className="empty-sub">{selected.length === 0 ? 'Pick one or more groups in Category.' : 'Add words to these groups in the Library.'}</p>
+            {selected.length === 0 ? (
+              <button className="btn btn-primary" onClick={goCategory}><Ic.Tag /> Choose categories</button>
+            ) : (
+              <button className="btn btn-primary" onClick={goLibrary}><Ic.Plus /> Add words</button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Category view ---------------- */
+function CategoryView({ groups, selected, setSelected, countByGroup }) {
   const toggle = (id) => {
     setSelected((sel) => sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]);
   };
   const allOn = selected.length === groups.length && groups.length > 0;
   const toggleAll = () => setSelected(allOn ? [] : groups.map((g) => g.id));
 
-  const entry = current ? words.find((w) => w.id === current) : null;
-  const group = entry ? groupById[entry.groupId] : null;
-
   return (
-    <div className="study">
+    <div className="category">
       <div className="selector">
-        <div className="selector-head">
-          <span className="selector-title">Studying</span>
-          <span className="selector-sub">{pool.length} words · {selected.length} {selected.length === 1 ? 'group' : 'groups'}</span>
-        </div>
         <div className="chips">
           <button className={'chip chip-all' + (allOn ? ' chip-on' : '')} onClick={toggleAll} type="button">
             All
@@ -172,39 +239,22 @@ function StudyView({ groups, words, selected, setSelected, countByGroup, groupBy
           ))}
         </div>
       </div>
-
-      <div className="stage">
-        {entry ? (
-          <Flashcard entry={entry} group={group} flipped={flipped} onFlip={() => setFlipped((f) => !f)} />
-        ) : (
-          <div className="empty-card">
-            <Ic.Cards width="30" height="30" />
-            <p className="empty-title">{pool.length === 0 && selected.length === 0 ? 'Select a group to begin' : 'No words here yet'}</p>
-            <p className="empty-sub">{selected.length === 0 ? 'Pick one or more groups above.' : 'Add words to these groups in the Library.'}</p>
-            {selected.length > 0 && <button className="btn btn-primary" onClick={goLibrary}><Ic.Plus /> Add words</button>}
-          </div>
-        )}
-      </div>
-
-      {entry && (
-        <div className="controls">
-          <button className="btn btn-ghost" onClick={draw} title="Random next (→)"><Ic.Shuffle /> Shuffle</button>
-          <button className="btn btn-primary lg" onClick={draw} title="Next (→)">Next <Ic.Arrow /></button>
-        </div>
-      )}
     </div>
   );
 }
 
 /* ---------------- Library view ---------------- */
-function LibraryView({ groups, words, countByGroup }) {
+function LibraryView({ groups, words }) {
   const [wordModal, setWordModal] = useState(null); // {mode, initial?, groupId?}
-  const [groupModal, setGroupModal] = useState(null); // {mode, initial?}
+  const [groupModal, setGroupModal] = useState(null); // {mode, initial?, parentGroup?}
   const [importModal, setImportModal] = useState(null); // {groupId?}
   const [confirm, setConfirm] = useState(null); // {kind, id, label}
-  const [openGroups, setOpenGroups] = useState(() => groups.map((g) => g.id));
+  const [openGroups, setOpenGroups] = useState([]);
 
   const toggleOpen = (id) => setOpenGroups((o) => o.includes(id) ? o.filter((x) => x !== id) : [...o, id]);
+
+  const topGroups = groups.filter((g) => !g.parentId);
+  const subGroupsOf = (id) => groups.filter((g) => g.parentId === id);
 
   const saveWord = (w) => {
     window.lwSetDoc(window.LW_COLLECTIONS.words, w);
@@ -213,6 +263,7 @@ function LibraryView({ groups, words, countByGroup }) {
   const saveGroup = (g) => {
     window.lwSetDoc(window.LW_COLLECTIONS.groups, g);
     if (!openGroups.includes(g.id)) setOpenGroups((o) => [...o, g.id]);
+    if (g.parentId && !openGroups.includes(g.parentId)) setOpenGroups((o) => [...o, g.parentId]);
     setGroupModal(null);
   };
   const importWords = (items) => {
@@ -223,18 +274,40 @@ function LibraryView({ groups, words, countByGroup }) {
     if (!confirm) return;
     if (confirm.kind === 'word') window.lwDeleteDoc(window.LW_COLLECTIONS.words, confirm.id);
     if (confirm.kind === 'group') {
-      window.lwDeleteDoc(window.LW_COLLECTIONS.groups, confirm.id);
-      window.lwDeleteWordsByGroup(confirm.id);
+      const ids = [confirm.id, ...subGroupsOf(confirm.id).map((sg) => sg.id)];
+      ids.forEach((id) => {
+        window.lwDeleteDoc(window.LW_COLLECTIONS.groups, id);
+        window.lwDeleteWordsByGroup(id);
+      });
     }
     setConfirm(null);
   };
+
+  const renderWords = (items, hue, showEmptyHint = true) => (
+    <div className="word-rows">
+      {items.length === 0 && showEmptyHint && <div className="row-empty">No words yet — add the first one.</div>}
+      {items.map((w) => (
+        <div className="wrow" key={w.id}>
+          <div className="wrow-thumb"><PhotoFill word={w.word} hue={hue} /></div>
+          <div className="wrow-main">
+            <div className="wrow-top"><span className="wrow-word">{w.word}</span><span className="wrow-ipa">{w.ipa}</span></div>
+            <div className="wrow-tr">{w.tr}</div>
+          </div>
+          <div className="wrow-tools">
+            <button className="icon-btn sm" onClick={() => setWordModal({ mode: 'edit', initial: w })} aria-label="Edit"><Ic.Edit /></button>
+            <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'word', id: w.id, label: w.word })} aria-label="Delete"><Ic.Trash /></button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 
   return (
     <div className="library">
       <div className="lib-head">
         <div>
           <h2 className="lib-title">Library</h2>
-          <p className="lib-sub">{words.length} words across {groups.length} groups</p>
+          <p className="lib-sub">{words.length} words across {topGroups.length} groups</p>
         </div>
         <div className="lib-head-actions">
           <button className="btn btn-soft" onClick={() => setImportModal({})}><Ic.Plus /> Import</button>
@@ -243,8 +316,10 @@ function LibraryView({ groups, words, countByGroup }) {
       </div>
 
       <div className="groups-list">
-        {groups.map((g) => {
+        {topGroups.map((g) => {
           const items = words.filter((w) => w.groupId === g.id);
+          const subGroups = subGroupsOf(g.id);
+          const subWordCount = subGroups.reduce((sum, sg) => sum + words.filter((w) => w.groupId === sg.id).length, 0);
           const open = openGroups.includes(g.id);
           return (
             <section className="grp" key={g.id}>
@@ -253,31 +328,44 @@ function LibraryView({ groups, words, countByGroup }) {
                   <Ic.Chevron style={{ transform: open ? 'none' : 'rotate(-90deg)', transition: 'transform .2s' }} />
                   <span className="grp-dot" style={{ background: g.color }} />
                   <span className="grp-name">{g.name}</span>
-                  <span className="grp-count">{items.length}</span>
+                  <span className="grp-count">{items.length + subWordCount}</span>
                 </button>
                 <div className="grp-tools">
-                  <button className="btn btn-soft sm" onClick={() => setWordModal({ mode: 'new', groupId: g.id })}><Ic.Plus width="15" height="15" /> Word</button>
-                  <button className="btn btn-soft sm" onClick={() => setImportModal({ groupId: g.id })}><Ic.Plus width="15" height="15" /> Import</button>
+                  {subGroups.length === 0 && <>
+                    <button className="btn btn-soft sm" onClick={() => setWordModal({ mode: 'new', groupId: g.id })}><Ic.Plus width="15" height="15" /> Word</button>
+                    <button className="btn btn-soft sm" onClick={() => setImportModal({ groupId: g.id })}><Ic.Plus width="15" height="15" /> Import</button>
+                  </>}
+                  {items.length === 0 && <button className="btn btn-soft sm" onClick={() => setGroupModal({ mode: 'new', parentGroup: g })}><Ic.Plus width="15" height="15" /> Subgroup</button>}
                   <button className="icon-btn sm" onClick={() => setGroupModal({ mode: 'edit', initial: g })} aria-label="Edit group"><Ic.Edit /></button>
                   <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'group', id: g.id, label: g.name })} aria-label="Delete group"><Ic.Trash /></button>
                 </div>
               </header>
               {open && (
-                <div className="word-rows">
-                  {items.length === 0 && <div className="row-empty">No words yet — add the first one.</div>}
-                  {items.map((w) => (
-                    <div className="wrow" key={w.id}>
-                      <div className="wrow-thumb"><PhotoFill word={w.word} hue={g.color} /></div>
-                      <div className="wrow-main">
-                        <div className="wrow-top"><span className="wrow-word">{w.word}</span><span className="wrow-ipa">{w.ipa}</span></div>
-                        <div className="wrow-tr">{w.tr}</div>
-                      </div>
-                      <div className="wrow-tools">
-                        <button className="icon-btn sm" onClick={() => setWordModal({ mode: 'edit', initial: w })} aria-label="Edit"><Ic.Edit /></button>
-                        <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'word', id: w.id, label: w.word })} aria-label="Delete"><Ic.Trash /></button>
-                      </div>
-                    </div>
-                  ))}
+                <div className="grp-body">
+                  {renderWords(items, g.color, subGroups.length === 0)}
+                  {subGroups.map((sg) => {
+                    const subItems = words.filter((w) => w.groupId === sg.id);
+                    const subOpen = openGroups.includes(sg.id);
+                    return (
+                      <section className="grp grp-sub" key={sg.id}>
+                        <header className="grp-head">
+                          <button className="grp-toggle" onClick={() => toggleOpen(sg.id)}>
+                            <Ic.Chevron style={{ transform: subOpen ? 'none' : 'rotate(-90deg)', transition: 'transform .2s' }} />
+                            <span className="grp-dot" style={{ background: sg.color }} />
+                            <span className="grp-name">{sg.name}</span>
+                            <span className="grp-count">{subItems.length}</span>
+                          </button>
+                          <div className="grp-tools">
+                            <button className="btn btn-soft sm" onClick={() => setWordModal({ mode: 'new', groupId: sg.id })}><Ic.Plus width="15" height="15" /> Word</button>
+                            <button className="btn btn-soft sm" onClick={() => setImportModal({ groupId: sg.id })}><Ic.Plus width="15" height="15" /> Import</button>
+                            <button className="icon-btn sm" onClick={() => setGroupModal({ mode: 'edit', initial: sg })} aria-label="Edit subgroup"><Ic.Edit /></button>
+                            <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'group', id: sg.id, label: sg.name })} aria-label="Delete subgroup"><Ic.Trash /></button>
+                          </div>
+                        </header>
+                        {subOpen && renderWords(subItems, sg.color)}
+                      </section>
+                    );
+                  })}
                 </div>
               )}
             </section>
@@ -298,8 +386,8 @@ function LibraryView({ groups, words, countByGroup }) {
         </Modal>
       )}
       {groupModal && (
-        <Modal title={groupModal.mode === 'edit' ? 'Edit group' : 'New group'} onClose={() => setGroupModal(null)}>
-          <GroupForm initial={groupModal.initial} onSave={saveGroup} onCancel={() => setGroupModal(null)} />
+        <Modal title={groupModal.mode === 'edit' ? 'Edit group' : (groupModal.parentGroup ? 'New subgroup' : 'New group')} onClose={() => setGroupModal(null)}>
+          <GroupForm initial={groupModal.initial} parentGroup={groupModal.parentGroup} onSave={saveGroup} onCancel={() => setGroupModal(null)} />
         </Modal>
       )}
       {confirm && (
@@ -319,16 +407,22 @@ function LibraryView({ groups, words, countByGroup }) {
 
 /* ---------------- Group form ---------------- */
 const LW_PALETTE = ['#E8552F', '#2F9E8F', '#5B6CE8', '#C9913B', '#B7409B', '#3E8ED0', '#5BA02E', '#D6453E'];
-function GroupForm({ initial, onSave, onCancel }) {
+function GroupForm({ initial, parentGroup, onSave, onCancel }) {
   const [name, setName] = useState(initial ? initial.name : '');
-  const [color, setColor] = useState(initial ? initial.color : LW_PALETTE[0]);
+  const [color, setColor] = useState(initial ? initial.color : (parentGroup ? parentGroup.color : LW_PALETTE[0]));
   const canSave = name.trim();
   const submit = () => {
     if (!canSave) return;
-    onSave({ id: initial ? initial.id : window.lwUid(), name: name.trim(), color });
+    const parentId = initial ? initial.parentId : (parentGroup ? parentGroup.id : undefined);
+    onSave({ id: initial ? initial.id : window.lwUid(), name: name.trim(), color, ...(parentId ? { parentId } : {}) });
   };
   return (
     <div className="form">
+      {parentGroup && (
+        <p className="field-hint">
+          Подгруппа группы <strong>{parentGroup.name}</strong>
+        </p>
+      )}
       <label className="field">
         <span className="field-label">Group name</span>
         <input className="input" value={name} autoFocus placeholder="e.g. Phrasal verbs"

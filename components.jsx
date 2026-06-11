@@ -39,11 +39,19 @@ const Ic = {
   Library: (p) => (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M4 4v15.5M6.5 2H20v15H6.5A2.5 2.5 0 0 0 4 19.5" /></svg>
   ),
+  Tag: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 2H4v8l9.5 9.5a2 2 0 0 0 2.83 0l5.17-5.17a2 2 0 0 0 0-2.83L12 2Z" /><circle cx="8" cy="8" r="1.5" /></svg>
+  ),
   Check: (p) => (
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M20 6 9 17l-5-5" /></svg>
   ),
   Chevron: (p) => (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="m6 9 6 6 6-6" /></svg>
+  ),
+  Bulb: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.36.8.93.8 1.6v.5h5.4v-.5c0-.67.3-1.24.8-1.6A6 6 0 0 0 12 3z" />
+    </svg>
   ),
 };
 
@@ -58,18 +66,118 @@ function PhotoFill({ word, hue }) {
 }
 
 /* ---------------- Flashcard ---------------- */
-function Flashcard({ entry, group, flipped, onFlip }) {
+const SWIPE_THRESHOLD = 100;
+
+function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle }) {
+  const [drag, setDrag] = React.useState(null); // {startX, startY, dx, dy} or null
+  const [flyDir, setFlyDir] = React.useState(null); // 'known' | 'unknown' | null
+  const [showExample, setShowExample] = React.useState(false);
+  const dragRef = React.useRef(null);
+  dragRef.current = drag;
+
+  React.useEffect(() => {
+    setFlyDir(null);
+    setDrag(null);
+    setShowExample(false);
+  }, [entry && entry.id]);
+
   if (!entry) return null;
   const hue = group ? group.color : '#E8552F';
+
+  const onPointerDown = (e) => {
+    if (flyDir) return;
+    setDrag({ startX: e.clientX, startY: e.clientY, dx: 0, dy: 0, moved: false });
+  };
+  const onPointerMove = (e) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    const moved = d.moved || Math.abs(dx) > 4 || Math.abs(dy) > 4;
+    setDrag({ ...d, dx, dy, moved });
+  };
+  const endDrag = () => {
+    const d = dragRef.current;
+    if (!d) return;
+    if (d.dy > SWIPE_THRESHOLD && d.dy > Math.abs(d.dx)) {
+      setFlyDir('shuffle');
+      setDrag(null);
+      setTimeout(() => onShuffle(), 560);
+    } else if (-d.dy > SWIPE_THRESHOLD && -d.dy > Math.abs(d.dx)) {
+      setFlyDir('skip');
+      setDrag(null);
+      setTimeout(() => onSwipe('skip'), 220);
+    } else if (Math.abs(d.dx) > SWIPE_THRESHOLD) {
+      const dir = d.dx > 0 ? 'known' : 'unknown';
+      setFlyDir(dir);
+      setDrag(null);
+      setTimeout(() => onSwipe(dir), 220);
+    } else {
+      setDrag(null);
+    }
+  };
+  const onPointerUp = () => endDrag();
+  const onPointerLeave = () => { if (dragRef.current && !flyDir) endDrag(); };
+  const onClick = () => {
+    if (drag && drag.moved) return;
+    if (showExample) { setShowExample(false); return; }
+    onFlip();
+  };
+
+  let style = {};
+  let swipeClass = '';
+  if (flyDir === 'shuffle') {
+    style = { transition: 'none' };
+    swipeClass = ' swipe-shuffle';
+  } else if (flyDir === 'skip') {
+    style = { transform: 'translateY(-600px) rotate(0deg)', opacity: 0, transition: 'transform .22s ease-in, opacity .22s ease-in' };
+    swipeClass = ' swipe-skip';
+  } else if (flyDir) {
+    const sign = flyDir === 'known' ? 1 : -1;
+    style = { transform: `translateX(${sign * 600}px) rotate(${sign * 24}deg)`, opacity: 0, transition: 'transform .22s ease-in, opacity .22s ease-in' };
+    swipeClass = flyDir === 'known' ? ' swipe-known' : ' swipe-unknown';
+  } else if (drag) {
+    if (Math.abs(drag.dy) > Math.abs(drag.dx)) {
+      style = { transform: `translateY(${drag.dy}px)`, transition: 'none' };
+      if (drag.dy > 24) swipeClass = ' swipe-shuffle-hint';
+      else if (drag.dy < -24) swipeClass = ' swipe-skip-hint';
+    } else {
+      const rotate = drag.dx / 18;
+      style = { transform: `translateX(${drag.dx}px) rotate(${rotate}deg)`, transition: 'none' };
+      if (drag.dx > 24) swipeClass = ' swipe-known';
+      else if (drag.dx < -24) swipeClass = ' swipe-unknown';
+    }
+  }
+  const swipeStrength = drag
+    ? Math.min(Math.max(Math.abs(drag.dx), Math.abs(drag.dy)) / SWIPE_THRESHOLD, 1)
+    : (flyDir && flyDir !== 'shuffle' ? 1 : 0);
+
   return (
-    <div className={'card-scene' + (flipped ? ' is-flipped' : '')} onClick={onFlip} role="button" tabIndex={0}
-      onKeyDown={(e) => { if (e.key === 'Enter') onFlip(); }}>
+    <div className={'card-scene' + (flipped ? ' is-flipped' : '') + (showExample ? ' is-example' : '') + swipeClass} style={style}
+      onClick={onClick} role="button" tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter') onFlip(); }}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
+      {swipeClass === ' swipe-known' && <div className="swipe-stamp" style={{ opacity: swipeStrength }}>Знаю</div>}
+      {swipeClass === ' swipe-unknown' && <div className="swipe-stamp" style={{ opacity: swipeStrength }}>Не знаю</div>}
+      {swipeClass === ' swipe-shuffle-hint' && <div className="swipe-stamp swipe-stamp-shuffle" style={{ opacity: swipeStrength }}><Ic.Shuffle width="14" height="14" /> Перемешать</div>}
+      {(swipeClass === ' swipe-skip-hint' || swipeClass === ' swipe-skip') && <div className="swipe-stamp swipe-stamp-skip" style={{ opacity: swipeStrength }}>Skip</div>}
+      {flyDir === 'shuffle' && (
+        <div className="shuffle-fx" aria-hidden="true">
+          <span className="shuffle-card sc-1" />
+          <span className="shuffle-card sc-2" />
+          <span className="shuffle-card sc-3" />
+          <Ic.Shuffle className="shuffle-icon" width="28" height="28" />
+        </div>
+      )}
       <div className="card-inner">
         {/* FRONT */}
         <div className="card-face card-front">
-          <div className="card-photo">
-            <PhotoFill word={entry.word} hue={hue} />
-          </div>
+          {entry.photo && (
+            <div className="card-photo">
+              <img className="card-photo-img" src={entry.photo} alt="" />
+            </div>
+          )}
           <div className="card-body">
             <div className="card-word">{entry.word}</div>
             <div className="card-ipa">{entry.ipa}</div>
@@ -77,6 +185,7 @@ function Flashcard({ entry, group, flipped, onFlip }) {
           {group && (
             <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
           )}
+          <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
           <div className="flip-hint">tap to flip</div>
         </div>
         {/* BACK */}
@@ -87,9 +196,27 @@ function Flashcard({ entry, group, flipped, onFlip }) {
           {group && (
             <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
           )}
+          <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
+        </div>
+        {/* EXAMPLE */}
+        <div className="card-face card-example">
+          <div className="example-text">{entry.example}</div>
         </div>
       </div>
     </div>
+  );
+}
+
+/* ---------------- Example "lightbulb" toggle ---------------- */
+function ExampleBulb({ example, onShow }) {
+  const has = !!(example && example.trim());
+  return (
+    <button type="button" className={'card-bulb' + (has ? ' card-bulb-on' : '')}
+      disabled={!has} aria-label="Show example sentence"
+      onClick={(e) => { e.stopPropagation(); if (has) onShow(); }}
+      onPointerDown={(e) => e.stopPropagation()}>
+      <Ic.Bulb />
+    </button>
   );
 }
 
@@ -126,12 +253,19 @@ function Modal({ title, onClose, children, footer }) {
   );
 }
 
+/* groups that may hold words: groups with no subgroups */
+function lwLeafGroups(groups) {
+  return groups.filter((g) => !groups.some((other) => other.parentId === g.id));
+}
+
 /* ---------------- Word form (create/edit) ---------------- */
 function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
   const [word, setWord] = React.useState(initial ? initial.word : '');
   const [ipa, setIpa] = React.useState(initial ? initial.ipa : '');
   const [tr, setTr] = React.useState(initial ? initial.tr : '');
-  const [groupId, setGroupId] = React.useState(initial ? initial.groupId : (defaultGroupId || (groups[0] && groups[0].id)));
+  const [example, setExample] = React.useState(initial ? (initial.example || '') : '');
+  const leafGroups = lwLeafGroups(groups);
+  const [groupId, setGroupId] = React.useState(initial ? initial.groupId : (defaultGroupId || (leafGroups[0] && leafGroups[0].id)));
 
   const canSave = word.trim() && tr.trim();
   const submit = () => {
@@ -142,6 +276,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
       word: word.trim(),
       ipa: ipa.trim(),
       tr: tr.trim(),
+      example: example.trim(),
     });
   };
 
@@ -164,15 +299,21 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
         <input className="input" value={tr} placeholder="перевод"
           onChange={(e) => setTr(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
       </label>
+      <label className="field">
+        <span className="field-label">Example sentence</span>
+        <input className="input" value={example} placeholder="e.g. We went on a long journey."
+          onChange={(e) => setExample(e.target.value)} />
+      </label>
 
       <div className="field">
         <span className="field-label">Group</span>
         <div className="group-pick">
-          {groups.map((g) => (
+          {leafGroups.map((g) => (
             <button key={g.id} type="button"
               className={'gp-opt' + (g.id === groupId ? ' gp-on' : '')}
               onClick={() => setGroupId(g.id)}>
-              <span className="chip-dot" style={{ background: g.color }} />{g.name}
+              <span className="chip-dot" style={{ background: g.color }} />
+              {g.parentId ? (groups.find((p) => p.id === g.parentId) || {}).name + ' / ' + g.name : g.name}
             </button>
           ))}
         </div>
@@ -191,18 +332,22 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
 /* ---------------- Import form (bulk text) ---------------- */
 function lwParseImportLine(line) {
   const parts = line.split('|').map((p) => p.trim());
-  if (parts.length >= 3) {
-    return { word: parts[0], ipa: parts[1], tr: parts[2] };
+  if (parts.length >= 4) {
+    return { word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3] };
+  }
+  if (parts.length === 3) {
+    return { word: parts[0], ipa: parts[1], tr: parts[2], example: '' };
   }
   if (parts.length === 2) {
-    return { word: parts[0], ipa: '', tr: parts[1] };
+    return { word: parts[0], ipa: '', tr: parts[1], example: '' };
   }
   return null;
 }
 
 function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
   const [text, setText] = React.useState('');
-  const [groupId, setGroupId] = React.useState(defaultGroupId || (groups[0] && groups[0].id));
+  const leafGroups = lwLeafGroups(groups);
+  const [groupId, setGroupId] = React.useState(defaultGroupId || (leafGroups[0] && leafGroups[0].id));
   const fileInputRef = React.useRef(null);
 
   const handleFile = (e) => {
@@ -231,6 +376,7 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
       word: r.word,
       ipa: r.ipa,
       tr: r.tr,
+      example: r.example || '',
     }));
     onImport(items);
   };
@@ -238,8 +384,8 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
   return (
     <div className="form">
       <p className="field-hint">
-        Одна строка — одно слово. Формат: <code>слово | транскрипция | перевод</code>
-        {' '}или <code>слово || перевод</code> (без транскрипции), или <code>слово | перевод</code>.
+        Одна строка — одно слово. Формат: <code>слово | транскрипция | перевод | пример использования</code>
+        {' '}(пример опционален), или <code>слово || перевод</code> (без транскрипции), или <code>слово | перевод</code>.
       </p>
       <label className="field">
         <div className="field-label-row">
@@ -250,18 +396,19 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
           <input ref={fileInputRef} type="file" accept=".txt,text/plain" style={{ display: 'none' }} onChange={handleFile} />
         </div>
         <textarea className="input mono" rows={8} value={text} autoFocus
-          placeholder={'journey | /ˈdʒɜː.ni/ | путешествие\nbook || книга'}
+          placeholder={'journey | /ˈdʒɜː.ni/ | путешествие | We went on a long journey.\nbook || книга'}
           onChange={(e) => setText(e.target.value)} />
       </label>
 
       <div className="field">
         <span className="field-label">Group</span>
         <div className="group-pick">
-          {groups.map((g) => (
+          {leafGroups.map((g) => (
             <button key={g.id} type="button"
               className={'gp-opt' + (g.id === groupId ? ' gp-on' : '')}
               onClick={() => setGroupId(g.id)}>
-              <span className="chip-dot" style={{ background: g.color }} />{g.name}
+              <span className="chip-dot" style={{ background: g.color }} />
+              {g.parentId ? (groups.find((p) => p.id === g.parentId) || {}).name + ' / ' + g.name : g.name}
             </button>
           ))}
         </div>
@@ -283,4 +430,4 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
   );
 }
 
-Object.assign(window, { Ic, PhotoFill, Flashcard, GroupChip, Modal, WordForm, ImportForm });
+Object.assign(window, { Ic, PhotoFill, Flashcard, GroupChip, Modal, WordForm, ImportForm, lwLeafGroups });
