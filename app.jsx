@@ -200,6 +200,7 @@ function StudyView({ groups, words, selected, setSelected, countByGroup, groupBy
 function LibraryView({ groups, words, countByGroup }) {
   const [wordModal, setWordModal] = useState(null); // {mode, initial?, groupId?}
   const [groupModal, setGroupModal] = useState(null); // {mode, initial?}
+  const [importModal, setImportModal] = useState(null); // {groupId?}
   const [confirm, setConfirm] = useState(null); // {kind, id, label}
   const [openGroups, setOpenGroups] = useState(() => groups.map((g) => g.id));
 
@@ -213,6 +214,10 @@ function LibraryView({ groups, words, countByGroup }) {
     window.lwSetDoc(window.LW_COLLECTIONS.groups, g);
     if (!openGroups.includes(g.id)) setOpenGroups((o) => [...o, g.id]);
     setGroupModal(null);
+  };
+  const importWords = (items) => {
+    items.forEach((w) => window.lwSetDoc(window.LW_COLLECTIONS.words, w));
+    setImportModal(null);
   };
   const doDelete = () => {
     if (!confirm) return;
@@ -231,7 +236,10 @@ function LibraryView({ groups, words, countByGroup }) {
           <h2 className="lib-title">Library</h2>
           <p className="lib-sub">{words.length} words across {groups.length} groups</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setGroupModal({ mode: 'new' })}><Ic.Plus /> New group</button>
+        <div className="lib-head-actions">
+          <button className="btn btn-soft" onClick={() => setImportModal({})}><Ic.Plus /> Import</button>
+          <button className="btn btn-primary" onClick={() => setGroupModal({ mode: 'new' })}><Ic.Plus /> New group</button>
+        </div>
       </div>
 
       <div className="groups-list">
@@ -249,6 +257,7 @@ function LibraryView({ groups, words, countByGroup }) {
                 </button>
                 <div className="grp-tools">
                   <button className="btn btn-soft sm" onClick={() => setWordModal({ mode: 'new', groupId: g.id })}><Ic.Plus width="15" height="15" /> Word</button>
+                  <button className="btn btn-soft sm" onClick={() => setImportModal({ groupId: g.id })}><Ic.Plus width="15" height="15" /> Import</button>
                   <button className="icon-btn sm" onClick={() => setGroupModal({ mode: 'edit', initial: g })} aria-label="Edit group"><Ic.Edit /></button>
                   <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'group', id: g.id, label: g.name })} aria-label="Delete group"><Ic.Trash /></button>
                 </div>
@@ -280,6 +289,12 @@ function LibraryView({ groups, words, countByGroup }) {
         <Modal title={wordModal.mode === 'edit' ? 'Edit word' : 'New word'} onClose={() => setWordModal(null)}>
           <WordForm initial={wordModal.initial} groups={groups} defaultGroupId={wordModal.groupId}
             onSave={saveWord} onCancel={() => setWordModal(null)} />
+        </Modal>
+      )}
+      {importModal && (
+        <Modal title="Import words" onClose={() => setImportModal(null)}>
+          <ImportForm groups={groups} defaultGroupId={importModal.groupId}
+            onImport={importWords} onCancel={() => setImportModal(null)} />
         </Modal>
       )}
       {groupModal && (

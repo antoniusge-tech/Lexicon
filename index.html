@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Lexicon — flashcards</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <script>try{var t=JSON.parse(localStorage.getItem('lw_theme_v1'));if(t==='dark'||t==='light')document.documentElement.dataset.theme=t;}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -286,6 +287,12 @@ html[data-theme="dark"] .nav-btn.on { background: #2C2820; }
 }
 .input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--surface); }
 .input.mono { font-family: var(--serif); font-style: italic; }
+textarea.input { resize: vertical; line-height: 1.5; min-height: 120px; }
+textarea.input.mono { font-style: normal; }
+.field-hint { font-size: 12.5px; color: var(--muted); line-height: 1.5; margin: 0; }
+.field-label-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.field-hint code { background: var(--surface-2); border-radius: 5px; padding: 1px 5px; font-family: var(--serif); }
+.lib-head-actions { display: flex; gap: 10px; }
 .group-pick { display: flex; flex-wrap: wrap; gap: 8px; }
 .gp-opt {
   display: inline-flex; align-items: center; gap: 7px;

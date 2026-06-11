@@ -188,4 +188,99 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
   );
 }
 
-Object.assign(window, { Ic, PhotoFill, Flashcard, GroupChip, Modal, WordForm });
+/* ---------------- Import form (bulk text) ---------------- */
+function lwParseImportLine(line) {
+  const parts = line.split('|').map((p) => p.trim());
+  if (parts.length >= 3) {
+    return { word: parts[0], ipa: parts[1], tr: parts[2] };
+  }
+  if (parts.length === 2) {
+    return { word: parts[0], ipa: '', tr: parts[1] };
+  }
+  return null;
+}
+
+function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
+  const [text, setText] = React.useState('');
+  const [groupId, setGroupId] = React.useState(defaultGroupId || (groups[0] && groups[0].id));
+  const fileInputRef = React.useRef(null);
+
+  const handleFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setText(String(reader.result || ''));
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const rows = text.split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map(lwParseImportLine);
+
+  const validCount = rows.filter(Boolean).length;
+  const invalidCount = rows.length - validCount;
+  const canImport = validCount > 0 && groupId;
+
+  const submit = () => {
+    if (!canImport) return;
+    const items = rows.filter(Boolean).map((r) => ({
+      id: window.lwUid(),
+      groupId,
+      word: r.word,
+      ipa: r.ipa,
+      tr: r.tr,
+    }));
+    onImport(items);
+  };
+
+  return (
+    <div className="form">
+      <p className="field-hint">
+        Одна строка — одно слово. Формат: <code>слово | транскрипция | перевод</code>
+        {' '}или <code>слово || перевод</code> (без транскрипции), или <code>слово | перевод</code>.
+      </p>
+      <label className="field">
+        <div className="field-label-row">
+          <span className="field-label">Текст для импорта</span>
+          <button type="button" className="btn btn-soft sm" onClick={() => fileInputRef.current && fileInputRef.current.click()}>
+            <Ic.Plus width="15" height="15" /> Load file
+          </button>
+          <input ref={fileInputRef} type="file" accept=".txt,text/plain" style={{ display: 'none' }} onChange={handleFile} />
+        </div>
+        <textarea className="input mono" rows={8} value={text} autoFocus
+          placeholder={'journey | /ˈdʒɜː.ni/ | путешествие\nbook || книга'}
+          onChange={(e) => setText(e.target.value)} />
+      </label>
+
+      <div className="field">
+        <span className="field-label">Group</span>
+        <div className="group-pick">
+          {groups.map((g) => (
+            <button key={g.id} type="button"
+              className={'gp-opt' + (g.id === groupId ? ' gp-on' : '')}
+              onClick={() => setGroupId(g.id)}>
+              <span className="chip-dot" style={{ background: g.color }} />{g.name}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {rows.length > 0 && (
+        <p className="field-hint">
+          Готово к импорту: {validCount}{invalidCount > 0 ? `, пропущено строк: ${invalidCount}` : ''}
+        </p>
+      )}
+
+      <div className="form-foot">
+        <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
+        <button className="btn btn-primary" disabled={!canImport} onClick={submit}>
+          Import {validCount > 0 ? `(${validCount})` : ''}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { Ic, PhotoFill, Flashcard, GroupChip, Modal, WordForm, ImportForm });
