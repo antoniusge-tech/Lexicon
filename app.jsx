@@ -86,7 +86,6 @@ function TopBar({ view, setView, theme, onToggleTheme }) {
   return (
     <header className="topbar">
       <div className="brand">
-        <span className="brand-mark"><Ic.Cards width="17" height="17" /></span>
         <span className="brand-name">Lexicon</span>
       </div>
       <nav className="nav">
