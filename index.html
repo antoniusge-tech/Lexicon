@@ -318,7 +318,7 @@ html[data-theme="dark"] .nav-btn.on { background: #2C2820; }
 
 /* ---------- Library ---------- */
 .library { width: 100%; }
-.lib-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+.lib-head { display: flex; align-items: flex-end; justify-content: flex-end; gap: 16px; margin-bottom: 22px; }
 .lib-title { font-family: var(--serif); font-size: 34px; font-weight: 500; margin: 0; letter-spacing: -.02em; }
 .lib-sub { color: var(--muted); font-size: 14px; margin: 4px 0 0; }
 .groups-list { display: flex; flex-direction: column; gap: 14px; }
@@ -333,14 +333,26 @@ html[data-theme="dark"] .nav-btn.on { background: #2C2820; }
 .grp-name { font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
 .grp-count { color: var(--faint); font-size: 13px; font-variant-numeric: tabular-nums; }
 .grp-tools { display: flex; align-items: center; gap: 6px; }
+.actions-menu { position: relative; }
+.actions-menu-pop {
+  position: fixed; z-index: 60;
+  display: flex; flex-direction: column; min-width: 170px; padding: 6px;
+  background: var(--surface); border: 1px solid var(--border-2); border-radius: 10px; box-shadow: var(--shadow);
+}
+.actions-menu-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px;
+  border: 0; background: transparent; color: var(--ink); font-size: 13.5px; border-radius: 7px; text-align: left; cursor: pointer;
+}
+.actions-menu-item:hover { background: var(--surface-2); }
+.actions-menu-item.danger { color: var(--danger); }
+.actions-menu-item.danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.actions-menu-item svg { flex: 0 0 auto; width: 15px; height: 15px; }
 .grp-body { border-top: 1px solid var(--border-2); }
-.grp-sub { border: 0; border-top: 1px solid var(--border-2); border-radius: 0; box-shadow: none; margin: 0 0 0 22px; }
+.grp-sub { border: 0; border-radius: 0; box-shadow: none; margin: 0 0 0 22px; }
 .grp-sub:last-child { border-bottom: 0; }
 .grp-sub .grp-head { padding: 10px 14px; }
 .grp-sub .grp-name { font-size: 14.5px; }
-.word-rows { border-top: 1px solid var(--border-2); padding: 6px; display: flex; flex-direction: column; }
-.grp-body > .word-rows:first-child:last-child { border-top: 0; }
-.grp-body > .word-rows { border-top: 0; }
+.word-rows { padding: 6px; display: flex; flex-direction: column; }
 .row-empty { color: var(--faint); font-size: 13.5px; padding: 16px; text-align: center; }
 .wrow { display: flex; align-items: center; gap: 14px; padding: 10px; border-radius: 11px; transition: background .14s ease; }
 .wrow:hover { background: var(--surface-2); }

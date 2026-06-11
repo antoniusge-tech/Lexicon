@@ -48,6 +48,9 @@ const Ic = {
   Chevron: (p) => (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="m6 9 6 6 6-6" /></svg>
   ),
+  MoreVertical: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" {...p}><circle cx="12" cy="5" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="12" cy="19" r="1.8" /></svg>
+  ),
   Bulb: (p) => (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
       <path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.36.8.93.8 1.6v.5h5.4v-.5c0-.67.3-1.24.8-1.6A6 6 0 0 0 12 3z" />
@@ -229,6 +232,56 @@ function GroupChip({ group, count, active, onToggle }) {
       <span className="chip-count">{count}</span>
       {active && <Ic.Check className="chip-check" />}
     </button>
+  );
+}
+
+/* ---------------- Actions menu (overflow "...") ---------------- */
+function ActionsMenu({ items }) {
+  const [open, setOpen] = React.useState(false);
+  const [pos, setPos] = React.useState(null);
+  const btnRef = React.useRef(null);
+  const popRef = React.useRef(null);
+
+  const toggle = () => {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      setPos({ top: r.bottom + 6, right: window.innerWidth - r.right });
+    }
+    setOpen((o) => !o);
+  };
+
+  React.useEffect(() => {
+    if (!open) return;
+    const h = (e) => {
+      if (btnRef.current?.contains(e.target) || popRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', h);
+    window.addEventListener('resize', () => setOpen(false));
+    window.addEventListener('scroll', () => setOpen(false), true);
+    return () => {
+      document.removeEventListener('mousedown', h);
+      window.removeEventListener('resize', () => setOpen(false));
+      window.removeEventListener('scroll', () => setOpen(false), true);
+    };
+  }, [open]);
+
+  return (
+    <div className="actions-menu">
+      <button ref={btnRef} className="icon-btn sm" onClick={toggle} aria-label="More actions" aria-expanded={open}>
+        <Ic.MoreVertical />
+      </button>
+      {open && pos && ReactDOM.createPortal(
+        <div ref={popRef} className="actions-menu-pop" style={{ top: pos.top, right: pos.right }} onClick={() => setOpen(false)}>
+          {items.map((it, i) => (
+            <button key={i} className={'actions-menu-item' + (it.danger ? ' danger' : '')} onClick={it.onClick}>
+              {it.icon}<span>{it.label}</span>
+            </button>
+          ))}
+        </div>,
+        document.body
+      )}
+    </div>
   );
 }
 
@@ -430,4 +483,4 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
   );
 }
 
-Object.assign(window, { Ic, PhotoFill, Flashcard, GroupChip, Modal, WordForm, ImportForm, lwLeafGroups });
+Object.assign(window, { Ic, PhotoFill, Flashcard, GroupChip, ActionsMenu, Modal, WordForm, ImportForm, lwLeafGroups });

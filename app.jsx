@@ -77,6 +77,11 @@ function App() {
           {selected.length} {selected.length === 1 ? 'group' : 'groups'} selected
         </footer>
       )}
+      {view === 'library' && (
+        <footer className="appfooter">
+          {words.length} words across {groups.filter((g) => !g.parentId).length} groups
+        </footer>
+      )}
     </div>
   );
 }
@@ -304,10 +309,6 @@ function LibraryView({ groups, words }) {
   return (
     <div className="library">
       <div className="lib-head">
-        <div>
-          <h2 className="lib-title">Library</h2>
-          <p className="lib-sub">{words.length} words across {topGroups.length} groups</p>
-        </div>
         <div className="lib-head-actions">
           <button className="btn btn-soft" onClick={() => setImportModal({})}><Ic.Plus /> Import</button>
           <button className="btn btn-primary" onClick={() => setGroupModal({ mode: 'new' })}><Ic.Plus /> New group</button>
@@ -330,13 +331,17 @@ function LibraryView({ groups, words }) {
                   <span className="grp-count">{items.length + subWordCount}</span>
                 </button>
                 <div className="grp-tools">
-                  {subGroups.length === 0 && <>
-                    <button className="btn btn-soft sm" onClick={() => setWordModal({ mode: 'new', groupId: g.id })}><Ic.Plus width="15" height="15" /> Word</button>
-                    <button className="btn btn-soft sm" onClick={() => setImportModal({ groupId: g.id })}><Ic.Plus width="15" height="15" /> Import</button>
-                  </>}
-                  {items.length === 0 && <button className="btn btn-soft sm" onClick={() => setGroupModal({ mode: 'new', parentGroup: g })}><Ic.Plus width="15" height="15" /> Subgroup</button>}
-                  <button className="icon-btn sm" onClick={() => setGroupModal({ mode: 'edit', initial: g })} aria-label="Edit group"><Ic.Edit /></button>
-                  <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'group', id: g.id, label: g.name })} aria-label="Delete group"><Ic.Trash /></button>
+                  <ActionsMenu items={[
+                    ...(subGroups.length === 0 ? [
+                      { label: 'Word', icon: <Ic.Plus width="15" height="15" />, onClick: () => setWordModal({ mode: 'new', groupId: g.id }) },
+                      { label: 'Import', icon: <Ic.Plus width="15" height="15" />, onClick: () => setImportModal({ groupId: g.id }) },
+                    ] : []),
+                    ...(items.length === 0 ? [
+                      { label: 'Subgroup', icon: <Ic.Plus width="15" height="15" />, onClick: () => setGroupModal({ mode: 'new', parentGroup: g }) },
+                    ] : []),
+                    { label: 'Edit group', icon: <Ic.Edit />, onClick: () => setGroupModal({ mode: 'edit', initial: g }) },
+                    { label: 'Delete group', icon: <Ic.Trash />, danger: true, onClick: () => setConfirm({ kind: 'group', id: g.id, label: g.name }) },
+                  ]} />
                 </div>
               </header>
               {open && (
@@ -355,10 +360,12 @@ function LibraryView({ groups, words }) {
                             <span className="grp-count">{subItems.length}</span>
                           </button>
                           <div className="grp-tools">
-                            <button className="btn btn-soft sm" onClick={() => setWordModal({ mode: 'new', groupId: sg.id })}><Ic.Plus width="15" height="15" /> Word</button>
-                            <button className="btn btn-soft sm" onClick={() => setImportModal({ groupId: sg.id })}><Ic.Plus width="15" height="15" /> Import</button>
-                            <button className="icon-btn sm" onClick={() => setGroupModal({ mode: 'edit', initial: sg })} aria-label="Edit subgroup"><Ic.Edit /></button>
-                            <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'group', id: sg.id, label: sg.name })} aria-label="Delete subgroup"><Ic.Trash /></button>
+                            <ActionsMenu items={[
+                              { label: 'Word', icon: <Ic.Plus width="15" height="15" />, onClick: () => setWordModal({ mode: 'new', groupId: sg.id }) },
+                              { label: 'Import', icon: <Ic.Plus width="15" height="15" />, onClick: () => setImportModal({ groupId: sg.id }) },
+                              { label: 'Edit subgroup', icon: <Ic.Edit />, onClick: () => setGroupModal({ mode: 'edit', initial: sg }) },
+                              { label: 'Delete subgroup', icon: <Ic.Trash />, danger: true, onClick: () => setConfirm({ kind: 'group', id: sg.id, label: sg.name }) },
+                            ]} />
                           </div>
                         </header>
                         {subOpen && renderWords(subItems, sg.color)}
