@@ -292,7 +292,7 @@ function LibraryView({ groups, words }) {
       {items.length === 0 && showEmptyHint && <div className="row-empty">No words yet — add the first one.</div>}
       {items.map((w) => (
         <div className="wrow" key={w.id}>
-          <div className="wrow-thumb"><PhotoFill word={w.word} hue={hue} /></div>
+          <div className="wrow-thumb">{w.photo ? <img className="card-photo-img" src={w.photo} alt="" /> : <PhotoFill word={w.word} hue={hue} />}</div>
           <div className="wrow-main">
             <div className="wrow-top"><span className="wrow-word">{w.word}</span><span className="wrow-ipa">{w.ipa}</span></div>
             <div className="wrow-tr">{w.tr}</div>

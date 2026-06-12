@@ -56,7 +56,21 @@ const Ic = {
       <path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.36.8.93.8 1.6v.5h5.4v-.5c0-.67.3-1.24.8-1.6A6 6 0 0 0 12 3z" />
     </svg>
   ),
+  Speaker: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M11 5 6 9H3v6h3l5 4z" /><path d="M16 8a5 5 0 0 1 0 8M19 5a8.5 8.5 0 0 1 0 14" />
+    </svg>
+  ),
 };
+
+/* ---------------- Speech synthesis helper ---------------- */
+function lwSpeak(text) {
+  if (!text || !('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'en-US';
+  window.speechSynthesis.speak(u);
+}
 
 /* ---------------- Photo placeholder ---------------- */
 function PhotoFill({ word, hue }) {
@@ -161,9 +175,9 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle }) {
       onKeyDown={(e) => { if (e.key === 'Enter') onFlip(); }}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove}
       onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
-      {swipeClass === ' swipe-known' && <div className="swipe-stamp" style={{ opacity: swipeStrength }}>Знаю</div>}
-      {swipeClass === ' swipe-unknown' && <div className="swipe-stamp" style={{ opacity: swipeStrength }}>Не знаю</div>}
-      {swipeClass === ' swipe-shuffle-hint' && <div className="swipe-stamp swipe-stamp-shuffle" style={{ opacity: swipeStrength }}><Ic.Shuffle width="14" height="14" /> Перемешать</div>}
+      {swipeClass === ' swipe-known' && <div className="swipe-stamp" style={{ opacity: swipeStrength }}>Know</div>}
+      {swipeClass === ' swipe-unknown' && <div className="swipe-stamp" style={{ opacity: swipeStrength }}>Don't know</div>}
+      {swipeClass === ' swipe-shuffle-hint' && <div className="swipe-stamp swipe-stamp-shuffle" style={{ opacity: swipeStrength }}><Ic.Shuffle width="14" height="14" /> Shuffle</div>}
       {(swipeClass === ' swipe-skip-hint' || swipeClass === ' swipe-skip') && <div className="swipe-stamp swipe-stamp-skip" style={{ opacity: swipeStrength }}>Skip</div>}
       {flyDir === 'shuffle' && (
         <div className="shuffle-fx" aria-hidden="true">
@@ -188,8 +202,8 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle }) {
           {group && (
             <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
           )}
+          <SpeakButton word={entry.word} />
           <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
-          <div className="flip-hint">tap to flip</div>
         </div>
         {/* BACK */}
         <div className="card-face card-back" style={{ '--hue': hue }}>
@@ -199,6 +213,7 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle }) {
           {group && (
             <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
           )}
+          <SpeakButton word={entry.word} />
           <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
         </div>
         {/* EXAMPLE */}
@@ -207,6 +222,17 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/* ---------------- Pronunciation button ---------------- */
+function SpeakButton({ word }) {
+  return (
+    <button type="button" className="card-speak" aria-label="Pronounce word"
+      onClick={(e) => { e.stopPropagation(); lwSpeak(word); }}
+      onPointerDown={(e) => e.stopPropagation()}>
+      <Ic.Speaker />
+    </button>
   );
 }
 
@@ -317,8 +343,11 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
   const [ipa, setIpa] = React.useState(initial ? initial.ipa : '');
   const [tr, setTr] = React.useState(initial ? initial.tr : '');
   const [example, setExample] = React.useState(initial ? (initial.example || '') : '');
+  const [photo, setPhoto] = React.useState(initial ? (initial.photo || '') : '');
+  const [autoState, setAutoState] = React.useState('idle'); // 'idle' | 'loading' | 'notfound' | 'error'
   const leafGroups = lwLeafGroups(groups);
   const [groupId, setGroupId] = React.useState(initial ? initial.groupId : (defaultGroupId || (leafGroups[0] && leafGroups[0].id)));
+  const fileInputRef = React.useRef(null);
 
   const canSave = word.trim() && tr.trim();
   const submit = () => {
@@ -330,7 +359,26 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
       ipa: ipa.trim(),
       tr: tr.trim(),
       example: example.trim(),
+      photo,
     });
+  };
+
+  const handleFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    window.lwFileToPhoto(file).then(setPhoto).catch(() => {});
+  };
+
+  const findPhoto = () => {
+    if (!word.trim()) return;
+    setAutoState('loading');
+    window.lwAutoFindPhoto(word.trim())
+      .then((dataUrl) => {
+        if (dataUrl) { setPhoto(dataUrl); setAutoState('idle'); }
+        else setAutoState('notfound');
+      })
+      .catch(() => setAutoState('error'));
   };
 
   return (
@@ -357,6 +405,39 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
         <input className="input" value={example} placeholder="e.g. We went on a long journey."
           onChange={(e) => setExample(e.target.value)} />
       </label>
+
+      <div className="field">
+        <span className="field-label">Photo</span>
+        <div className="photo-edit">
+          {photo ? (
+            <div className="photo-edit-preview">
+              <img src={photo} alt="" />
+            </div>
+          ) : (
+            <div className="photo-edit-preview photo-edit-empty">
+              <Ic.Image width="24" height="24" />
+            </div>
+          )}
+          <div className="photo-edit-actions">
+            <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFile} />
+            <button type="button" className="btn btn-soft sm" onClick={() => fileInputRef.current && fileInputRef.current.click()}>
+              Upload photo
+            </button>
+            {initial && (
+              <button type="button" className="btn btn-soft sm" disabled={autoState === 'loading'} onClick={findPhoto}>
+                {autoState === 'loading' ? 'Searching…' : 'Find photo automatically'}
+              </button>
+            )}
+            {photo && (
+              <button type="button" className="btn btn-ghost sm" onClick={() => setPhoto('')}>
+                Remove
+              </button>
+            )}
+          </div>
+          {autoState === 'notfound' && <p className="field-hint">Не удалось найти подходящее фото.</p>}
+          {autoState === 'error' && <p className="field-hint">Ошибка поиска фото. Попробуйте позже.</p>}
+        </div>
+      </div>
 
       <div className="field">
         <span className="field-label">Group</span>

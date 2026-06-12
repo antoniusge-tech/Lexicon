@@ -126,30 +126,33 @@ html[data-theme="dark"] .nav-btn.on { background: #2C2820; }
 .chip-all.chip-on { color: var(--accent); }
 
 /* ---------- Stage / card ---------- */
-.stage { width: 100%; display: grid; place-items: center; perspective: 1600px; min-height: 460px; }
+.stage { width: 100%; display: grid; place-items: center; min-height: 460px; position: relative; z-index: 0; }
 .card-scene {
   width: min(380px, 86vw); height: 460px;
   perspective: 1600px; cursor: pointer; user-select: none;
   position: relative; touch-action: none;
 }
+.card-scene.swipe-known, .card-scene.swipe-unknown, .card-scene.swipe-shuffle,
+.card-scene.swipe-shuffle-hint, .card-scene.swipe-skip-hint, .card-scene.swipe-skip { position: relative; z-index: 30; }
 .card-scene.swipe-known .card-face { box-shadow: 0 0 0 3px #5BA02E, var(--shadow-card); }
 .card-scene.swipe-unknown .card-face { box-shadow: 0 0 0 3px #D6453E, var(--shadow-card); }
-.card-scene.swipe-shuffle-hint .card-face { box-shadow: 0 0 0 3px var(--accent), var(--shadow-card); }
+.card-scene.swipe-shuffle-hint .card-face { box-shadow: 0 0 0 3px #3B82F6, var(--shadow-card); }
 .card-scene.swipe-skip-hint .card-face,
-.card-scene.swipe-skip .card-face { box-shadow: 0 0 0 3px var(--accent), var(--shadow-card); }
+.card-scene.swipe-skip .card-face { box-shadow: 0 0 0 3px #9CA3AF, var(--shadow-card); }
 .swipe-stamp {
-  position: absolute; top: 22px; z-index: 5;
-  font-size: 13px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;
-  padding: 6px 14px; border-radius: 999px; pointer-events: none;
+  position: absolute; top: 25px; z-index: 5;
+  font-size: 18px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;
+  padding: 8px 18px; border-radius: 999px; pointer-events: none;
 }
-.card-scene.swipe-known .swipe-stamp { right: 18px; color: #5BA02E; border: 2px solid #5BA02E; transform: rotate(8deg); }
-.card-scene.swipe-unknown .swipe-stamp { left: 18px; color: #D6453E; border: 2px solid #D6453E; transform: rotate(-8deg); }
+.card-scene.swipe-known .swipe-stamp { left: 48px; color: #5BA02E; border: 2px solid #5BA02E; transform: rotate(-8deg); }
+.card-scene.swipe-unknown .swipe-stamp { right: 48px; color: #D6453E; border: 2px solid #D6453E; transform: rotate(8deg); }
 .swipe-stamp-shuffle {
-  left: 50%; bottom: 18px; top: auto; transform: translateX(-50%); color: var(--accent); border: 2px solid var(--accent);
+  left: 50%; top: 47.25px; transform: translateX(-50%); color: var(--accent); border: 2px solid var(--accent);
   display: inline-flex; align-items: center; gap: 6px;
 }
 .swipe-stamp-skip {
-  left: 50%; top: 18px; transform: translateX(-50%); color: var(--accent); border: 2px solid var(--accent);
+  left: 50%; bottom: 18px; top: auto; transform: translateX(-50%); color: var(--accent); border: 2px solid var(--accent);
+  font-size: 21.6px;
 }
 
 /* ---------- Shuffle animation ---------- */
@@ -259,6 +262,17 @@ html[data-theme="dark"] .nav-btn.on { background: #2C2820; }
   cursor: pointer;
 }
 .card-bulb-on:hover { transform: scale(1.08); }
+.card-speak {
+  position: absolute; top: 14px; right: 54px; z-index: 4;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--border-2);
+  color: var(--ink); cursor: pointer;
+  transition: color .2s, border-color .2s, background-color .2s, transform .15s;
+}
+.card-speak:hover { transform: scale(1.08); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border-2)); }
 .card-example {
   transform: rotateX(180deg);
   align-items: center; justify-content: center; gap: 14px; padding: 40px 30px; text-align: center;
@@ -266,10 +280,6 @@ html[data-theme="dark"] .nav-btn.on { background: #2C2820; }
     linear-gradient(180deg, color-mix(in srgb, #E8A93E 9%, var(--surface)), var(--surface));
 }
 .example-text { font-family: var(--serif); font-size: 26px; line-height: 1.4; color: var(--ink); }
-.flip-hint {
-  position: absolute; bottom: 14px; left: 0; right: 0; text-align: center;
-  font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint);
-}
 /* back */
 .card-back {
   transform: rotateY(180deg);
@@ -406,6 +416,14 @@ textarea.input { resize: vertical; line-height: 1.5; min-height: 120px; }
 textarea.input.mono { font-style: normal; }
 .field-hint { font-size: 12.5px; color: var(--muted); line-height: 1.5; margin: 0; }
 .field-label-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.photo-edit { display: flex; align-items: flex-start; gap: 14px; }
+.photo-edit-preview {
+  width: 84px; height: 84px; flex: 0 0 auto; border-radius: 12px; overflow: hidden;
+  border: 1px solid var(--border); background: var(--surface-2);
+}
+.photo-edit-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-edit-empty { display: flex; align-items: center; justify-content: center; color: var(--faint); }
+.photo-edit-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .field-hint code { background: var(--surface-2); border-radius: 5px; padding: 1px 5px; font-family: var(--serif); }
 .lib-head-actions { display: flex; gap: 10px; }
 .group-pick { display: flex; flex-wrap: wrap; gap: 8px; }
