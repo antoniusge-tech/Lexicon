@@ -17,6 +17,7 @@ function App() {
   const [words, setWords] = useState([]);
   const [view, setView] = useState('study');
   const [selected, setSelected] = useState(() => window.lwLoad(LW_KEYS.selected, null) || []);
+  const [direction, setDirection] = useState(() => window.lwLoad(LW_KEYS.direction, 'en-ru'));
   const [studyStats, setStudyStats] = useState({ knownCount: 0, poolCount: 0, groupCount: 0 });
 
   /* live sync with shared Firestore data */
@@ -37,9 +38,11 @@ function App() {
   /* persistence (local-only settings) */
   useEffect(() => { document.documentElement.dataset.theme = theme; window.lwSave(LW_KEYS.theme, theme); }, [theme]);
   useEffect(() => { window.lwSave(LW_KEYS.selected, selected); }, [selected]);
+  useEffect(() => { window.lwSave(LW_KEYS.direction, direction); }, [direction]);
 
-  /* keep selection valid if a group is deleted */
+  /* keep selection valid if a group is deleted (skip until groups have loaded) */
   useEffect(() => {
+    if (!groups.length) return;
     setSelected((sel) => sel.filter((id) => groups.some((g) => g.id === id)));
   }, [groups]);
 
@@ -54,17 +57,19 @@ function App() {
   return (
     <div className="app">
       <TopBar view={view} setView={setView} theme={theme}
-        onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))} />
+        onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
+        direction={direction} setDirection={setDirection} />
       <main className="content">
         {view === 'study' ? (
           <StudyView groups={groups} words={words} selected={selected}
             groupById={groupById} onStatsChange={setStudyStats}
+            direction={direction}
             goLibrary={() => setView('library')} goCategory={() => setView('category')} />
         ) : view === 'library' ? (
           <LibraryView groups={groups} words={words} />
         ) : (
           <CategoryView groups={groups} selected={selected} setSelected={setSelected}
-            countByGroup={countByGroup} />
+            countByGroup={countByGroup} goStudy={() => setView('study')} />
         )}
       </main>
       {view === 'study' && studyStats.poolCount > 0 && (
@@ -87,32 +92,59 @@ function App() {
 }
 
 /* ---------------- Top bar ---------------- */
-function TopBar({ view, setView, theme, onToggleTheme }) {
+function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onClick);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onClick); document.removeEventListener('keydown', onKey); };
+  }, [open]);
+
+  const go = (v) => { setView(v); setOpen(false); };
+
   return (
     <header className="topbar">
       <div className="brand">
         <span className="brand-name">Lexicon</span>
       </div>
-      <nav className="nav">
-        <button className={'nav-btn' + (view === 'study' ? ' on' : '')} onClick={() => setView('study')}>
-          <Ic.Cards /> Study
+      <div className="menu-wrap" ref={ref}>
+        <button className="icon-btn menu-btn" onClick={() => setOpen((o) => !o)} aria-label="Menu">
+          <Ic.Menu />
         </button>
-        <button className={'nav-btn' + (view === 'category' ? ' on' : '')} onClick={() => setView('category')}>
-          <Ic.Tag /> Category
-        </button>
-        <button className={'nav-btn' + (view === 'library' ? ' on' : '')} onClick={() => setView('library')}>
-          <Ic.Library /> Library
-        </button>
-      </nav>
-      <button className="icon-btn theme-btn" onClick={onToggleTheme} aria-label="Toggle theme">
-        {theme === 'light' ? <Ic.Moon /> : <Ic.Sun />}
-      </button>
+        {open && (
+          <div className="menu-dropdown">
+            <button className={'menu-item' + (view === 'study' ? ' on' : '')} onClick={() => go('study')}>
+              <Ic.Cards /> Study
+            </button>
+            <button className={'menu-item' + (view === 'category' ? ' on' : '')} onClick={() => go('category')}>
+              <Ic.Tag /> Category
+            </button>
+            <button className={'menu-item' + (view === 'library' ? ' on' : '')} onClick={() => go('library')}>
+              <Ic.Library /> Library
+            </button>
+            <div className="menu-sep" />
+            <button className="menu-item" onClick={() => setDirection(direction === 'en-ru' ? 'ru-en' : 'en-ru')} type="button">
+              <Ic.Swap /> {direction === 'en-ru' ? 'EN → RU' : 'RU → EN'}
+            </button>
+            <div className="menu-sep" />
+            <button className="menu-item" onClick={onToggleTheme}>
+              {theme === 'light' ? <Ic.Moon /> : <Ic.Sun />}
+              {theme === 'light' ? 'Dark theme' : 'Light theme'}
+            </button>
+          </div>
+        )}
+      </div>
     </header>
   );
 }
 
 /* ---------------- Study view ---------------- */
-function StudyView({ groups, words, selected, groupById, onStatsChange, goLibrary, goCategory }) {
+function StudyView({ groups, words, selected, groupById, onStatsChange, direction, goLibrary, goCategory }) {
   const pool = useMemo(() => words.filter((w) => selected.includes(w.groupId)), [words, selected]);
 
   const [queue, setQueue] = useState([]);
@@ -120,16 +152,31 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, goLibrar
   const [flipped, setFlipped] = useState(false);
   const [progress, setProgress] = useState({}); // { [wordId]: 'known' | 'unknown' }
 
-  /* start a new study session: queue = all pool words, shuffled, progress reset */
+  /* start or resume a study session for this pool of words */
   const poolKey = pool.map((w) => w.id).join(',');
   useEffect(() => {
-    const ids = shuffle(pool.map((w) => w.id));
-    setProgress({});
-    setQueue(ids.slice(1));
-    setCurrent(ids[0] || null);
+    const saved = window.lwLoad(LW_KEYS.studySession, null);
+    if (saved && saved.poolKey === poolKey) {
+      setProgress(saved.progress || {});
+      setQueue(saved.queue || []);
+      setCurrent(saved.current ?? null);
+    } else {
+      const ids = shuffle(pool.map((w) => w.id));
+      setProgress({});
+      setQueue(ids.slice(1));
+      setCurrent(ids[0] || null);
+    }
     setFlipped(false);
     // eslint-disable-next-line
   }, [poolKey]);
+
+  /* persist session progress so it survives reloads */
+  useEffect(() => {
+    if (!pool.length) return;
+    window.lwSave(LW_KEYS.studySession, { poolKey, queue, current, progress });
+  }, [poolKey, pool.length, queue, current, progress]);
+
+  useEffect(() => { setFlipped(false); }, [direction]);
 
   const knownCount = useMemo(
     () => Object.values(progress).filter((s) => s === 'known').length,
@@ -196,7 +243,7 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, goLibrar
     <div className="study">
       <div className="stage">
         {entry ? (
-          <Flashcard entry={entry} group={group} flipped={flipped}
+          <Flashcard entry={entry} group={group} flipped={flipped} direction={direction}
             onFlip={() => setFlipped((f) => !f)} onSwipe={mark} onShuffle={shuffleDeck} />
         ) : allDone ? (
           <div className="empty-card">
@@ -223,12 +270,20 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, goLibrar
 }
 
 /* ---------------- Category view ---------------- */
-function CategoryView({ groups, selected, setSelected, countByGroup }) {
+function CategoryView({ groups, selected, setSelected, countByGroup, goStudy }) {
   const toggle = (id) => {
+    const wasEmpty = selected.length === 0;
+    const turningOn = !selected.includes(id);
     setSelected((sel) => sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]);
+    if (wasEmpty && turningOn && countByGroup[id] > 0) goStudy();
   };
   const allOn = selected.length === groups.length && groups.length > 0;
-  const toggleAll = () => setSelected(allOn ? [] : groups.map((g) => g.id));
+  const toggleAll = () => {
+    const wasEmpty = selected.length === 0;
+    const turningOn = !allOn;
+    setSelected(allOn ? [] : groups.map((g) => g.id));
+    if (wasEmpty && turningOn && groups.some((g) => countByGroup[g.id] > 0)) goStudy();
+  };
 
   return (
     <div className="category">

@@ -3,6 +3,8 @@
 const LW_KEYS = {
   theme: 'lw_theme_v1',
   selected: 'lw_selected_groups_v1',
+  direction: 'lw_study_direction_v1',
+  studySession: 'lw_study_session_v1',
 };
 
 const lwUid = () => Math.random().toString(36).slice(2, 9);

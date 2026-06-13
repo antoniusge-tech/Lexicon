@@ -61,6 +61,17 @@ const Ic = {
       <path d="M11 5 6 9H3v6h3l5 4z" /><path d="M16 8a5 5 0 0 1 0 8M19 5a8.5 8.5 0 0 1 0 14" />
     </svg>
   ),
+  Menu: (p) => (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" {...p}>
+      <path d="M4 6h16M4 12h16M4 18h16" />
+    </svg>
+  ),
+  Swap: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M7 4 3 8l4 4" /><path d="M3 8h13a4 4 0 0 1 4 4v1" />
+      <path d="M17 20l4-4-4-4" /><path d="M21 16H8a4 4 0 0 1-4-4v-1" />
+    </svg>
+  ),
 };
 
 /* ---------------- Speech synthesis helper ---------------- */
@@ -85,7 +96,7 @@ function PhotoFill({ word, hue }) {
 /* ---------------- Flashcard ---------------- */
 const SWIPE_THRESHOLD = 100;
 
-function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle }) {
+function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, direction = 'en-ru' }) {
   const [drag, setDrag] = React.useState(null); // {startX, startY, dx, dy} or null
   const [flyDir, setFlyDir] = React.useState(null); // 'known' | 'unknown' | null
   const [showExample, setShowExample] = React.useState(false);
@@ -188,34 +199,66 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle }) {
         </div>
       )}
       <div className="card-inner">
-        {/* FRONT */}
-        <div className="card-face card-front">
-          {entry.photo && (
-            <div className="card-photo">
-              <img className="card-photo-img" src={entry.photo} alt="" />
+        {direction === 'ru-en' ? (
+          <>
+            {/* FRONT: translation */}
+            <div className="card-face card-front">
+              {entry.photo && (
+                <div className="card-photo">
+                  <img className="card-photo-img" src={entry.photo} alt="" />
+                </div>
+              )}
+              <div className="card-body">
+                <div className="card-word">{entry.tr}</div>
+              </div>
+              {group && (
+                <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
+              )}
+              <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
             </div>
-          )}
-          <div className="card-body">
-            <div className="card-word">{entry.word}</div>
-            <div className="card-ipa">{entry.ipa}</div>
-          </div>
-          {group && (
-            <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
-          )}
-          <SpeakButton word={entry.word} />
-          <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
-        </div>
-        {/* BACK */}
-        <div className="card-face card-back" style={{ '--hue': hue }}>
-          <div className="back-label">translation</div>
-          <div className="card-tr">{entry.tr}</div>
-          <div className="back-word">{entry.word} <span className="back-ipa">{entry.ipa}</span></div>
-          {group && (
-            <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
-          )}
-          <SpeakButton word={entry.word} />
-          <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
-        </div>
+            {/* BACK: English word */}
+            <div className="card-face card-back" style={{ '--hue': hue }}>
+              <div className="back-label">word</div>
+              <div className="card-tr">{entry.word}</div>
+              <div className="back-word">{entry.ipa}</div>
+              {group && (
+                <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
+              )}
+              <SpeakButton word={entry.word} />
+              <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
+            </div>
+          </>
+        ) : (
+          <>
+            {/* FRONT: English word */}
+            <div className="card-face card-front">
+              {entry.photo && (
+                <div className="card-photo">
+                  <img className="card-photo-img" src={entry.photo} alt="" />
+                </div>
+              )}
+              <div className="card-body">
+                <div className="card-word">{entry.word}</div>
+                <div className="card-ipa">{entry.ipa}</div>
+              </div>
+              {group && (
+                <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
+              )}
+              <SpeakButton word={entry.word} />
+              <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
+            </div>
+            {/* BACK: translation */}
+            <div className="card-face card-back" style={{ '--hue': hue }}>
+              <div className="back-label">translation</div>
+              <div className="card-tr">{entry.tr}</div>
+              <div className="back-word">{entry.word} <span className="back-ipa">{entry.ipa}</span></div>
+              {group && (
+                <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
+              )}
+              <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
+            </div>
+          </>
+        )}
         {/* EXAMPLE */}
         <div className="card-face card-example">
           <div className="example-text">{entry.example}</div>
