@@ -21,6 +21,7 @@ function App() {
   const [selected, setSelected] = useState(() => window.lwLoad(LW_KEYS.selected, null) || []);
   const [direction, setDirection] = useState(() => window.lwLoad(LW_KEYS.direction, 'en-ru'));
   const [studyStats, setStudyStats] = useState({ knownCount: 0, poolCount: 0, groupCount: 0 });
+  const [lang, setLang] = useState(() => window.lwLoad(LW_KEYS.lang, null));
 
   /* live sync with shared Firestore data */
   useEffect(() => {
@@ -29,18 +30,34 @@ function App() {
     return () => { unsubGroups(); unsubWords(); };
   }, []);
 
-  /* default selection: everything, once groups load (only if user never picked) */
-  const hasSavedSelection = useRef(window.lwLoad(LW_KEYS.selected, null) != null);
+  /* migration: top-level groups created before multi-language support default to English */
+  const migratedGroups = useRef(new Set());
   useEffect(() => {
-    if (!hasSavedSelection.current && groups.length) {
-      setSelected(groups.map((g) => g.id));
-    }
+    groups.forEach((g) => {
+      if (!g.parentId && !g.lang && !migratedGroups.current.has(g.id)) {
+        migratedGroups.current.add(g.id);
+        window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, lang: 'en' });
+      }
+    });
   }, [groups]);
+
+  /* default selection: everything in the active language, once groups load (only if user never picked) */
+  const hasSavedSelection = useRef(window.lwLoad(LW_KEYS.selected, null) != null);
+  const langGroups = useMemo(
+    () => groups.filter((g) => !g.parentId && (g.lang || 'en') === lang),
+    [groups, lang]
+  );
+  useEffect(() => {
+    if (!hasSavedSelection.current && langGroups.length) {
+      setSelected(langGroups.map((g) => g.id));
+    }
+  }, [langGroups]);
 
   /* persistence (local-only settings) */
   useEffect(() => { document.documentElement.dataset.theme = theme; window.lwSave(LW_KEYS.theme, theme); }, [theme]);
   useEffect(() => { window.lwSave(LW_KEYS.selected, selected); }, [selected]);
   useEffect(() => { window.lwSave(LW_KEYS.direction, direction); }, [direction]);
+  useEffect(() => { if (lang) window.lwSave(LW_KEYS.lang, lang); }, [lang]);
 
   /* keep selection valid if a group is deleted (skip until groups have loaded) */
   useEffect(() => {
@@ -55,6 +72,23 @@ function App() {
     words.forEach((w) => { if (m[w.groupId] != null) m[w.groupId]++; });
     return m;
   }, [groups, words]);
+
+  /* scope everything to the active language: top groups in this lang + their subgroups + words in those groups */
+  const langGroupIds = useMemo(() => {
+    const topIds = new Set(groups.filter((g) => !g.parentId && (g.lang || 'en') === lang).map((g) => g.id));
+    const ids = new Set(topIds);
+    groups.forEach((g) => { if (g.parentId && topIds.has(g.parentId)) ids.add(g.id); });
+    return ids;
+  }, [groups, lang]);
+  const scopedGroups = useMemo(() => groups.filter((g) => langGroupIds.has(g.id)), [groups, langGroupIds]);
+  const scopedWords = useMemo(() => words.filter((w) => langGroupIds.has(w.groupId)), [words, langGroupIds]);
+  const scopedSelected = useMemo(() => selected.filter((id) => langGroupIds.has(id)), [selected, langGroupIds]);
+  const scopedCountByGroup = useMemo(() => {
+    const m = {};
+    scopedGroups.forEach((g) => { m[g.id] = 0; });
+    scopedWords.forEach((w) => { if (m[w.groupId] != null) m[w.groupId]++; });
+    return m;
+  }, [scopedGroups, scopedWords]);
 
   /* horizontal swipe between Library / Category / Study */
   const swipeRef = useRef(null);
@@ -74,22 +108,27 @@ function App() {
     if (nextIdx >= 0 && nextIdx < LW_VIEW_ORDER.length) setView(LW_VIEW_ORDER[nextIdx]);
   };
 
+  if (!lang) {
+    return <LanguageSelectView onSelect={setLang} />;
+  }
+
   return (
     <div className="app">
       <TopBar view={view} setView={setView} theme={theme}
         onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
-        direction={direction} setDirection={setDirection} />
+        direction={direction} setDirection={setDirection}
+        lang={lang} setLang={setLang} />
       <main className="content" onPointerDown={onSwipeStart} onPointerUp={onSwipeEnd}>
         {view === 'study' ? (
-          <StudyView groups={groups} words={words} selected={selected}
+          <StudyView groups={scopedGroups} words={scopedWords} selected={scopedSelected}
             groupById={groupById} onStatsChange={setStudyStats}
             direction={direction}
             goLibrary={() => setView('library')} goCategory={() => setView('category')} />
         ) : view === 'library' ? (
-          <LibraryView groups={groups} words={words} />
+          <LibraryView groups={scopedGroups} words={scopedWords} lang={lang} />
         ) : (
-          <CategoryView groups={groups} selected={selected} setSelected={setSelected}
-            countByGroup={countByGroup} goStudy={() => setView('study')} />
+          <CategoryView groups={scopedGroups} selected={scopedSelected} setSelected={setSelected}
+            countByGroup={scopedCountByGroup} goStudy={() => setView('study')} />
         )}
       </main>
       {view === 'study' && studyStats.poolCount > 0 && (
@@ -100,13 +139,13 @@ function App() {
       )}
       {view === 'category' && (
         <footer className="appfooter">
-          {selected.length} {selected.length === 1 ? 'group' : 'groups'} selected
+          {scopedSelected.length} {scopedSelected.length === 1 ? 'group' : 'groups'} selected
           <ViewDots view={view} setView={setView} />
         </footer>
       )}
       {view === 'library' && (
         <footer className="appfooter">
-          {words.length} words across {groups.filter((g) => !g.parentId).length} groups
+          {scopedWords.length} words across {scopedGroups.filter((g) => !g.parentId).length} groups
           <ViewDots view={view} setView={setView} />
         </footer>
       )}
@@ -127,9 +166,11 @@ function ViewDots({ view, setView }) {
 }
 
 /* ---------------- Top bar ---------------- */
-function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection }) {
+function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, lang, setLang }) {
   const [open, setOpen] = useState(false);
+  const [langOpen, setLangOpen] = useState(false);
   const ref = useRef(null);
+  const currentLang = LW_LANGUAGES.find((l) => l.code === lang);
 
   useEffect(() => {
     if (!open) return;
@@ -140,7 +181,7 @@ function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection }
     return () => { document.removeEventListener('mousedown', onClick); document.removeEventListener('keydown', onKey); };
   }, [open]);
 
-  const go = (v) => { setView(v); setOpen(false); };
+  const go = (v) => { setView(v); setOpen(false); setLangOpen(false); };
 
   return (
     <header className="topbar">
@@ -166,6 +207,20 @@ function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection }
             <button className="menu-item" onClick={() => setDirection(direction === 'en-ru' ? 'ru-en' : 'en-ru')} type="button">
               <Ic.Swap /> {direction === 'en-ru' ? 'EN → RU' : 'RU → EN'}
             </button>
+            <div className="menu-sep" />
+            <button className="menu-item" onClick={() => setLangOpen((o) => !o)} type="button">
+              <span>{currentLang ? currentLang.flag : '🌐'}</span> {currentLang ? currentLang.name : 'Language'}
+            </button>
+            {langOpen && (
+              <div className="menu-sub">
+                {LW_LANGUAGES.filter((l) => l.code !== lang).map((l) => (
+                  <button key={l.code} className="menu-item"
+                    onClick={() => { setLang(l.code); setLangOpen(false); setOpen(false); }} type="button">
+                    <span>{l.flag}</span> {l.name}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="menu-sep" />
             <button className="menu-item" onClick={onToggleTheme}>
               {theme === 'light' ? <Ic.Moon /> : <Ic.Sun />}
@@ -306,12 +361,14 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, directio
 
 /* ---------------- Category view ---------------- */
 function CategoryView({ groups, selected, setSelected, countByGroup, goStudy }) {
+  const leafGroups = (window.lwLeafGroups ? window.lwLeafGroups(groups) : groups)
+    .filter((g) => countByGroup[g.id] > 0);
   const toggle = (id) => {
     setSelected((sel) => sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]);
   };
-  const allOn = selected.length === groups.length && groups.length > 0;
+  const allOn = selected.length === leafGroups.length && leafGroups.length > 0;
   const toggleAll = () => {
-    setSelected(allOn ? [] : groups.map((g) => g.id));
+    setSelected(allOn ? [] : leafGroups.map((g) => g.id));
   };
   const hasWords = selected.some((id) => countByGroup[id] > 0);
 
@@ -322,8 +379,8 @@ function CategoryView({ groups, selected, setSelected, countByGroup, goStudy }) 
           <button className={'chip chip-all' + (allOn ? ' chip-on' : '')} onClick={toggleAll} type="button">
             All
           </button>
-          {groups.map((g) => (
-            <GroupChip key={g.id} group={g} count={countByGroup[g.id] || 0}
+          {leafGroups.map((g) => (
+            <GroupChip key={g.id} group={g} groups={groups} count={countByGroup[g.id] || 0}
               active={selected.includes(g.id)} onToggle={() => toggle(g.id)} />
           ))}
         </div>
@@ -336,7 +393,7 @@ function CategoryView({ groups, selected, setSelected, countByGroup, goStudy }) 
 }
 
 /* ---------------- Library view ---------------- */
-function LibraryView({ groups, words }) {
+function LibraryView({ groups, words, lang }) {
   const [wordModal, setWordModal] = useState(null); // {mode, initial?, groupId?}
   const [groupModal, setGroupModal] = useState(null); // {mode, initial?, parentGroup?}
   const [importModal, setImportModal] = useState(null); // {groupId?}
@@ -505,7 +562,7 @@ function LibraryView({ groups, words }) {
       )}
       {groupModal && (
         <Modal title={groupModal.mode === 'edit' ? 'Edit group' : (groupModal.parentGroup ? 'New subgroup' : 'New group')} onClose={() => setGroupModal(null)}>
-          <GroupForm initial={groupModal.initial} parentGroup={groupModal.parentGroup} onSave={saveGroup} onCancel={() => setGroupModal(null)} />
+          <GroupForm initial={groupModal.initial} parentGroup={groupModal.parentGroup} lang={lang} onSave={saveGroup} onCancel={() => setGroupModal(null)} />
         </Modal>
       )}
       {confirm && (
@@ -525,14 +582,20 @@ function LibraryView({ groups, words }) {
 
 /* ---------------- Group form ---------------- */
 const LW_PALETTE = ['#E8552F', '#2F9E8F', '#5B6CE8', '#C9913B', '#B7409B', '#3E8ED0', '#5BA02E', '#D6453E'];
-function GroupForm({ initial, parentGroup, onSave, onCancel }) {
+function GroupForm({ initial, parentGroup, lang, onSave, onCancel }) {
   const [name, setName] = useState(initial ? initial.name : '');
   const [color, setColor] = useState(initial ? initial.color : (parentGroup ? parentGroup.color : LW_PALETTE[0]));
   const canSave = name.trim();
   const submit = () => {
     if (!canSave) return;
     const parentId = initial ? initial.parentId : (parentGroup ? parentGroup.id : undefined);
-    onSave({ id: initial ? initial.id : window.lwUid(), name: name.trim(), color, ...(parentId ? { parentId } : {}) });
+    const groupLang = initial ? (initial.lang || 'en') : lang;
+    onSave({
+      id: initial ? initial.id : window.lwUid(),
+      name: name.trim(),
+      color,
+      ...(parentId ? { parentId } : { lang: groupLang }),
+    });
   };
   return (
     <div className="form">
@@ -560,6 +623,26 @@ function GroupForm({ initial, parentGroup, onSave, onCancel }) {
       <div className="form-foot">
         <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
         <button className="btn btn-primary" disabled={!canSave} onClick={submit}>{initial ? 'Save changes' : 'Create group'}</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Language select (first launch) ---------------- */
+function LanguageSelectView({ onSelect }) {
+  return (
+    <div className="lang-select">
+      <div className="lang-select-card">
+        <p className="lang-select-title">Какой язык вы изучаете?</p>
+        <p className="lang-select-sub">Этот выбор можно изменить позже в меню.</p>
+        <div className="lang-select-grid">
+          {LW_LANGUAGES.map((l) => (
+            <button key={l.code} className="lang-opt" onClick={() => onSelect(l.code)} type="button">
+              <span className="lang-opt-flag">{l.flag}</span>
+              <span className="lang-opt-name">{l.name}</span>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -5,7 +5,15 @@ const LW_KEYS = {
   selected: 'lw_selected_groups_v1',
   direction: 'lw_study_direction_v1',
   studySession: 'lw_study_session_v1',
+  lang: 'lw_lang_v1',
 };
+
+const LW_LANGUAGES = [
+  { code: 'en', name: 'English', flag: '🇬🇧' },
+  { code: 'de', name: 'Deutsch', flag: '🇩🇪' },
+  { code: 'ro', name: 'Română', flag: '🇷🇴' },
+  { code: 'es', name: 'Español', flag: '🇪🇸' },
+];
 
 const lwUid = () => Math.random().toString(36).slice(2, 9);
 
@@ -109,6 +117,7 @@ async function lwAutoFindPhoto(word) {
 
 Object.assign(window, {
   LW_KEYS,
+  LW_LANGUAGES,
   lwUid,
   lwLoad,
   lwSave,

@@ -89,6 +89,27 @@ button { font-family: inherit; cursor: pointer; }
 .menu-item:hover { background: var(--surface-2); }
 .menu-item.on { background: var(--surface-2); color: var(--accent); }
 .menu-sep { height: 1px; margin: 6px 4px; background: var(--border-2); }
+.menu-sub { display: flex; flex-direction: column; gap: 2px; padding-left: 10px; }
+
+/* ---------- Language select (first launch) ---------- */
+.lang-select {
+  min-height: 100dvh; display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.lang-select-card {
+  width: 100%; max-width: 420px; text-align: center;
+}
+.lang-select-title { font-family: var(--serif); font-size: 28px; font-weight: 500; margin: 0 0 6px; color: var(--ink); }
+.lang-select-sub { color: var(--muted); font-size: 14px; margin: 0 0 28px; }
+.lang-select-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.lang-opt {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  border: 1px solid var(--border); background: var(--surface);
+  border-radius: 16px; padding: 22px 14px; transition: all .16s ease;
+}
+.lang-opt:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow); }
+.lang-opt-flag { font-size: 32px; }
+.lang-opt-name { font-weight: 600; font-size: 14.5px; color: var(--ink); }
 
 .appfooter {
   text-align: center; color: var(--muted); font-size: 12px;

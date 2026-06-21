@@ -302,11 +302,13 @@ function ExampleBulb({ example, onShow }) {
 }
 
 /* ---------------- Group chip (study selector) ---------------- */
-function GroupChip({ group, count, active, onToggle }) {
+function GroupChip({ group, groups, count, active, onToggle }) {
+  const parent = group.parentId && groups ? groups.find((p) => p.id === group.parentId) : null;
+  const label = parent ? parent.name + ' / ' + group.name : group.name;
   return (
     <button className={'chip' + (active ? ' chip-on' : '')} onClick={onToggle} type="button">
       <span className="chip-dot" style={{ background: group.color }} />
-      <span className="chip-name">{group.name}</span>
+      <span className="chip-name">{label}</span>
       <span className="chip-count">{count}</span>
       {active && <Ic.Check className="chip-check" />}
     </button>
