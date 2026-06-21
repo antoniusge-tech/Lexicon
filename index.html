@@ -346,7 +346,12 @@ button { font-family: inherit; cursor: pointer; }
 
 /* ---------- Library ---------- */
 .library { width: 100%; }
-.lib-head { display: flex; align-items: flex-end; justify-content: flex-end; gap: 16px; margin-bottom: 22px; }
+.lib-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
+.lib-search { position: relative; flex: 1; min-width: 180px; max-width: 320px; }
+.lib-search .input { padding-left: 36px; }
+.lib-search-icon { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+.search-results { padding: 6px; display: flex; flex-direction: column; }
+.wrow-group { color: var(--faint); font-size: 12px; font-weight: 600; margin-top: 3px; }
 .lib-title { font-family: var(--serif); font-size: 34px; font-weight: 500; margin: 0; letter-spacing: -.02em; }
 .lib-sub { color: var(--muted); font-size: 14px; margin: 4px 0 0; }
 .groups-list { display: flex; flex-direction: column; gap: 14px; }

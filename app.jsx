@@ -342,11 +342,18 @@ function LibraryView({ groups, words }) {
   const [importModal, setImportModal] = useState(null); // {groupId?}
   const [confirm, setConfirm] = useState(null); // {kind, id, label}
   const [openGroups, setOpenGroups] = useState([]);
+  const [query, setQuery] = useState('');
 
   const toggleOpen = (id) => setOpenGroups((o) => o.includes(id) ? o.filter((x) => x !== id) : [...o, id]);
 
   const topGroups = groups.filter((g) => !g.parentId);
   const subGroupsOf = (id) => groups.filter((g) => g.parentId === id);
+  const groupById = (id) => groups.find((g) => g.id === id);
+
+  const q = query.trim().toLowerCase();
+  const searchResults = q
+    ? words.filter((w) => w.word.toLowerCase().includes(q) || (w.tr && w.tr.toLowerCase().includes(q)))
+    : null;
 
   const saveWord = (w) => {
     window.lwSetDoc(window.LW_COLLECTIONS.words, w);
@@ -375,34 +382,50 @@ function LibraryView({ groups, words }) {
     setConfirm(null);
   };
 
-  const renderWords = (items, hue, showEmptyHint = true) => (
+  const renderWords = (items, hue, showEmptyHint = true, showGroup = false) => (
     <div className="word-rows">
       {items.length === 0 && showEmptyHint && <div className="row-empty">No words yet — add the first one.</div>}
-      {items.map((w) => (
-        <div className="wrow" key={w.id}>
-          <div className="wrow-thumb">{w.photo ? <img className="card-photo-img" src={w.photo} alt="" /> : <PhotoFill word={w.word} hue={hue} />}</div>
-          <div className="wrow-main">
-            <div className="wrow-top"><span className="wrow-word">{w.word}</span><span className="wrow-ipa">{w.ipa}</span></div>
-            <div className="wrow-tr">{w.tr}</div>
+      {items.map((w) => {
+        const g = showGroup ? groupById(w.groupId) : null;
+        return (
+          <div className="wrow" key={w.id}>
+            <div className="wrow-thumb">{w.photo ? <img className="card-photo-img" src={w.photo} alt="" /> : <PhotoFill word={w.word} hue={showGroup ? (g ? g.color : hue) : hue} />}</div>
+            <div className="wrow-main">
+              <div className="wrow-top"><span className="wrow-word">{w.word}</span><span className="wrow-ipa">{w.ipa}</span></div>
+              <div className="wrow-tr">{w.tr}</div>
+              {showGroup && g && <div className="wrow-group">{g.name}</div>}
+            </div>
+            <div className="wrow-tools">
+              <button className="icon-btn sm" onClick={() => setWordModal({ mode: 'edit', initial: w })} aria-label="Edit"><Ic.Edit /></button>
+              <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'word', id: w.id, label: w.word })} aria-label="Delete"><Ic.Trash /></button>
+            </div>
           </div>
-          <div className="wrow-tools">
-            <button className="icon-btn sm" onClick={() => setWordModal({ mode: 'edit', initial: w })} aria-label="Edit"><Ic.Edit /></button>
-            <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'word', id: w.id, label: w.word })} aria-label="Delete"><Ic.Trash /></button>
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 
   return (
     <div className="library">
       <div className="lib-head">
+        <div className="lib-search">
+          <Ic.Search className="lib-search-icon" />
+          <input className="input" type="text" placeholder="Search words or translations…"
+            value={query} onChange={(e) => setQuery(e.target.value)} />
+        </div>
         <div className="lib-head-actions">
           <button className="btn btn-soft" onClick={() => setImportModal({})}><Ic.Plus /> Import</button>
           <button className="btn btn-primary" onClick={() => setGroupModal({ mode: 'new' })}><Ic.Plus /> New group</button>
         </div>
       </div>
 
+      {searchResults ? (
+        <div className="search-results">
+          {searchResults.length === 0
+            ? <div className="row-empty">No words match "{query.trim()}".</div>
+            : renderWords(searchResults, null, false, true)}
+        </div>
+      ) : (
       <div className="groups-list">
         {topGroups.map((g) => {
           const items = words.filter((w) => w.groupId === g.id);
@@ -466,6 +489,7 @@ function LibraryView({ groups, words }) {
           );
         })}
       </div>
+      )}
 
       {wordModal && (
         <Modal title={wordModal.mode === 'edit' ? 'Edit word' : 'New word'} onClose={() => setWordModal(null)}>
