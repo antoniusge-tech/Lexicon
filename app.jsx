@@ -11,6 +11,8 @@ function shuffle(arr) {
   return a;
 }
 
+const LW_VIEW_ORDER = ['study', 'category', 'library'];
+
 function App() {
   const [theme, setTheme] = useState(() => window.lwLoad(LW_KEYS.theme, 'light'));
   const [groups, setGroups] = useState([]);
@@ -54,12 +56,30 @@ function App() {
     return m;
   }, [groups, words]);
 
+  /* horizontal swipe between Library / Category / Study */
+  const swipeRef = useRef(null);
+  const onSwipeStart = (e) => {
+    if (e.target.closest('.card-scene, .chip, .btn, .input, button, .grp-toggle')) return;
+    swipeRef.current = { startX: e.clientX, startY: e.clientY };
+  };
+  const onSwipeEnd = (e) => {
+    const s = swipeRef.current;
+    swipeRef.current = null;
+    if (!s) return;
+    const dx = e.clientX - s.startX;
+    const dy = e.clientY - s.startY;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return;
+    const idx = LW_VIEW_ORDER.indexOf(view);
+    const nextIdx = dx < 0 ? idx + 1 : idx - 1;
+    if (nextIdx >= 0 && nextIdx < LW_VIEW_ORDER.length) setView(LW_VIEW_ORDER[nextIdx]);
+  };
+
   return (
     <div className="app">
       <TopBar view={view} setView={setView} theme={theme}
         onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
         direction={direction} setDirection={setDirection} />
-      <main className="content">
+      <main className="content" onPointerDown={onSwipeStart} onPointerUp={onSwipeEnd}>
         {view === 'study' ? (
           <StudyView groups={groups} words={words} selected={selected}
             groupById={groupById} onStatsChange={setStudyStats}
@@ -75,18 +95,33 @@ function App() {
       {view === 'study' && studyStats.poolCount > 0 && (
         <footer className="appfooter">
           {studyStats.knownCount} / {studyStats.poolCount} known · {studyStats.poolCount} words · {studyStats.groupCount} {studyStats.groupCount === 1 ? 'group' : 'groups'}
+          <ViewDots view={view} setView={setView} />
         </footer>
       )}
       {view === 'category' && (
         <footer className="appfooter">
           {selected.length} {selected.length === 1 ? 'group' : 'groups'} selected
+          <ViewDots view={view} setView={setView} />
         </footer>
       )}
       {view === 'library' && (
         <footer className="appfooter">
           {words.length} words across {groups.filter((g) => !g.parentId).length} groups
+          <ViewDots view={view} setView={setView} />
         </footer>
       )}
+    </div>
+  );
+}
+
+/* ---------------- View position dots (swipe hint) ---------------- */
+function ViewDots({ view, setView }) {
+  const idx = LW_VIEW_ORDER.indexOf(view);
+  return (
+    <div className="view-dots">
+      {LW_VIEW_ORDER.map((v, i) => (
+        <button key={v} className={'view-dot' + (i === idx ? ' on' : '')} aria-label={v} onClick={() => setView(v)} type="button" />
+      ))}
     </div>
   );
 }
@@ -272,18 +307,13 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, directio
 /* ---------------- Category view ---------------- */
 function CategoryView({ groups, selected, setSelected, countByGroup, goStudy }) {
   const toggle = (id) => {
-    const wasEmpty = selected.length === 0;
-    const turningOn = !selected.includes(id);
     setSelected((sel) => sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]);
-    if (wasEmpty && turningOn && countByGroup[id] > 0) goStudy();
   };
   const allOn = selected.length === groups.length && groups.length > 0;
   const toggleAll = () => {
-    const wasEmpty = selected.length === 0;
-    const turningOn = !allOn;
     setSelected(allOn ? [] : groups.map((g) => g.id));
-    if (wasEmpty && turningOn && groups.some((g) => countByGroup[g.id] > 0)) goStudy();
   };
+  const hasWords = selected.some((id) => countByGroup[id] > 0);
 
   return (
     <div className="category">
@@ -298,6 +328,9 @@ function CategoryView({ groups, selected, setSelected, countByGroup, goStudy }) 
           ))}
         </div>
       </div>
+      <button className="btn btn-primary btn-cta-study" disabled={!hasWords} onClick={goStudy}>
+        Start studying
+      </button>
     </div>
   );
 }

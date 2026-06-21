@@ -262,6 +262,12 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, directio
         {/* EXAMPLE */}
         <div className="card-face card-example">
           <div className="example-text">{entry.example}</div>
+          {entry.exampleTr && entry.exampleTr.trim() && (
+            <>
+              <hr className="example-divider" />
+              <div className="example-text-tr">{entry.exampleTr}</div>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -386,6 +392,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
   const [ipa, setIpa] = React.useState(initial ? initial.ipa : '');
   const [tr, setTr] = React.useState(initial ? initial.tr : '');
   const [example, setExample] = React.useState(initial ? (initial.example || '') : '');
+  const [exampleTr, setExampleTr] = React.useState(initial ? (initial.exampleTr || '') : '');
   const [photo, setPhoto] = React.useState(initial ? (initial.photo || '') : '');
   const [autoState, setAutoState] = React.useState('idle'); // 'idle' | 'loading' | 'notfound' | 'error'
   const leafGroups = lwLeafGroups(groups);
@@ -402,6 +409,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
       ipa: ipa.trim(),
       tr: tr.trim(),
       example: example.trim(),
+      exampleTr: exampleTr.trim(),
       photo,
     });
   };
@@ -447,6 +455,11 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
         <span className="field-label">Example sentence</span>
         <input className="input" value={example} placeholder="e.g. We went on a long journey."
           onChange={(e) => setExample(e.target.value)} />
+      </label>
+      <label className="field">
+        <span className="field-label">Example translation</span>
+        <input className="input" value={exampleTr} placeholder="перевод примера"
+          onChange={(e) => setExampleTr(e.target.value)} />
       </label>
 
       <div className="field">
@@ -509,14 +522,17 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
 /* ---------------- Import form (bulk text) ---------------- */
 function lwParseImportLine(line) {
   const parts = line.split('|').map((p) => p.trim());
-  if (parts.length >= 4) {
-    return { word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3] };
+  if (parts.length >= 5) {
+    return { word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3], exampleTr: parts[4] };
+  }
+  if (parts.length === 4) {
+    return { word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3], exampleTr: '' };
   }
   if (parts.length === 3) {
-    return { word: parts[0], ipa: parts[1], tr: parts[2], example: '' };
+    return { word: parts[0], ipa: parts[1], tr: parts[2], example: '', exampleTr: '' };
   }
   if (parts.length === 2) {
-    return { word: parts[0], ipa: '', tr: parts[1], example: '' };
+    return { word: parts[0], ipa: '', tr: parts[1], example: '', exampleTr: '' };
   }
   return null;
 }
@@ -554,6 +570,7 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
       ipa: r.ipa,
       tr: r.tr,
       example: r.example || '',
+      exampleTr: r.exampleTr || '',
     }));
     onImport(items);
   };
@@ -561,8 +578,8 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
   return (
     <div className="form">
       <p className="field-hint">
-        Одна строка — одно слово. Формат: <code>слово | транскрипция | перевод | пример использования</code>
-        {' '}(пример опционален), или <code>слово || перевод</code> (без транскрипции), или <code>слово | перевод</code>.
+        Одна строка — одно слово. Формат: <code>слово | транскрипция | перевод | пример использования | перевод примера</code>
+        {' '}(пример и его перевод опциональны), или <code>слово || перевод</code> (без транскрипции), или <code>слово | перевод</code>.
       </p>
       <label className="field">
         <div className="field-label-row">
@@ -573,7 +590,7 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
           <input ref={fileInputRef} type="file" accept=".txt,text/plain" style={{ display: 'none' }} onChange={handleFile} />
         </div>
         <textarea className="input mono" rows={8} value={text} autoFocus
-          placeholder={'journey | /ˈdʒɜː.ni/ | путешествие | We went on a long journey.\nbook || книга'}
+          placeholder={'journey | /ˈdʒɜː.ni/ | путешествие | We went on a long journey. | Мы отправились в долгое путешествие.\nbook || книга'}
           onChange={(e) => setText(e.target.value)} />
       </label>
 
