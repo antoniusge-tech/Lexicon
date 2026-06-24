@@ -11,7 +11,7 @@ function shuffle(arr) {
   return a;
 }
 
-const LW_VIEW_ORDER = ['study', 'category', 'library'];
+const LW_VIEW_ORDER = ['study', 'choice', 'category', 'library'];
 
 function App() {
   const [theme, setTheme] = useState(() => window.lwLoad(LW_KEYS.theme, 'light'));
@@ -20,6 +20,7 @@ function App() {
   const [view, setView] = useState('study');
   const [selected, setSelected] = useState(() => window.lwLoad(LW_KEYS.selected, null) || []);
   const [direction, setDirection] = useState(() => window.lwLoad(LW_KEYS.direction, 'en-ru'));
+  const [hintMode, setHintMode] = useState(() => window.lwLoad(LW_KEYS.hintMode, false));
   const [studyStats, setStudyStats] = useState({ knownCount: 0, poolCount: 0, groupCount: 0 });
   const [lang, setLang] = useState(() => window.lwLoad(LW_KEYS.lang, null));
 
@@ -57,6 +58,7 @@ function App() {
   useEffect(() => { document.documentElement.dataset.theme = theme; window.lwSave(LW_KEYS.theme, theme); }, [theme]);
   useEffect(() => { window.lwSave(LW_KEYS.selected, selected); }, [selected]);
   useEffect(() => { window.lwSave(LW_KEYS.direction, direction); }, [direction]);
+  useEffect(() => { window.lwSave(LW_KEYS.hintMode, hintMode); }, [hintMode]);
   useEffect(() => { if (lang) window.lwSave(LW_KEYS.lang, lang); }, [lang]);
 
   /* keep selection valid if a group is deleted (skip until groups have loaded) */
@@ -117,11 +119,16 @@ function App() {
       <TopBar view={view} setView={setView} theme={theme}
         onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
         direction={direction} setDirection={setDirection}
+        hintMode={hintMode} setHintMode={setHintMode}
         lang={lang} setLang={setLang} />
       <main className="content" onPointerDown={onSwipeStart} onPointerUp={onSwipeEnd}>
         {view === 'study' ? (
           <StudyView groups={scopedGroups} words={scopedWords} selected={scopedSelected}
             groupById={groupById} onStatsChange={setStudyStats}
+            direction={direction} hintMode={hintMode}
+            goLibrary={() => setView('library')} goCategory={() => setView('category')} />
+        ) : view === 'choice' ? (
+          <ChoiceView words={scopedWords} selected={scopedSelected} groupById={groupById}
             direction={direction}
             goLibrary={() => setView('library')} goCategory={() => setView('category')} />
         ) : view === 'library' ? (
@@ -134,6 +141,12 @@ function App() {
       {view === 'study' && studyStats.poolCount > 0 && (
         <footer className="appfooter">
           {studyStats.knownCount} / {studyStats.poolCount} known · {studyStats.poolCount} words · {studyStats.groupCount} {studyStats.groupCount === 1 ? 'group' : 'groups'}
+          <ViewDots view={view} setView={setView} />
+        </footer>
+      )}
+      {view === 'choice' && (
+        <footer className="appfooter">
+          {scopedWords.filter((w) => scopedSelected.includes(w.groupId)).length} words · {scopedSelected.length} {scopedSelected.length === 1 ? 'group' : 'groups'}
           <ViewDots view={view} setView={setView} />
         </footer>
       )}
@@ -166,7 +179,7 @@ function ViewDots({ view, setView }) {
 }
 
 /* ---------------- Top bar ---------------- */
-function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, lang, setLang }) {
+function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, hintMode, setHintMode, lang, setLang }) {
   const [open, setOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const ref = useRef(null);
@@ -197,6 +210,9 @@ function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, 
             <button className={'menu-item' + (view === 'study' ? ' on' : '')} onClick={() => go('study')}>
               <Ic.Cards /> Study
             </button>
+            <button className={'menu-item' + (view === 'choice' ? ' on' : '')} onClick={() => go('choice')}>
+              <Ic.ListCheck /> Choice
+            </button>
             <button className={'menu-item' + (view === 'category' ? ' on' : '')} onClick={() => go('category')}>
               <Ic.Tag /> Category
             </button>
@@ -206,6 +222,9 @@ function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, 
             <div className="menu-sep" />
             <button className="menu-item" onClick={() => setDirection(direction === 'en-ru' ? 'ru-en' : 'en-ru')} type="button">
               <Ic.Swap /> {direction === 'en-ru' ? 'EN → RU' : 'RU → EN'}
+            </button>
+            <button className={'menu-item' + (hintMode ? ' on' : '')} onClick={() => setHintMode((h) => !h)} type="button">
+              <Ic.Bulb /> Подсказка {hintMode ? 'вкл' : 'выкл'}
             </button>
             <div className="menu-sep" />
             <button className="menu-item" onClick={() => setLangOpen((o) => !o)} type="button">
@@ -234,7 +253,7 @@ function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, 
 }
 
 /* ---------------- Study view ---------------- */
-function StudyView({ groups, words, selected, groupById, onStatsChange, direction, goLibrary, goCategory }) {
+function StudyView({ groups, words, selected, groupById, onStatsChange, direction, hintMode, goLibrary, goCategory }) {
   const pool = useMemo(() => words.filter((w) => selected.includes(w.groupId)), [words, selected]);
 
   const [queue, setQueue] = useState([]);
@@ -333,7 +352,7 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, directio
     <div className="study">
       <div className="stage">
         {entry ? (
-          <Flashcard entry={entry} group={group} flipped={flipped} direction={direction}
+          <Flashcard entry={entry} group={group} flipped={flipped} direction={direction} hintMode={hintMode}
             onFlip={() => setFlipped((f) => !f)} onSwipe={mark} onShuffle={shuffleDeck} />
         ) : allDone ? (
           <div className="empty-card">
@@ -355,6 +374,127 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, directio
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Choice view (multiple-choice translation quiz) ---------------- */
+const CHOICE_OPTIONS = 4;
+const CHOICE_ADVANCE_DELAY = 700;
+
+function ChoiceView({ words, selected, groupById, direction, goLibrary, goCategory }) {
+  const pool = useMemo(() => words.filter((w) => selected.includes(w.groupId)), [words, selected]);
+
+  const [queue, setQueue] = useState([]);
+  const [current, setCurrent] = useState(null);
+  const [optionIds, setOptionIds] = useState([]);
+  const [pickedId, setPickedId] = useState(null);
+  const [correctCount, setCorrectCount] = useState(0);
+  const [answeredCount, setAnsweredCount] = useState(0);
+  const advanceTimer = useRef(null);
+
+  const buildOptions = useCallback((entryId) => {
+    const others = shuffle(pool.filter((w) => w.id !== entryId)).slice(0, CHOICE_OPTIONS - 1);
+    return shuffle([entryId, ...others.map((w) => w.id)]);
+  }, [pool]);
+
+  const startRound = useCallback((id) => {
+    setPickedId(null);
+    setCurrent(id);
+    setOptionIds(id ? buildOptions(id) : []);
+  }, [buildOptions]);
+
+  const poolKey = pool.map((w) => w.id).join(',');
+  useEffect(() => {
+    const ids = shuffle(pool.map((w) => w.id));
+    setCorrectCount(0);
+    setAnsweredCount(0);
+    setQueue(ids.slice(1));
+    startRound(ids[0] || null);
+    return () => { if (advanceTimer.current) clearTimeout(advanceTimer.current); };
+    // eslint-disable-next-line
+  }, [poolKey]);
+
+  const advance = useCallback(() => {
+    setQueue((q) => {
+      const nq = q.slice();
+      const id = nq.shift();
+      startRound(id || null);
+      return nq;
+    });
+  }, [startRound]);
+
+  const pick = useCallback((id) => {
+    if (pickedId || !current) return;
+    setPickedId(id);
+    setAnsweredCount((n) => n + 1);
+    if (id === current) setCorrectCount((n) => n + 1);
+    advanceTimer.current = setTimeout(advance, CHOICE_ADVANCE_DELAY);
+  }, [pickedId, current, advance]);
+
+  const restart = useCallback(() => {
+    const ids = shuffle(pool.map((w) => w.id));
+    setCorrectCount(0);
+    setAnsweredCount(0);
+    setQueue(ids.slice(1));
+    startRound(ids[0] || null);
+  }, [pool, startRound]);
+
+  const entry = current ? words.find((w) => w.id === current) : null;
+  const group = entry ? groupById[entry.groupId] : null;
+  const allDone = pool.length > 0 && !entry;
+  const askEnglish = direction === 'ru-en'; // prompt shows translation, options are English words
+
+  return (
+    <div className="choice">
+      {entry ? (
+        <div className="choice-card">
+          {group && (
+            <div className="choice-tag"><span className="dot" style={{ background: group.color }} />{group.name}</div>
+          )}
+          <div className="choice-prompt-row">
+            <div className="choice-prompt">{askEnglish ? entry.tr : entry.word}</div>
+            {!askEnglish && <SpeakButton word={entry.word} />}
+          </div>
+          {!askEnglish && entry.ipa && <div className="choice-ipa">{entry.ipa}</div>}
+          <div className="choice-options">
+            {optionIds.map((id) => {
+              const opt = words.find((w) => w.id === id);
+              if (!opt) return null;
+              const label = askEnglish ? opt.word : opt.tr;
+              let cls = 'choice-opt';
+              if (pickedId) {
+                if (id === current) cls += ' choice-opt-correct';
+                else if (id === pickedId) cls += ' choice-opt-wrong';
+              }
+              return (
+                <button key={id} type="button" className={cls} disabled={!!pickedId} onClick={() => pick(id)}>
+                  <span className="choice-opt-label">{label}</span>
+                  {askEnglish && <SpeakButton word={opt.word} />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : allDone ? (
+        <div className="empty-card">
+          <Ic.Check width="30" height="30" />
+          <p className="empty-title">Раунд завершён!</p>
+          <p className="empty-sub">{correctCount} / {answeredCount} correct</p>
+          <button className="btn btn-primary" onClick={restart}><Ic.Shuffle /> Начать заново</button>
+        </div>
+      ) : (
+        <div className="empty-card">
+          <Ic.ListCheck width="30" height="30" />
+          <p className="empty-title">{pool.length === 0 && selected.length === 0 ? 'Select a group to begin' : 'No words here yet'}</p>
+          <p className="empty-sub">{selected.length === 0 ? 'Pick one or more groups in Category.' : 'Add words to these groups in the Library.'}</p>
+          {selected.length === 0 ? (
+            <button className="btn btn-primary" onClick={goCategory}><Ic.Tag /> Choose categories</button>
+          ) : (
+            <button className="btn btn-primary" onClick={goLibrary}><Ic.Plus /> Add words</button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

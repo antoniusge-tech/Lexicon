@@ -161,6 +161,39 @@ button { font-family: inherit; cursor: pointer; }
 .chip-all { font-weight: 700; }
 .chip-all.chip-on { color: var(--accent); }
 
+/* ---------- Choice (multiple-choice quiz) ---------- */
+.choice { display: flex; justify-content: center; width: 100%; padding: clamp(8px, 3vw, 24px) 0; }
+.choice-card {
+  width: min(480px, 100%); display: flex; flex-direction: column; align-items: center; gap: 26px;
+  background: var(--surface); border: 1px solid var(--border-2); border-radius: 22px;
+  box-shadow: var(--shadow-card); padding: 40px 30px; position: relative;
+}
+.choice-tag {
+  position: absolute; top: 14px; left: 14px;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  border: 1px solid var(--border-2); border-radius: 999px;
+  padding: 4px 10px; font-size: 11.5px; font-weight: 600; color: var(--ink);
+}
+.choice-tag .dot { width: 7px; height: 7px; border-radius: 50%; }
+.choice-prompt-row { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 18px; width: 100%; }
+.choice-prompt-row .card-speak { position: static; }
+.choice-prompt { font-family: var(--serif); font-size: 34px; font-weight: 500; text-align: center; line-height: 1.15; overflow-wrap: break-word; }
+.choice-ipa { font-family: var(--serif); font-style: italic; font-size: 16px; color: var(--muted); text-align: center; margin-top: -10px; }
+.choice-options { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.choice-opt {
+  width: 100%; border: 1px solid var(--border); background: var(--surface-2); color: var(--ink);
+  font-size: 15px; font-weight: 600; padding: 13px 16px; border-radius: 12px; text-align: left;
+  transition: all .15s ease;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+}
+.choice-opt-label { flex: 1; }
+.choice-opt .card-speak { position: static; flex: 0 0 auto; }
+.choice-opt:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); }
+.choice-opt:disabled { cursor: default; }
+.choice-opt-correct { border-color: #5BA02E; background: color-mix(in srgb, #5BA02E 16%, var(--surface-2)); color: #5BA02E; }
+.choice-opt-wrong { border-color: #D6453E; background: color-mix(in srgb, #D6453E 16%, var(--surface-2)); color: #D6453E; }
+
 /* ---------- Stage / card ---------- */
 .stage { width: 100%; display: grid; place-items: center; min-height: 460px; position: relative; z-index: 0; }
 .card-scene {
