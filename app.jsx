@@ -639,6 +639,9 @@ function AdminAllDataView({ data, onChanged }) {
   const [wordModal, setWordModal] = useState(null); // {initial}
   const [groupModal, setGroupModal] = useState(null); // {initial}
   const [confirm, setConfirm] = useState(null); // {kind, id, label}
+  const [openGroups, setOpenGroups] = useState([]);
+
+  const toggleOpen = (id) => setOpenGroups((o) => o.includes(id) ? o.filter((x) => x !== id) : [...o, id]);
 
   const words = data ? data.words : [];
   const wordsByGroup = useMemo(() => {
@@ -696,19 +699,23 @@ function AdminAllDataView({ data, onChanged }) {
 
   return (
     <div className="groups-list">
-      {groups.map((g) => (
+      {groups.map((g) => {
+        const open = openGroups.includes(g.id);
+        return (
         <section className="grp" key={g.id}>
           <header className="grp-head">
-            <div className="grp-toggle" style={{ flex: 1 }}>
+            <button className="grp-toggle" onClick={() => toggleOpen(g.id)}>
+              <Ic.Chevron style={{ transform: open ? 'none' : 'rotate(-90deg)', transition: 'transform .2s' }} />
               <span className="grp-name">{g.name}</span>
               <span className="grp-count">{(wordsByGroup[g.id] || []).length} words · добавил: {ownerLabel(g)}</span>
-            </div>
+            </button>
             <div className="grp-tools">
               {!g.shared && <button className="btn btn-soft sm" onClick={() => makeGroupShared(g)} type="button">Сделать общим</button>}
               <button className="icon-btn sm" onClick={() => setGroupModal({ initial: g })} aria-label="Edit"><Ic.Edit /></button>
               <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'group', id: g.id, label: g.name })} aria-label="Delete"><Ic.Trash /></button>
             </div>
           </header>
+          {open && (
           <div className="word-rows">
             {(wordsByGroup[g.id] || []).map((w) => (
               <div className="wrow" key={w.id}>
@@ -727,8 +734,10 @@ function AdminAllDataView({ data, onChanged }) {
               </div>
             ))}
           </div>
+          )}
         </section>
-      ))}
+        );
+      })}
 
       {wordModal && (
         <Modal title="Edit word" onClose={() => setWordModal(null)}>
