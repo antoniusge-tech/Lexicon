@@ -22,7 +22,6 @@ function App() {
   const [view, setView] = useState('study');
   const [selected, setSelected] = useState(() => window.lwLoad(LW_KEYS.selected, null) || []);
   const [direction, setDirection] = useState(() => window.lwLoad(LW_KEYS.direction, 'en-ru'));
-  const [hintMode, setHintMode] = useState(() => window.lwLoad(LW_KEYS.hintMode, false));
   const [studyStats, setStudyStats] = useState({ knownCount: 0, poolCount: 0, groupCount: 0 });
 
   /* auth state */
@@ -52,7 +51,6 @@ function App() {
   useEffect(() => { document.documentElement.dataset.theme = theme; window.lwSave(LW_KEYS.theme, theme); }, [theme]);
   useEffect(() => { window.lwSave(LW_KEYS.selected, selected); }, [selected]);
   useEffect(() => { window.lwSave(LW_KEYS.direction, direction); }, [direction]);
-  useEffect(() => { window.lwSave(LW_KEYS.hintMode, hintMode); }, [hintMode]);
 
   /* default selection: everything, once groups load (only if user never picked) */
   const hasSavedSelection = useRef(window.lwLoad(LW_KEYS.selected, null) != null);
@@ -117,14 +115,13 @@ function App() {
       <TopBar view={view} setView={setView} theme={theme}
         onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
         direction={direction} setDirection={setDirection}
-        hintMode={hintMode} setHintMode={setHintMode}
         lang={lang} setLang={setLang}
         username={userDoc.username} role={userDoc.role} onLogout={() => window.lwLogout()} />
       <main className="content" onPointerDown={onSwipeStart} onPointerUp={onSwipeEnd}>
         {view === 'study' ? (
           <StudyView groups={scopedGroups} words={scopedWords} selected={scopedSelected}
             groupById={groupById} onStatsChange={setStudyStats}
-            direction={direction} hintMode={hintMode}
+            direction={direction}
             goLibrary={() => setView('library')} goCategory={() => setView('category')} />
         ) : view === 'choice' ? (
           <ChoiceView words={scopedWords} selected={scopedSelected} groupById={groupById}
@@ -182,7 +179,7 @@ function ViewDots({ view, setView }) {
 /* ---------------- Top bar ---------------- */
 const LW_ROLE_LABEL = { admin: 'Admin', premium: 'Premium', user: 'User' };
 
-function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, hintMode, setHintMode, lang, setLang, username, role, onLogout }) {
+function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, lang, setLang, username, role, onLogout }) {
   const [open, setOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const ref = useRef(null);
@@ -226,9 +223,6 @@ function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, 
             <button className="menu-item" onClick={() => setDirection(direction === 'en-ru' ? 'ru-en' : 'en-ru')} type="button">
               <Ic.Swap /> {direction === 'en-ru' ? 'EN → RU' : 'RU → EN'}
             </button>
-            <button className={'menu-item' + (hintMode ? ' on' : '')} onClick={() => setHintMode((h) => !h)} type="button">
-              <Ic.Bulb /> Подсказка {hintMode ? 'вкл' : 'выкл'}
-            </button>
             <div className="menu-sep" />
             <button className="menu-item" onClick={() => setLangOpen((o) => !o)} type="button">
               <span>{currentLang ? currentLang.flag : '🌐'}</span> {currentLang ? currentLang.name : 'Language'}
@@ -271,7 +265,7 @@ function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, 
 }
 
 /* ---------------- Study view ---------------- */
-function StudyView({ groups, words, selected, groupById, onStatsChange, direction, hintMode, goLibrary, goCategory }) {
+function StudyView({ groups, words, selected, groupById, onStatsChange, direction, goLibrary, goCategory }) {
   const pool = useMemo(() => words.filter((w) => selected.includes(w.groupId)), [words, selected]);
 
   const [queue, setQueue] = useState([]);
@@ -370,7 +364,7 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, directio
     <div className="study">
       <div className="stage">
         {entry ? (
-          <Flashcard entry={entry} group={group} flipped={flipped} direction={direction} hintMode={hintMode}
+          <Flashcard entry={entry} group={group} flipped={flipped} direction={direction}
             onFlip={() => setFlipped((f) => !f)} onSwipe={mark} onShuffle={shuffleDeck} />
         ) : allDone ? (
           <div className="empty-card">
@@ -681,6 +675,23 @@ function AdminAllDataView({ data, onChanged }) {
     onChanged();
   };
 
+  const makeWordShared = (w) => {
+    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, shared: true });
+    onChanged();
+  };
+  const makeGroupShared = (g) => {
+    const subGroupIds = groups.filter((sg) => sg.parentId === g.id).map((sg) => sg.id);
+    [g, ...groups.filter((sg) => subGroupIds.includes(sg.id))].forEach((grp) => {
+      window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...grp, shared: true });
+    });
+    [g.id, ...subGroupIds].forEach((groupId) => {
+      (wordsByGroup[groupId] || []).forEach((w) => {
+        window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, shared: true });
+      });
+    });
+    onChanged();
+  };
+
   if (groups.length === 0) return <p className="row-empty">Категорий пока нет.</p>;
 
   return (
@@ -693,6 +704,7 @@ function AdminAllDataView({ data, onChanged }) {
               <span className="grp-count">{(wordsByGroup[g.id] || []).length} words · добавил: {ownerLabel(g)}</span>
             </div>
             <div className="grp-tools">
+              {!g.shared && <button className="btn btn-soft sm" onClick={() => makeGroupShared(g)} type="button">Сделать общим</button>}
               <button className="icon-btn sm" onClick={() => setGroupModal({ initial: g })} aria-label="Edit"><Ic.Edit /></button>
               <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'group', id: g.id, label: g.name })} aria-label="Delete"><Ic.Trash /></button>
             </div>
@@ -708,6 +720,7 @@ function AdminAllDataView({ data, onChanged }) {
                 </div>
                 <span className="grp-count">добавил: {ownerLabel(w)}</span>
                 <div className="wrow-tools">
+                  {!w.shared && <button className="btn btn-soft sm" onClick={() => makeWordShared(w)} type="button">Сделать общим</button>}
                   <button className="icon-btn sm" onClick={() => setWordModal({ initial: w })} aria-label="Edit"><Ic.Edit /></button>
                   <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'word', id: w.id, label: w.word })} aria-label="Delete"><Ic.Trash /></button>
                 </div>

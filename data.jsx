@@ -5,7 +5,6 @@ const LW_KEYS = {
   selected: 'lw_selected_groups_v1',
   direction: 'lw_study_direction_v1',
   studySession: 'lw_study_session_v1',
-  hintMode: 'lw_hint_mode_v1',
 };
 
 const LW_LANGUAGES = [

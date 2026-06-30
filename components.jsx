@@ -105,39 +105,11 @@ function PhotoFill({ word, hue }) {
 
 /* ---------------- Flashcard ---------------- */
 const SWIPE_THRESHOLD = 100;
-const HINT_REVEAL_RATIO = 0.2;
 
-/* anything but whitespace/brackets/slashes counts as a maskable "letter" (covers IPA symbols too) */
-const HINT_MASKABLE = /[^\s/\[\].,!?'"-]/;
-
-/* masks ~20% of letters at random, keeping spaces/punctuation visible, for the hint mode */
-function maskHintText(text) {
-  if (!text) return text;
-  const letterIdx = [];
-  for (let i = 0; i < text.length; i++) {
-    if (HINT_MASKABLE.test(text[i])) letterIdx.push(i);
-  }
-  if (!letterIdx.length) return text;
-  const wantReveal = Math.max(1, Math.round(letterIdx.length * HINT_REVEAL_RATIO));
-  const pool = letterIdx.slice();
-  const revealed = new Set();
-  while (revealed.size < wantReveal && pool.length) {
-    const j = Math.floor(Math.random() * pool.length);
-    revealed.add(pool.splice(j, 1)[0]);
-  }
-  return text.split('').map((ch, i) => (revealed.has(i) ? ch : (HINT_MASKABLE.test(ch) ? '_' : ch))).join('');
-}
-
-function HintedText({ text }) {
-  const masked = React.useMemo(() => maskHintText(text), [text]);
-  return masked;
-}
-
-function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, direction = 'en-ru', hintMode = false }) {
+function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, direction = 'en-ru' }) {
   const [drag, setDrag] = React.useState(null); // {startX, startY, dx, dy} or null
   const [flyDir, setFlyDir] = React.useState(null); // 'known' | 'unknown' | null
   const [showExample, setShowExample] = React.useState(false);
-  const [revealed, setRevealed] = React.useState(false);
   const dragRef = React.useRef(null);
   dragRef.current = drag;
 
@@ -145,17 +117,7 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, directio
     setFlyDir(null);
     setDrag(null);
     setShowExample(false);
-    setRevealed(false);
   }, [entry && entry.id]);
-
-  React.useEffect(() => { setRevealed(false); }, [flipped]);
-
-  /* auto-reveal masked letters after 30s so the hint doesn't block forever */
-  React.useEffect(() => {
-    if (!hintMode || !flipped || revealed) return;
-    const t = setTimeout(() => setRevealed(true), 30000);
-    return () => clearTimeout(t);
-  }, [hintMode, flipped, revealed, entry && entry.id]);
 
   if (!entry) return null;
   const hue = group ? group.color : '#E8552F';
@@ -197,7 +159,6 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, directio
   const onClick = () => {
     if (drag && drag.moved) return;
     if (showExample) { setShowExample(false); return; }
-    if (hintMode && flipped && !revealed) { setRevealed(true); return; }
     onFlip();
   };
 
@@ -269,10 +230,10 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, directio
             <div className="card-face card-back" style={{ '--hue': hue }}>
               <div className="back-label">word</div>
               <div className="card-tr">
-                {hintMode && !revealed ? <HintedText text={entry.word} /> : entry.word}
+                {entry.word}
               </div>
               <div className="back-word">
-                {hintMode && !revealed ? <HintedText text={entry.ipa} /> : entry.ipa}
+                {entry.ipa}
               </div>
               {group && (
                 <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
@@ -304,7 +265,7 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, directio
             <div className="card-face card-back" style={{ '--hue': hue }}>
               <div className="back-label">translation</div>
               <div className="card-tr">
-                {hintMode && !revealed ? <HintedText text={entry.tr} /> : entry.tr}
+                {entry.tr}
               </div>
               <div className="back-word">{entry.word} <span className="back-ipa">{entry.ipa}</span></div>
               {group && (
