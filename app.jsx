@@ -15,6 +15,8 @@ const LW_VIEW_ORDER = ['study', 'choice', 'category', 'library'];
 
 function App() {
   const [theme, setTheme] = useState(() => window.lwLoad(LW_KEYS.theme, 'light'));
+  const [authUser, setAuthUser] = useState(undefined); // undefined = loading, null = signed out
+  const [userDoc, setUserDoc] = useState(null);
   const [groups, setGroups] = useState([]);
   const [words, setWords] = useState([]);
   const [view, setView] = useState('study');
@@ -22,44 +24,43 @@ function App() {
   const [direction, setDirection] = useState(() => window.lwLoad(LW_KEYS.direction, 'en-ru'));
   const [hintMode, setHintMode] = useState(() => window.lwLoad(LW_KEYS.hintMode, false));
   const [studyStats, setStudyStats] = useState({ knownCount: 0, poolCount: 0, groupCount: 0 });
-  const [lang, setLang] = useState(() => window.lwLoad(LW_KEYS.lang, null));
 
-  /* live sync with shared Firestore data */
+  /* auth state */
+  useEffect(() => window.lwWatchAuth(setAuthUser), []);
+
+  /* user profile (role, lang) */
   useEffect(() => {
-    const unsubGroups = window.lwWatchCollection(window.LW_COLLECTIONS.groups, setGroups);
-    const unsubWords = window.lwWatchCollection(window.LW_COLLECTIONS.words, setWords);
+    if (!authUser) { setUserDoc(null); return; }
+    return window.lwWatchUserDoc(authUser.uid, setUserDoc);
+  }, [authUser]);
+
+  const lang = userDoc ? userDoc.lang : null;
+  const setLang = useCallback((l) => {
+    if (!authUser || !userDoc) return;
+    window.lwSetDoc(window.LW_COLLECTIONS.users, { ...userDoc, id: authUser.uid, lang: l });
+  }, [authUser, userDoc]);
+
+  /* live sync with this user's Firestore data */
+  useEffect(() => {
+    if (!authUser) { setGroups([]); setWords([]); return; }
+    const unsubGroups = window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.groups, authUser.uid, setGroups);
+    const unsubWords = window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.words, authUser.uid, setWords);
     return () => { unsubGroups(); unsubWords(); };
-  }, []);
-
-  /* migration: top-level groups created before multi-language support default to English */
-  const migratedGroups = useRef(new Set());
-  useEffect(() => {
-    groups.forEach((g) => {
-      if (!g.parentId && !g.lang && !migratedGroups.current.has(g.id)) {
-        migratedGroups.current.add(g.id);
-        window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, lang: 'en' });
-      }
-    });
-  }, [groups]);
-
-  /* default selection: everything in the active language, once groups load (only if user never picked) */
-  const hasSavedSelection = useRef(window.lwLoad(LW_KEYS.selected, null) != null);
-  const langGroups = useMemo(
-    () => groups.filter((g) => !g.parentId && (g.lang || 'en') === lang),
-    [groups, lang]
-  );
-  useEffect(() => {
-    if (!hasSavedSelection.current && langGroups.length) {
-      setSelected(langGroups.map((g) => g.id));
-    }
-  }, [langGroups]);
+  }, [authUser]);
 
   /* persistence (local-only settings) */
   useEffect(() => { document.documentElement.dataset.theme = theme; window.lwSave(LW_KEYS.theme, theme); }, [theme]);
   useEffect(() => { window.lwSave(LW_KEYS.selected, selected); }, [selected]);
   useEffect(() => { window.lwSave(LW_KEYS.direction, direction); }, [direction]);
   useEffect(() => { window.lwSave(LW_KEYS.hintMode, hintMode); }, [hintMode]);
-  useEffect(() => { if (lang) window.lwSave(LW_KEYS.lang, lang); }, [lang]);
+
+  /* default selection: everything, once groups load (only if user never picked) */
+  const hasSavedSelection = useRef(window.lwLoad(LW_KEYS.selected, null) != null);
+  useEffect(() => {
+    if (!hasSavedSelection.current && groups.length) {
+      setSelected(groups.filter((g) => !g.parentId).map((g) => g.id));
+    }
+  }, [groups]);
 
   /* keep selection valid if a group is deleted (skip until groups have loaded) */
   useEffect(() => {
@@ -75,22 +76,10 @@ function App() {
     return m;
   }, [groups, words]);
 
-  /* scope everything to the active language: top groups in this lang + their subgroups + words in those groups */
-  const langGroupIds = useMemo(() => {
-    const topIds = new Set(groups.filter((g) => !g.parentId && (g.lang || 'en') === lang).map((g) => g.id));
-    const ids = new Set(topIds);
-    groups.forEach((g) => { if (g.parentId && topIds.has(g.parentId)) ids.add(g.id); });
-    return ids;
-  }, [groups, lang]);
-  const scopedGroups = useMemo(() => groups.filter((g) => langGroupIds.has(g.id)), [groups, langGroupIds]);
-  const scopedWords = useMemo(() => words.filter((w) => langGroupIds.has(w.groupId)), [words, langGroupIds]);
-  const scopedSelected = useMemo(() => selected.filter((id) => langGroupIds.has(id)), [selected, langGroupIds]);
-  const scopedCountByGroup = useMemo(() => {
-    const m = {};
-    scopedGroups.forEach((g) => { m[g.id] = 0; });
-    scopedWords.forEach((w) => { if (m[w.groupId] != null) m[w.groupId]++; });
-    return m;
-  }, [scopedGroups, scopedWords]);
+  const scopedGroups = groups;
+  const scopedWords = words;
+  const scopedSelected = selected;
+  const scopedCountByGroup = countByGroup;
 
   /* horizontal swipe between Library / Category / Study */
   const swipeRef = useRef(null);
@@ -110,6 +99,15 @@ function App() {
     if (nextIdx >= 0 && nextIdx < LW_VIEW_ORDER.length) setView(LW_VIEW_ORDER[nextIdx]);
   };
 
+  if (authUser === undefined) {
+    return null; /* firebase auth still initializing */
+  }
+  if (authUser === null) {
+    return <AuthView />;
+  }
+  if (!userDoc) {
+    return null; /* user profile still loading */
+  }
   if (!lang) {
     return <LanguageSelectView onSelect={setLang} />;
   }
@@ -120,7 +118,8 @@ function App() {
         onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
         direction={direction} setDirection={setDirection}
         hintMode={hintMode} setHintMode={setHintMode}
-        lang={lang} setLang={setLang} />
+        lang={lang} setLang={setLang}
+        username={userDoc.username} role={userDoc.role} onLogout={() => window.lwLogout()} />
       <main className="content" onPointerDown={onSwipeStart} onPointerUp={onSwipeEnd}>
         {view === 'study' ? (
           <StudyView groups={scopedGroups} words={scopedWords} selected={scopedSelected}
@@ -132,7 +131,9 @@ function App() {
             direction={direction}
             goLibrary={() => setView('library')} goCategory={() => setView('category')} />
         ) : view === 'library' ? (
-          <LibraryView groups={scopedGroups} words={scopedWords} lang={lang} />
+          <LibraryView groups={scopedGroups} words={scopedWords} userId={authUser.uid} username={userDoc.username} isAdmin={userDoc.role === 'admin'} />
+        ) : view === 'admin' ? (
+          <AdminView currentUid={authUser.uid} />
         ) : (
           <CategoryView groups={scopedGroups} selected={scopedSelected} setSelected={setSelected}
             countByGroup={scopedCountByGroup} goStudy={() => setView('study')} />
@@ -179,7 +180,9 @@ function ViewDots({ view, setView }) {
 }
 
 /* ---------------- Top bar ---------------- */
-function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, hintMode, setHintMode, lang, setLang }) {
+const LW_ROLE_LABEL = { admin: 'Admin', premium: 'Premium', user: 'User' };
+
+function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, hintMode, setHintMode, lang, setLang, username, role, onLogout }) {
   const [open, setOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const ref = useRef(null);
@@ -244,6 +247,21 @@ function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, 
             <button className="menu-item" onClick={onToggleTheme}>
               {theme === 'light' ? <Ic.Moon /> : <Ic.Sun />}
               {theme === 'light' ? 'Dark theme' : 'Light theme'}
+            </button>
+            {role === 'admin' && (
+              <>
+                <div className="menu-sep" />
+                <button className={'menu-item' + (view === 'admin' ? ' on' : '')} onClick={() => go('admin')} type="button">
+                  <Ic.Tag /> Admin
+                </button>
+              </>
+            )}
+            <div className="menu-sep" />
+            <div className="menu-item" style={{ cursor: 'default' }}>
+              {username}{role && role !== 'user' ? ` · ${LW_ROLE_LABEL[role] || role}` : ''}
+            </div>
+            <button className="menu-item" onClick={() => { onLogout(); setOpen(false); }} type="button">
+              Выйти
             </button>
           </div>
         )}
@@ -532,8 +550,200 @@ function CategoryView({ groups, selected, setSelected, countByGroup, goStudy }) 
   );
 }
 
+/* ---------------- Admin view ---------------- */
+const LW_ROLES = ['user', 'premium', 'admin'];
+
+function AdminView({ currentUid }) {
+  const [tab, setTab] = useState('users'); // 'users' | 'data'
+  const [users, setUsers] = useState(null); // null = loading
+  const [allData, setAllData] = useState(null); // null = loading, {groups, words}
+  const [error, setError] = useState('');
+  const [savingId, setSavingId] = useState(null);
+
+  const loadUsers = useCallback(() => {
+    setError('');
+    window.lwAdminFetchUsers()
+      .then(setUsers)
+      .catch(() => setError('Не удалось загрузить пользователей.'));
+  }, []);
+
+  const loadAllData = useCallback(() => {
+    setError('');
+    window.lwAdminFetchAllData()
+      .then(setAllData)
+      .catch(() => setError('Не удалось загрузить слова и категории.'));
+  }, []);
+
+  useEffect(() => { loadUsers(); }, [loadUsers]);
+  useEffect(() => { if (tab === 'data' && !allData) loadAllData(); }, [tab, allData, loadAllData]);
+
+  const changeRole = async (uid, role) => {
+    setSavingId(uid);
+    try {
+      await window.lwAdminSetRole(uid, role);
+      setUsers((list) => list.map((u) => (u.id === uid ? { ...u, role } : u)));
+    } catch (e) {
+      setError('Не удалось изменить роль.');
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const reload = tab === 'users' ? loadUsers : loadAllData;
+
+  return (
+    <div className="library">
+      <div className="lib-head">
+        <div>
+          <h1 className="lib-title">Admin</h1>
+          <p className="lib-sub">{tab === 'users' ? 'Пользователи и роли' : 'Все слова и категории'}</p>
+        </div>
+        <div className="lib-head-actions">
+          <div className="seg">
+            <button className={'seg-btn' + (tab === 'users' ? ' on' : '')} onClick={() => setTab('users')} type="button">Пользователи</button>
+            <button className={'seg-btn' + (tab === 'data' ? ' on' : '')} onClick={() => setTab('data')} type="button">Все слова и категории</button>
+          </div>
+          <button className="btn btn-soft" onClick={reload} type="button"><Ic.Shuffle /> Обновить</button>
+        </div>
+      </div>
+      {error && <p className="field-hint" style={{ color: 'var(--danger)' }}>{error}</p>}
+      {tab === 'users' ? (
+        users === null ? (
+          <p className="row-empty">Загрузка…</p>
+        ) : (
+          <div className="groups-list">
+            {users.map((u) => (
+              <section className="grp" key={u.id}>
+                <header className="grp-head">
+                  <div className="grp-toggle" style={{ flex: 1 }}>
+                    <span className="grp-name">{u.username || u.id}</span>
+                    <span className="grp-count">{u.wordCount} words · {u.groupCount} groups</span>
+                  </div>
+                  <div className="grp-tools">
+                    <select className="input sm" value={u.role || 'user'} disabled={u.id === currentUid || savingId === u.id}
+                      onChange={(e) => changeRole(u.id, e.target.value)}
+                      style={{ width: 'auto', padding: '7px 10px' }}>
+                      {LW_ROLES.map((r) => (
+                        <option key={r} value={r}>{LW_ROLE_LABEL[r] || r}</option>
+                      ))}
+                    </select>
+                  </div>
+                </header>
+              </section>
+            ))}
+            {users.length === 0 && <p className="row-empty">Пользователей пока нет.</p>}
+          </div>
+        )
+      ) : (
+        <AdminAllDataView data={allData} onChanged={loadAllData} />
+      )}
+    </div>
+  );
+}
+
+function AdminAllDataView({ data, onChanged }) {
+  const [wordModal, setWordModal] = useState(null); // {initial}
+  const [groupModal, setGroupModal] = useState(null); // {initial}
+  const [confirm, setConfirm] = useState(null); // {kind, id, label}
+
+  const words = data ? data.words : [];
+  const wordsByGroup = useMemo(() => {
+    const m = {};
+    words.forEach((w) => { (m[w.groupId] = m[w.groupId] || []).push(w); });
+    return m;
+  }, [words]);
+
+  if (!data) return <p className="row-empty">Загрузка…</p>;
+  const { groups } = data;
+  const ownerLabel = (item) => item.username || item.userId || '—';
+
+  const saveWord = (w) => {
+    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId: wordModal.initial.userId, username: wordModal.initial.username, shared: wordModal.initial.shared });
+    setWordModal(null);
+    onChanged();
+  };
+  const saveGroup = (g) => {
+    window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, userId: groupModal.initial.userId, username: groupModal.initial.username, shared: groupModal.initial.shared });
+    setGroupModal(null);
+    onChanged();
+  };
+  const doDelete = () => {
+    if (!confirm) return;
+    if (confirm.kind === 'word') window.lwDeleteDoc(window.LW_COLLECTIONS.words, confirm.id);
+    if (confirm.kind === 'group') {
+      const subGroupIds = groups.filter((sg) => sg.parentId === confirm.id).map((sg) => sg.id);
+      [confirm.id, ...subGroupIds].forEach((id) => {
+        window.lwDeleteDoc(window.LW_COLLECTIONS.groups, id);
+        window.lwDeleteWordsByGroup(id);
+      });
+    }
+    setConfirm(null);
+    onChanged();
+  };
+
+  if (groups.length === 0) return <p className="row-empty">Категорий пока нет.</p>;
+
+  return (
+    <div className="groups-list">
+      {groups.map((g) => (
+        <section className="grp" key={g.id}>
+          <header className="grp-head">
+            <div className="grp-toggle" style={{ flex: 1 }}>
+              <span className="grp-name">{g.name}</span>
+              <span className="grp-count">{(wordsByGroup[g.id] || []).length} words · добавил: {ownerLabel(g)}</span>
+            </div>
+            <div className="grp-tools">
+              <button className="icon-btn sm" onClick={() => setGroupModal({ initial: g })} aria-label="Edit"><Ic.Edit /></button>
+              <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'group', id: g.id, label: g.name })} aria-label="Delete"><Ic.Trash /></button>
+            </div>
+          </header>
+          <div className="word-rows">
+            {(wordsByGroup[g.id] || []).map((w) => (
+              <div className="wrow" key={w.id}>
+                <div className="wrow-main">
+                  <div className="wrow-top">
+                    <span className="wrow-word">{w.word}</span>
+                    {w.tr && <span className="wrow-tr">{w.tr}</span>}
+                  </div>
+                </div>
+                <span className="grp-count">добавил: {ownerLabel(w)}</span>
+                <div className="wrow-tools">
+                  <button className="icon-btn sm" onClick={() => setWordModal({ initial: w })} aria-label="Edit"><Ic.Edit /></button>
+                  <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'word', id: w.id, label: w.word })} aria-label="Delete"><Ic.Trash /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ))}
+
+      {wordModal && (
+        <Modal title="Edit word" onClose={() => setWordModal(null)}>
+          <WordForm initial={wordModal.initial} groups={groups} onSave={saveWord} onCancel={() => setWordModal(null)} />
+        </Modal>
+      )}
+      {groupModal && (
+        <Modal title="Edit group" onClose={() => setGroupModal(null)}>
+          <GroupForm initial={groupModal.initial} onSave={saveGroup} onCancel={() => setGroupModal(null)} />
+        </Modal>
+      )}
+      {confirm && (
+        <Modal title={'Delete ' + confirm.kind} onClose={() => setConfirm(null)}
+          footer={<>
+            <button className="btn btn-ghost" onClick={() => setConfirm(null)}>Cancel</button>
+            <button className="btn btn-danger" onClick={doDelete}>Delete</button>
+          </>}>
+          <p className="confirm-text">
+            Delete <strong>{confirm.label}</strong>{confirm.kind === 'group' ? ' and all its words' : ''}? This can't be undone.
+          </p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- Library view ---------------- */
-function LibraryView({ groups, words, lang }) {
+function LibraryView({ groups, words, userId, username, isAdmin }) {
   const [wordModal, setWordModal] = useState(null); // {mode, initial?, groupId?}
   const [groupModal, setGroupModal] = useState(null); // {mode, initial?, parentGroup?}
   const [importModal, setImportModal] = useState(null); // {groupId?}
@@ -552,18 +762,22 @@ function LibraryView({ groups, words, lang }) {
     ? words.filter((w) => w.word.toLowerCase().includes(q) || (w.tr && w.tr.toLowerCase().includes(q)))
     : null;
 
+  const canEdit = (item) => item.userId === userId || isAdmin;
+
   const saveWord = (w) => {
-    window.lwSetDoc(window.LW_COLLECTIONS.words, w);
+    const shared = w.id ? w.shared : isAdmin;
+    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId: w.id ? w.userId : userId, username: w.id ? w.username : username, shared });
     setWordModal(null);
   };
   const saveGroup = (g) => {
-    window.lwSetDoc(window.LW_COLLECTIONS.groups, g);
+    const shared = g.id ? g.shared : isAdmin;
+    window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, userId: g.id ? g.userId : userId, username: g.id ? g.username : username, shared });
     if (!openGroups.includes(g.id)) setOpenGroups((o) => [...o, g.id]);
     if (g.parentId && !openGroups.includes(g.parentId)) setOpenGroups((o) => [...o, g.parentId]);
     setGroupModal(null);
   };
   const importWords = (items) => {
-    items.forEach((w) => window.lwSetDoc(window.LW_COLLECTIONS.words, w));
+    items.forEach((w) => window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId, username, shared: isAdmin }));
     setImportModal(null);
   };
   const doDelete = () => {
@@ -592,10 +806,12 @@ function LibraryView({ groups, words, lang }) {
               <div className="wrow-tr">{w.tr}</div>
               {showGroup && g && <div className="wrow-group">{g.name}</div>}
             </div>
-            <div className="wrow-tools">
-              <button className="icon-btn sm" onClick={() => setWordModal({ mode: 'edit', initial: w })} aria-label="Edit"><Ic.Edit /></button>
-              <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'word', id: w.id, label: w.word })} aria-label="Delete"><Ic.Trash /></button>
-            </div>
+            {canEdit(w) && (
+              <div className="wrow-tools">
+                <button className="icon-btn sm" onClick={() => setWordModal({ mode: 'edit', initial: w })} aria-label="Edit"><Ic.Edit /></button>
+                <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'word', id: w.id, label: w.word })} aria-label="Delete"><Ic.Trash /></button>
+              </div>
+            )}
           </div>
         );
       })}
@@ -647,8 +863,10 @@ function LibraryView({ groups, words, lang }) {
                     ...(items.length === 0 ? [
                       { label: 'Subgroup', icon: <Ic.Plus width="15" height="15" />, onClick: () => setGroupModal({ mode: 'new', parentGroup: g }) },
                     ] : []),
-                    { label: 'Edit group', icon: <Ic.Edit />, onClick: () => setGroupModal({ mode: 'edit', initial: g }) },
-                    { label: 'Delete group', icon: <Ic.Trash />, danger: true, onClick: () => setConfirm({ kind: 'group', id: g.id, label: g.name }) },
+                    ...(canEdit(g) ? [
+                      { label: 'Edit group', icon: <Ic.Edit />, onClick: () => setGroupModal({ mode: 'edit', initial: g }) },
+                      { label: 'Delete group', icon: <Ic.Trash />, danger: true, onClick: () => setConfirm({ kind: 'group', id: g.id, label: g.name }) },
+                    ] : []),
                   ]} />
                 </div>
               </header>
@@ -671,8 +889,10 @@ function LibraryView({ groups, words, lang }) {
                             <ActionsMenu items={[
                               { label: 'Word', icon: <Ic.Plus width="15" height="15" />, onClick: () => setWordModal({ mode: 'new', groupId: sg.id }) },
                               { label: 'Import', icon: <Ic.Plus width="15" height="15" />, onClick: () => setImportModal({ groupId: sg.id }) },
-                              { label: 'Edit subgroup', icon: <Ic.Edit />, onClick: () => setGroupModal({ mode: 'edit', initial: sg }) },
-                              { label: 'Delete subgroup', icon: <Ic.Trash />, danger: true, onClick: () => setConfirm({ kind: 'group', id: sg.id, label: sg.name }) },
+                              ...(canEdit(sg) ? [
+                                { label: 'Edit subgroup', icon: <Ic.Edit />, onClick: () => setGroupModal({ mode: 'edit', initial: sg }) },
+                                { label: 'Delete subgroup', icon: <Ic.Trash />, danger: true, onClick: () => setConfirm({ kind: 'group', id: sg.id, label: sg.name }) },
+                              ] : []),
                             ]} />
                           </div>
                         </header>
@@ -702,7 +922,7 @@ function LibraryView({ groups, words, lang }) {
       )}
       {groupModal && (
         <Modal title={groupModal.mode === 'edit' ? 'Edit group' : (groupModal.parentGroup ? 'New subgroup' : 'New group')} onClose={() => setGroupModal(null)}>
-          <GroupForm initial={groupModal.initial} parentGroup={groupModal.parentGroup} lang={lang} onSave={saveGroup} onCancel={() => setGroupModal(null)} />
+          <GroupForm initial={groupModal.initial} parentGroup={groupModal.parentGroup} onSave={saveGroup} onCancel={() => setGroupModal(null)} />
         </Modal>
       )}
       {confirm && (
@@ -722,19 +942,18 @@ function LibraryView({ groups, words, lang }) {
 
 /* ---------------- Group form ---------------- */
 const LW_PALETTE = ['#E8552F', '#2F9E8F', '#5B6CE8', '#C9913B', '#B7409B', '#3E8ED0', '#5BA02E', '#D6453E'];
-function GroupForm({ initial, parentGroup, lang, onSave, onCancel }) {
+function GroupForm({ initial, parentGroup, onSave, onCancel }) {
   const [name, setName] = useState(initial ? initial.name : '');
   const [color, setColor] = useState(initial ? initial.color : (parentGroup ? parentGroup.color : LW_PALETTE[0]));
   const canSave = name.trim();
   const submit = () => {
     if (!canSave) return;
     const parentId = initial ? initial.parentId : (parentGroup ? parentGroup.id : undefined);
-    const groupLang = initial ? (initial.lang || 'en') : lang;
     onSave({
       id: initial ? initial.id : window.lwUid(),
       name: name.trim(),
       color,
-      ...(parentId ? { parentId } : { lang: groupLang }),
+      ...(parentId ? { parentId } : {}),
     });
   };
   return (

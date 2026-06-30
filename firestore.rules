@@ -1,14 +1,53 @@
 rules_version = '2';
 
-// Open access: anyone with the project config can read and write groups/words.
-// No auth, no per-user data — suitable for a small shared word list between trusted people.
+// Per-user access: each signed-in user can read/write their own groups and words,
+// plus read (but not write) groups/words marked shared:true — these are admin-authored
+// entries visible to everyone. Only the owner or an admin can update/delete a record;
+// only an admin can create a shared:true record.
+// Roles (admin/premium/user) live on users/{uid}.role and cannot be self-elevated by the client —
+// the first admin must be promoted manually in the Firebase console; after that, admins can
+// change other users' roles from the in-app Admin screen.
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /groups/{groupId} {
-      allow read, write: if true;
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
+    function isAdmin() {
+      return isSignedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
+
+    match /users/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isOwner(uid) && request.resource.data.role == 'user';
+      allow update: if (isOwner(uid) && request.resource.data.role == resource.data.role)
+        || (isAdmin() && !isOwner(uid));
+    }
+
+    match /usernames/{name} {
+      allow read: if true; // needed to check uniqueness before sign-in
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /groups/{groupId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.shared == true || isAdmin());
+      allow list: if isSignedIn();
+      allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin())
+        && (request.resource.data.shared == resource.data.shared || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid
+        && (request.resource.data.shared == false || (request.resource.data.shared == true && isAdmin()));
+    }
+
     match /words/{wordId} {
-      allow read, write: if true;
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.shared == true || isAdmin());
+      allow list: if isSignedIn();
+      allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin())
+        && (request.resource.data.shared == resource.data.shared || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid
+        && (request.resource.data.shared == false || (request.resource.data.shared == true && isAdmin()));
     }
   }
 }
