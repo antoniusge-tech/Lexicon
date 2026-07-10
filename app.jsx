@@ -11,7 +11,18 @@ function shuffle(arr) {
   return a;
 }
 
-const LW_VIEW_ORDER = ['study', 'choice', 'category', 'library'];
+const LW_VIEW_ORDER = ['study', 'choice', 'reading', 'category', 'library'];
+
+/* Human-readable reading-generation errors, keyed by the .code set in data.jsx.
+   Reused by the reading tab's inline hints and by the toast messages. */
+const LW_READING_ERROR_MSG = {
+  quota: 'Дневной лимит Gemini исчерпан. Попробуйте позже.',
+  'bad-key': 'Ключ Gemini недействителен. Обновите ключ в настройках.',
+  refusal: 'Модель не смогла составить текст. Попробуйте ещё раз.',
+  overload: 'Модель Gemini сейчас перегружена. Попробуйте через минуту.',
+  empty: 'В этой категории пока нет слов.',
+  error: 'Ошибка AI-сервиса. Попробуйте позже.',
+};
 
 function App() {
   const [theme, setTheme] = useState(() => window.lwLoad(LW_KEYS.theme, 'light'));
@@ -23,6 +34,56 @@ function App() {
   const [selected, setSelected] = useState(() => window.lwLoad(LW_KEYS.selected, null) || []);
   const [direction, setDirection] = useState(() => window.lwLoad(LW_KEYS.direction, 'en-ru'));
   const [studyStats, setStudyStats] = useState({ knownCount: 0, poolCount: 0, groupCount: 0 });
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [geminiKeyOpen, setGeminiKeyOpen] = useState(false);
+  /* Reading practice state lives here so it survives switching tabs.
+     status/error live here too (not inside ReadingView) so that a generation
+     started on the reading tab keeps running — and stays visible — even after
+     the user navigates away and comes back. */
+  const [reading, setReading] = useState({ result: null, flipped: false, status: 'idle', error: null });
+  const [toasts, setToasts] = useState([]);
+  /* monotonically increasing id: lets us ignore a stale response when the user
+     kicks off a newer generation ("Другой текст") before the previous resolves. */
+  const genIdRef = useRef(0);
+
+  const dismissToast = useCallback((id) => {
+    setToasts((list) => list.filter((t) => t.id !== id));
+  }, []);
+  const pushToast = useCallback((toast) => {
+    const id = 'tst_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+    setToasts((list) => [...list, { id, ...toast }]);
+    return id;
+  }, []);
+
+  /* Kick off text generation. Runs the promise at the App level so it outlives
+     ReadingView unmounting; on completion it updates `reading` and raises a
+     bottom-right toast so the user knows they can return to the reading tab. */
+  const startReadingGeneration = useCallback(({ picked, level, topicPrompt, lengthWords }) => {
+    const myGen = ++genIdRef.current;
+    setReading((r) => ({ ...r, result: null, flipped: false, status: 'loading', error: null }));
+    window.lwAiGenerateText(picked, level, topicPrompt, lengthWords)
+      .then((r) => {
+        if (genIdRef.current !== myGen) return; // superseded by a newer request
+        setReading({ result: { ...r, source: picked }, flipped: true, status: 'idle', error: null });
+        pushToast({
+          kind: 'success',
+          title: 'Текст готов',
+          msg: 'Откройте вкладку «Чтение», чтобы прочитать его.',
+          action: { label: 'Открыть', view: 'reading' },
+        });
+      })
+      .catch((e) => {
+        if (genIdRef.current !== myGen) return;
+        const code = (e && e.code) || 'error';
+        setReading((r) => ({ ...r, status: 'idle', error: code }));
+        pushToast({
+          kind: 'error',
+          title: 'Не удалось сгенерировать текст',
+          msg: LW_READING_ERROR_MSG[code] || LW_READING_ERROR_MSG.error,
+          action: { label: 'К настройкам', view: 'reading' },
+        });
+      });
+  }, [pushToast]);
 
   /* auth state */
   useEffect(() => window.lwWatchAuth(setAuthUser), []);
@@ -116,7 +177,9 @@ function App() {
         onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
         direction={direction} setDirection={setDirection}
         lang={lang} setLang={setLang}
-        username={userDoc.username} role={userDoc.role} onLogout={() => window.lwLogout()} />
+        username={userDoc.username} role={userDoc.role} onLogout={() => window.lwLogout()}
+        onGeminiKey={() => setGeminiKeyOpen(true)}
+        onDeleteAccount={() => setDeleteAccountOpen(true)} />
       <main className="content" onPointerDown={onSwipeStart} onPointerUp={onSwipeEnd}>
         {view === 'study' ? (
           <StudyView groups={scopedGroups} words={scopedWords} selected={scopedSelected}
@@ -127,6 +190,11 @@ function App() {
           <ChoiceView words={scopedWords} selected={scopedSelected} groupById={groupById}
             direction={direction}
             goLibrary={() => setView('library')} goCategory={() => setView('category')} />
+        ) : view === 'reading' ? (
+          <ReadingView groups={scopedGroups} words={scopedWords} countByGroup={scopedCountByGroup}
+            reading={reading} setReading={setReading}
+            startGenerate={startReadingGeneration}
+            goLibrary={() => setView('library')} />
         ) : view === 'library' ? (
           <LibraryView groups={scopedGroups} words={scopedWords} userId={authUser.uid} username={userDoc.username} isAdmin={userDoc.role === 'admin'} />
         ) : view === 'admin' ? (
@@ -148,6 +216,12 @@ function App() {
           <ViewDots view={view} setView={setView} />
         </footer>
       )}
+      {view === 'reading' && (
+        <footer className="appfooter">
+          AI reading practice
+          <ViewDots view={view} setView={setView} />
+        </footer>
+      )}
       {view === 'category' && (
         <footer className="appfooter">
           {scopedSelected.length} {scopedSelected.length === 1 ? 'group' : 'groups'} selected
@@ -160,6 +234,112 @@ function App() {
           <ViewDots view={view} setView={setView} />
         </footer>
       )}
+      {deleteAccountOpen && <DeleteAccountModal onClose={() => setDeleteAccountOpen(false)} />}
+      {geminiKeyOpen && <GeminiKeyModal onClose={() => setGeminiKeyOpen(false)} />}
+      <ToastStack toasts={toasts}
+        onDismiss={dismissToast}
+        onAction={(action) => { if (action && action.view) setView(action.view); }} />
+    </div>
+  );
+}
+
+/* ---------------- Delete account confirmation ---------------- */
+function DeleteAccountModal({ onClose }) {
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!password || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      await window.lwDeleteAccount(password);
+      try {
+        localStorage.removeItem(LW_KEYS.studySession);
+        localStorage.removeItem(LW_KEYS.selected);
+      } catch (e) { /* ignore */ }
+      /* onAuthStateChanged in App unmounts the signed-in UI from here */
+    } catch (err) {
+      const code = err && err.code;
+      setError(code === 'auth/wrong-password' || code === 'auth/invalid-credential'
+        ? 'Неверный пароль.'
+        : 'Не удалось удалить аккаунт. Попробуйте ещё раз.');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Удалить аккаунт" onClose={busy ? () => {} : onClose}
+      footer={<>
+        <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Отмена</button>
+        <button className="btn btn-danger" onClick={submit} disabled={!password || busy}>
+          {busy ? 'Удаление…' : 'Удалить навсегда'}
+        </button>
+      </>}>
+      <p className="confirm-text">
+        Будут безвозвратно удалены <strong>все ваши слова, группы и профиль</strong>.
+        Отменить это действие невозможно. Для подтверждения введите пароль.
+      </p>
+      <label className="field">
+        <span className="field-label">Пароль</span>
+        <input className="input" type="password" value={password} autoFocus autoComplete="current-password"
+          onChange={(e) => setPassword(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
+      </label>
+      {error && <p className="field-hint" style={{ color: 'var(--danger)', marginTop: 10 }}>{error}</p>}
+    </Modal>
+  );
+}
+
+/* ---------------- Toast notifications (bottom-right) ---------------- */
+function Toast({ toast, onDismiss, onAction }) {
+  const [leaving, setLeaving] = useState(false);
+
+  const close = useCallback(() => {
+    setLeaving(true);
+    setTimeout(() => onDismiss(toast.id), 220); // matches toastOut animation
+  }, [toast.id, onDismiss]);
+
+  /* auto-dismiss success toasts; keep errors until the user closes them */
+  useEffect(() => {
+    if (toast.kind !== 'success') return;
+    const t = setTimeout(close, 7000);
+    return () => clearTimeout(t);
+  }, [toast.kind, close]);
+
+  return (
+    <div className={'toast toast-' + (toast.kind === 'error' ? 'error' : 'success') + (leaving ? ' is-out' : '')}
+      role="status" aria-live="polite">
+      <span className="toast-icon">
+        {toast.kind === 'error'
+          ? <Ic.Close width="18" height="18" />
+          : <Ic.Check width="18" height="18" />}
+      </span>
+      <div className="toast-body">
+        <span className="toast-title">{toast.title}</span>
+        {toast.msg && <span className="toast-msg">{toast.msg}</span>}
+        {toast.action && (
+          <button type="button" className="toast-action"
+            onClick={() => { onAction(toast.action); close(); }}>
+            {toast.action.label}
+          </button>
+        )}
+      </div>
+      <button type="button" className="toast-close" aria-label="Закрыть" onClick={close}>
+        <Ic.Close width="16" height="16" />
+      </button>
+    </div>
+  );
+}
+
+function ToastStack({ toasts, onDismiss, onAction }) {
+  if (!toasts.length) return null;
+  return (
+    <div className="toast-stack">
+      {toasts.map((t) => (
+        <Toast key={t.id} toast={t} onDismiss={onDismiss} onAction={onAction} />
+      ))}
     </div>
   );
 }
@@ -179,7 +359,7 @@ function ViewDots({ view, setView }) {
 /* ---------------- Top bar ---------------- */
 const LW_ROLE_LABEL = { admin: 'Admin', premium: 'Premium', user: 'User' };
 
-function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, lang, setLang, username, role, onLogout }) {
+function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, lang, setLang, username, role, onLogout, onGeminiKey, onDeleteAccount }) {
   const [open, setOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const ref = useRef(null);
@@ -213,6 +393,9 @@ function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, 
             <button className={'menu-item' + (view === 'choice' ? ' on' : '')} onClick={() => go('choice')}>
               <Ic.ListCheck /> Choice
             </button>
+            <button className={'menu-item' + (view === 'reading' ? ' on' : '')} onClick={() => go('reading')}>
+              <Ic.Book /> Reading
+            </button>
             <button className={'menu-item' + (view === 'category' ? ' on' : '')} onClick={() => go('category')}>
               <Ic.Tag /> Category
             </button>
@@ -242,6 +425,10 @@ function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, 
               {theme === 'light' ? <Ic.Moon /> : <Ic.Sun />}
               {theme === 'light' ? 'Dark theme' : 'Light theme'}
             </button>
+            <div className="menu-sep" />
+            <button className="menu-item" onClick={() => { onGeminiKey(); setOpen(false); }} type="button">
+              <Ic.Bulb /> Ключ Gemini (AI)
+            </button>
             {role === 'admin' && (
               <>
                 <div className="menu-sep" />
@@ -256,6 +443,10 @@ function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, 
             </div>
             <button className="menu-item" onClick={() => { onLogout(); setOpen(false); }} type="button">
               Выйти
+            </button>
+            <button className="menu-item" style={{ color: 'var(--danger)' }}
+              onClick={() => { onDeleteAccount(); setOpen(false); }} type="button">
+              Удалить аккаунт
             </button>
           </div>
         )}
@@ -506,6 +697,281 @@ function ChoiceView({ words, selected, groupById, direction, goLibrary, goCatego
             <button className="btn btn-primary" onClick={goLibrary}><Ic.Plus /> Add words</button>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Reading view (AI-generated text from a category) ---------------- */
+const READING_WORD_COUNTS = [15, 25, 40, 60];
+
+/* split a base word into forms we highlight (plural/verb endings) */
+function readingWordForms(word) {
+  const w = String(word || '').toLowerCase().trim();
+  if (!w) return [];
+  const forms = new Set([w]);
+  forms.add(w + 's');
+  forms.add(w + 'es');
+  forms.add(w + 'ed');
+  forms.add(w + 'ing');
+  if (w.endsWith('e')) { forms.add(w.slice(0, -1) + 'ing'); forms.add(w + 'd'); }
+  if (w.endsWith('y')) { forms.add(w.slice(0, -1) + 'ies'); forms.add(w.slice(0, -1) + 'ied'); }
+  return [...forms];
+}
+
+/* render a sentence, wrapping tokens that match the active highlighted word in <mark> */
+function ReadingSentenceText({ text, highlight }) {
+  if (!highlight) return text;
+  const forms = new Set(readingWordForms(highlight));
+  /* split keeping delimiters (non-letters) so we can re-join verbatim */
+  const parts = text.split(/([A-Za-z’']+)/);
+  return parts.map((part, i) => {
+    if (i % 2 === 1 && forms.has(part.toLowerCase())) {
+      return <mark key={i} className="reading-hl">{part}</mark>;
+    }
+    return part;
+  });
+}
+
+function ReadingView({ groups, words, countByGroup, reading, setReading, startGenerate, goLibrary }) {
+  const leafGroups = useMemo(
+    () => (window.lwLeafGroups ? window.lwLeafGroups(groups) : groups).filter((g) => countByGroup[g.id] > 0),
+    [groups, countByGroup]
+  );
+
+  const [groupId, setGroupId] = useState('');
+  const [level, setLevel] = useState('B1');
+  const [topicId, setTopicId] = useState(LW_TEXT_TOPICS[0].id);
+  const [lengthId, setLengthId] = useState('medium');
+  const [wordCount, setWordCount] = useState(25);
+  const [keyModal, setKeyModal] = useState(false);
+
+  /* transient UI state for the text side */
+  const [activeWord, setActiveWord] = useState(null);   // word highlighted in the text
+  const [openSentence, setOpenSentence] = useState(-1); // index of sentence whose RU is shown
+  const [showFullRu, setShowFullRu] = useState(false);  // lightbulb: whole-text translation
+
+  const result = reading.result;
+  const flipped = reading.flipped;
+  /* generation status/error live in App (survive tab switches) */
+  const state = reading.status === 'loading' ? 'loading' : (reading.error || 'idle');
+
+  /* default to the first available category once groups load */
+  useEffect(() => {
+    if (!groupId && leafGroups.length) setGroupId(leafGroups[0].id);
+  }, [leafGroups, groupId]);
+
+  const activeGroup = leafGroups.find((g) => g.id === groupId) || null;
+  const groupWords = useMemo(
+    () => (activeGroup ? words.filter((w) => w.groupId === activeGroup.id) : []),
+    [words, activeGroup]
+  );
+
+  const resetTextUi = () => { setActiveWord(null); setOpenSentence(-1); setShowFullRu(false); };
+
+  const runGenerate = () => {
+    if (!activeGroup || reading.status === 'loading') return;
+    const picked = shuffle(groupWords.map((w) => w.word)).slice(0, wordCount);
+    if (!picked.length) {
+      setReading((r) => ({ ...r, error: 'empty' }));
+      return;
+    }
+    const topic = LW_TEXT_TOPICS.find((t) => t.id === topicId) || LW_TEXT_TOPICS[0];
+    const length = LW_TEXT_LENGTHS.find((l) => l.id === lengthId) || LW_TEXT_LENGTHS[1];
+    resetTextUi();
+    /* fire-and-forget: App owns the promise and the toast on completion */
+    startGenerate({ picked, level, topicPrompt: topic.prompt, lengthWords: length.words });
+  };
+
+  const generate = () => {
+    if (!activeGroup) return;
+    if (!window.lwHasGeminiKey()) { setKeyModal(true); return; }
+    runGenerate();
+  };
+
+  /* "Прочитано": clear the text and flip back to settings */
+  const markRead = () => {
+    resetTextUi();
+    setReading({ result: null, flipped: false, status: 'idle', error: null });
+  };
+
+  if (leafGroups.length === 0) {
+    return (
+      <div className="reading">
+        <div className="empty-card">
+          <Ic.Book width="30" height="30" />
+          <p className="empty-title">No words yet</p>
+          <p className="empty-sub">Add words to a category first, then generate a text from them.</p>
+          <button className="btn btn-primary" onClick={goLibrary}><Ic.Plus /> Add words</button>
+        </div>
+      </div>
+    );
+  }
+
+  /* show only the words we asked for that actually appear in the generated text */
+  const usedSet = result ? new Set(result.used.map((w) => w.toLowerCase())) : null;
+  const usedWords = result && result.source
+    ? result.source.filter((w) => usedSet.has(w.toLowerCase()))
+    : [];
+  const sentences = (result && result.sentences) || [];
+
+  const toggleWord = (w) => setActiveWord((cur) => (cur === w ? null : w));
+
+  return (
+    <div className="reading">
+      <div className={'reading-scene' + (flipped ? ' is-flipped' : '')}>
+        <div className="reading-inner">
+          {/* ---------- FRONT: settings ---------- */}
+          <div className="reading-face reading-front">
+            <div className="reading-controls">
+              <label className="field">
+                <span className="field-label">Category</span>
+                <select className="input" value={groupId} onChange={(e) => setGroupId(e.target.value)}>
+                  {leafGroups.map((g) => (
+                    <option key={g.id} value={g.id}>{g.name} ({countByGroup[g.id]})</option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="field">
+                <span className="field-label">Level (CEFR)</span>
+                <div className="seg">
+                  {LW_CEFR_LEVELS.map((lv) => (
+                    <button key={lv} type="button" className={'seg-btn' + (level === lv ? ' on' : '')}
+                      onClick={() => setLevel(lv)}>{lv}</button>
+                  ))}
+                </div>
+              </div>
+
+              <label className="field">
+                <span className="field-label">Topic</span>
+                <select className="input" value={topicId} onChange={(e) => setTopicId(e.target.value)}>
+                  {LW_TEXT_TOPICS.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="field">
+                <span className="field-label">Length</span>
+                <div className="seg">
+                  {LW_TEXT_LENGTHS.map((l) => (
+                    <button key={l.id} type="button" className={'seg-btn' + (lengthId === l.id ? ' on' : '')}
+                      onClick={() => setLengthId(l.id)}>{l.name}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="field">
+                <span className="field-label">Words from category</span>
+                <div className="seg">
+                  {READING_WORD_COUNTS.map((n) => (
+                    <button key={n} type="button" className={'seg-btn' + (wordCount === n ? ' on' : '')}
+                      onClick={() => setWordCount(n)}>{n}</button>
+                  ))}
+                </div>
+                {activeGroup && groupWords.length < wordCount && (
+                  <p className="field-hint">В категории {groupWords.length} слов — возьмём все.</p>
+                )}
+              </div>
+
+              <button className="btn btn-primary btn-cta-study" disabled={state === 'loading' || !activeGroup}
+                onClick={generate}>
+                {state === 'loading' ? <span className="spinner" aria-hidden="true" /> : <Ic.Bulb width="16" height="16" />}
+                {state === 'loading' ? 'Генерирую текст…' : 'Сгенерировать текст'}
+              </button>
+
+              {result && state !== 'loading' && (
+                <button className="btn btn-soft btn-cta-study" type="button"
+                  onClick={() => setReading((r) => ({ ...r, flipped: true }))}>
+                  <Ic.Book width="16" height="16" /> Вернуться к тексту
+                </button>
+              )}
+
+              {state === 'bad-key' ? (
+                <p className="field-hint">Ключ Gemini недействителен.{' '}
+                  <button type="button" className="btn btn-ghost sm" onClick={() => setKeyModal(true)}>Изменить ключ</button>
+                </p>
+              ) : state !== 'idle' && state !== 'loading' && (
+                <p className="field-hint">{LW_READING_ERROR_MSG[state] || LW_READING_ERROR_MSG.error}</p>
+              )}
+            </div>
+          </div>
+
+          {/* ---------- BACK: generated text ---------- */}
+          <div className="reading-face reading-back">
+            {result && (
+              <article className="reading-result">
+                <div className="reading-head">
+                  {result.title && <h2 className="reading-title">{result.title}</h2>}
+                  <button className="reading-bulb" type="button" title="Перевод всего текста"
+                    aria-pressed={showFullRu}
+                    onClick={() => { setShowFullRu((v) => !v); setOpenSentence(-1); }}>
+                    <Ic.Bulb width="18" height="18" />
+                  </button>
+                </div>
+
+                <p className="reading-text">
+                  {sentences.map((s, i) => (
+                    <React.Fragment key={i}>
+                      <span
+                        className={'reading-sentence' + (openSentence === i ? ' open' : '')}
+                        onClick={() => { setOpenSentence((cur) => (cur === i ? -1 : i)); setShowFullRu(false); }}>
+                        <ReadingSentenceText text={s.en} highlight={activeWord} />
+                      </span>
+                      {openSentence === i && s.ru && (
+                        <span className="reading-sentence-ru">{s.ru}</span>
+                      )}
+                      {i < sentences.length - 1 ? ' ' : null}
+                    </React.Fragment>
+                  ))}
+                </p>
+
+                {showFullRu && result.textRu && (
+                  <p className="reading-text reading-text-ru">{result.textRu}</p>
+                )}
+
+                {usedWords.length > 0 && (
+                  <div className="reading-words">
+                    <span className="field-label">Слова из категории (нажмите, чтобы подсветить):</span>
+                    <div className="reading-word-tags">
+                      {usedWords.map((w) => (
+                        <button
+                          key={w}
+                          type="button"
+                          className={'reading-word-tag used'
+                            + (activeWord === w ? ' active' : '')}
+                          onClick={() => toggleWord(w)}>
+                          {w}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="reading-actions">
+                  <button className="btn btn-primary sm" onClick={markRead} type="button">
+                    <Ic.Check width="15" height="15" /> Прочитано
+                  </button>
+                  <button className="btn btn-soft sm" onClick={runGenerate} type="button" disabled={state === 'loading'}>
+                    <Ic.Shuffle width="15" height="15" /> Другой текст
+                  </button>
+                  <button className="btn btn-ghost sm" type="button"
+                    onClick={() => setReading((r) => ({ ...r, flipped: false }))}>
+                    <Ic.Swap width="15" height="15" /> Настройки
+                  </button>
+                </div>
+              </article>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {keyModal && (
+        <GeminiKeyModal
+          onClose={() => setKeyModal(false)}
+          onSaved={(ok) => { if (ok) runGenerate(); }}
+        />
       )}
     </div>
   );
@@ -787,19 +1253,26 @@ function LibraryView({ groups, words, userId, username, isAdmin }) {
   const canEdit = (item) => item.userId === userId || isAdmin;
 
   const saveWord = (w) => {
-    const shared = w.id ? w.shared : isAdmin;
-    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId: w.id ? w.userId : userId, username: w.id ? w.username : username, shared });
+    // Существующее слово определяем по наличию в списке, а не по w.id — форма
+    // всегда генерирует id, в т.ч. для новых слов, где userId/username ещё нет.
+    const existing = words.find((x) => x.id === w.id);
+    const shared = existing ? existing.shared : isAdmin;
+    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId: existing ? existing.userId : userId, username: existing ? existing.username : username, shared })
+      .catch((e) => { console.error('saveWord failed', e); alert('Не удалось сохранить слово: ' + (e && e.message || e)); });
     setWordModal(null);
   };
   const saveGroup = (g) => {
-    const shared = g.id ? g.shared : isAdmin;
-    window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, userId: g.id ? g.userId : userId, username: g.id ? g.username : username, shared });
+    const existing = groups.find((x) => x.id === g.id);
+    const shared = existing ? existing.shared : isAdmin;
+    window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, userId: existing ? existing.userId : userId, username: existing ? existing.username : username, shared })
+      .catch((e) => { console.error('saveGroup failed', e); alert('Не удалось сохранить группу: ' + (e && e.message || e)); });
     if (!openGroups.includes(g.id)) setOpenGroups((o) => [...o, g.id]);
     if (g.parentId && !openGroups.includes(g.parentId)) setOpenGroups((o) => [...o, g.parentId]);
     setGroupModal(null);
   };
   const importWords = (items) => {
-    items.forEach((w) => window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId, username, shared: isAdmin }));
+    items.forEach((w) => window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId, username, shared: isAdmin })
+      .catch((e) => { console.error('importWords failed', e); alert('Не удалось импортировать слово: ' + (e && e.message || e)); }));
     setImportModal(null);
   };
   const doDelete = () => {
@@ -809,7 +1282,7 @@ function LibraryView({ groups, words, userId, username, isAdmin }) {
       const ids = [confirm.id, ...subGroupsOf(confirm.id).map((sg) => sg.id)];
       ids.forEach((id) => {
         window.lwDeleteDoc(window.LW_COLLECTIONS.groups, id);
-        window.lwDeleteWordsByGroup(id);
+        window.lwDeleteWordsByGroup(id, isAdmin ? null : userId);
       });
     }
     setConfirm(null);

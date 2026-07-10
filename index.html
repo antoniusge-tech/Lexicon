@@ -146,6 +146,77 @@ button { font-family: inherit; cursor: pointer; }
 .selector { width: 100%; max-width: 640px; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .btn-cta-study { font-size: 15px; padding: 13px 22px; }
+
+/* ---------- Reading (AI text) ---------- */
+.reading { display: flex; flex-direction: column; align-items: center; gap: 24px; }
+
+/* flip card holding settings (front) / generated text (back) */
+.reading-scene { width: 100%; max-width: 720px; perspective: 1800px; }
+.reading-inner {
+  position: relative; display: grid; width: 100%;
+  transform-style: preserve-3d;
+  transition: transform .62s cubic-bezier(.2,.7,.2,1);
+}
+.reading-scene.is-flipped .reading-inner { transform: rotateY(180deg); }
+.reading-face {
+  grid-area: 1 / 1; width: 100%;
+  backface-visibility: hidden; -webkit-backface-visibility: hidden;
+  transition: opacity 0s linear .31s;
+}
+.reading-back { transform: rotateY(180deg); }
+.reading-scene:not(.is-flipped) .reading-back { opacity: 0; pointer-events: none; }
+.reading-scene.is-flipped .reading-front { opacity: 0; pointer-events: none; }
+
+.reading-controls {
+  width: 100%; display: flex; flex-direction: column; gap: 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px; padding: clamp(16px, 3vw, 24px);
+}
+.reading-controls .seg { flex-wrap: wrap; }
+.reading-controls .btn-cta-study { align-self: stretch; justify-content: center; }
+.reading-result {
+  width: 100%; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 16px;
+  padding: clamp(18px, 3.5vw, 30px);
+}
+.reading-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+.reading-title { font-size: 20px; font-weight: 700; margin: 0; color: var(--ink); flex: 1 1 auto; }
+.reading-bulb {
+  flex: 0 0 auto; width: 38px; height: 38px; border-radius: 999px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--surface-2); color: var(--muted); border: 1px solid var(--border);
+  transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+}
+.reading-bulb:hover { color: var(--ink); }
+.reading-bulb[aria-pressed="true"] {
+  background: var(--accent-soft); color: var(--accent); border-color: var(--accent);
+}
+.reading-text { font-size: 16px; line-height: 1.7; color: var(--ink); margin: 0; }
+.reading-sentence { cursor: pointer; border-radius: 4px; transition: background-color .15s ease; }
+.reading-sentence:hover { background: var(--surface-2); }
+.reading-sentence.open { background: var(--accent-soft); }
+.reading-sentence-ru {
+  display: block; margin: 6px 0 10px; padding: 8px 12px;
+  font-size: 14.5px; line-height: 1.6; color: var(--muted);
+  background: var(--surface-2); border-left: 3px solid var(--accent); border-radius: 8px;
+}
+.reading-hl {
+  background: #FFE58A; color: #4A3B00; border-radius: 3px; padding: 0 2px; font-weight: 600;
+}
+html[data-theme="dark"] .reading-hl { background: #7A6A1E; color: #FFF4C2; }
+.reading-text-ru { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted); }
+.reading-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 0; }
+.reading-words { display: flex; flex-direction: column; gap: 8px; margin-top: 20px; }
+.reading-word-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.reading-word-tag {
+  font-size: 12.5px; font-weight: 600; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  background: var(--surface-2); color: var(--muted); border: 1px solid var(--border);
+  transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+}
+.reading-word-tag.used { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.reading-word-tag.active { background: #FFE58A; color: #4A3B00; border-color: #E8C84A; }
+html[data-theme="dark"] .reading-word-tag.active { background: #7A6A1E; color: #FFF4C2; border-color: #A08A2A; }
+
 .chip {
   display: inline-flex; align-items: center; gap: 8px;
   border: 1px solid var(--border); background: var(--surface);
@@ -463,6 +534,52 @@ button { font-family: inherit; cursor: pointer; }
   animation: fade .18s ease;
 }
 @keyframes fade { from { opacity: 0; } }
+.spinner {
+  display: inline-block; width: 15px; height: 15px; flex: none;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor; border-radius: 50%;
+  animation: spin .6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------------- Toast (bottom-right notifications) ---------------- */
+.toast-stack {
+  position: fixed; right: 18px; bottom: 18px; z-index: 200;
+  display: flex; flex-direction: column; gap: 10px; align-items: flex-end;
+  max-width: min(360px, calc(100vw - 36px));
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px; border-radius: 14px;
+  background: var(--surface); border: 1px solid var(--border);
+  box-shadow: var(--shadow-card);
+  animation: toastIn .28s cubic-bezier(.2,.8,.2,1);
+  border-left: 4px solid var(--accent);
+}
+.toast.is-out { animation: toastOut .22s ease forwards; }
+.toast.toast-success { border-left-color: var(--ok, #16a34a); }
+.toast.toast-error { border-left-color: var(--danger); }
+.toast-icon { flex: none; margin-top: 1px; }
+.toast.toast-success .toast-icon { color: var(--ok, #16a34a); }
+.toast.toast-error .toast-icon { color: var(--danger); }
+.toast-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.toast-title { font-weight: 650; font-size: 14px; }
+.toast-msg { font-size: 13px; color: var(--muted); }
+.toast-action {
+  margin-top: 6px; align-self: flex-start;
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--accent); font: inherit; font-size: 13px; font-weight: 600;
+}
+.toast-close {
+  flex: none; background: none; border: none; cursor: pointer;
+  color: var(--muted); padding: 2px; margin: -2px -4px -2px 0; line-height: 0;
+}
+.toast-close:hover { color: var(--text); }
+@keyframes toastIn { from { opacity: 0; transform: translateY(12px) scale(.98); } }
+@keyframes toastOut { to { opacity: 0; transform: translateY(8px) scale(.98); } }
+
 .modal {
   width: 100%; max-width: 480px; background: var(--surface);
   border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow-card);

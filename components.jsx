@@ -42,6 +42,9 @@ const Ic = {
   Library: (p) => (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M4 4v15.5M6.5 2H20v15H6.5A2.5 2.5 0 0 0 4 19.5" /></svg>
   ),
+  Book: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v15H6.5A2.5 2.5 0 0 0 4 19.5V4.5Z" /><path d="M8 7h8M8 11h6" /></svg>
+  ),
   Tag: (p) => (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 2H4v8l9.5 9.5a2 2 0 0 0 2.83 0l5.17-5.17a2 2 0 0 0 0-2.83L12 2Z" /><circle cx="8" cy="8" r="1.5" /></svg>
   ),
@@ -405,6 +408,56 @@ function lwLeafGroups(groups) {
 }
 
 /* ---------------- Word form (create/edit) ---------------- */
+/* Ввод / смена / удаление личного ключа Gemini. onSaved() вызывается после
+   успешного сохранения — используется, чтобы сразу запустить отложенное действие. */
+function GeminiKeyModal({ onClose, onSaved }) {
+  const [key, setKey] = React.useState(() => window.lwGetGeminiKey());
+  const had = window.lwHasGeminiKey();
+
+  const save = () => {
+    window.lwSetGeminiKey(key);
+    if (onSaved) onSaved(!!key.trim());
+    onClose();
+  };
+  const clear = () => {
+    window.lwSetGeminiKey('');
+    setKey('');
+    if (onSaved) onSaved(false);
+    onClose();
+  };
+
+  return (
+    <Modal title="Ключ Gemini для AI"
+      onClose={onClose}
+      footer={
+        <React.Fragment>
+          {had && <button className="btn btn-ghost" onClick={clear}>Удалить ключ</button>}
+          <button className="btn btn-ghost" onClick={onClose}>Отмена</button>
+          <button className="btn btn-primary" disabled={!key.trim()} onClick={save}>Сохранить</button>
+        </React.Fragment>
+      }>
+      <div className="form">
+        <p className="field-hint" style={{ marginTop: 0 }}>
+          AI-заполнение карточек использует ваш личный ключ Google Gemini. Ключ бесплатный,
+          хранится только в этом браузере и тратит только ваши лимиты.
+        </p>
+        <label className="field">
+          <span className="field-label">API-ключ Gemini</span>
+          <input className="input mono" type="password" value={key} autoFocus
+            placeholder="AIza…" onChange={(e) => setKey(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && key.trim()) save(); }} />
+        </label>
+        <p className="field-hint" style={{ marginBottom: 0 }}>
+          Где взять: откройте{' '}
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer"
+            style={{ color: 'var(--accent)' }}>aistudio.google.com/apikey</a>{' '}
+          → «Create API key». Регистрация бесплатная, карта не нужна.
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
 function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
   const [word, setWord] = React.useState(initial ? initial.word : '');
   const [ipa, setIpa] = React.useState(initial ? initial.ipa : '');
@@ -413,6 +466,8 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
   const [exampleTr, setExampleTr] = React.useState(initial ? (initial.exampleTr || '') : '');
   const [photo, setPhoto] = React.useState(initial ? (initial.photo || '') : '');
   const [autoState, setAutoState] = React.useState('idle'); // 'idle' | 'loading' | 'notfound' | 'error'
+  const [aiState, setAiState] = React.useState('idle'); // 'idle' | 'loading' | error-code string
+  const [keyModal, setKeyModal] = React.useState(false);
   const leafGroups = lwLeafGroups(groups);
   const [groupId, setGroupId] = React.useState(initial ? initial.groupId : (defaultGroupId || (leafGroups[0] && leafGroups[0].id)));
   const fileInputRef = React.useRef(null);
@@ -450,6 +505,26 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
       .catch(() => setAutoState('error'));
   };
 
+  const runAiFill = () => {
+    setAiState('loading');
+    window.lwAiFillWord(word.trim())
+      .then((r) => {
+        // Не затираем поля, которые пользователь уже заполнил.
+        if (r.ipa && !ipa.trim()) setIpa(r.ipa);
+        if (r.tr && !tr.trim()) setTr(r.tr);
+        if (r.example && !example.trim()) setExample(r.example);
+        if (r.exampleTr && !exampleTr.trim()) setExampleTr(r.exampleTr);
+        setAiState('idle');
+      })
+      .catch((e) => setAiState((e && e.code) || 'error'));
+  };
+
+  const fillWithAi = () => {
+    if (!word.trim()) return;
+    if (!window.lwHasGeminiKey()) { setKeyModal(true); return; } // спросим ключ только сейчас
+    runAiFill();
+  };
+
   return (
     <div className="form">
       <div className="form-grid">
@@ -479,6 +554,32 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
         <input className="input" value={exampleTr} placeholder="перевод примера"
           onChange={(e) => setExampleTr(e.target.value)} />
       </label>
+
+      <div className="field">
+        <button type="button" className="btn btn-soft sm" disabled={!word.trim() || aiState === 'loading'}
+          onClick={fillWithAi}>
+          {aiState === 'loading' ? <span className="spinner" aria-hidden="true" /> : <Ic.Bulb width="15" height="15" />}
+          {aiState === 'loading' ? 'Заполняю…' : 'Заполнить с AI'}
+        </button>
+        {aiState === 'quota' && <p className="field-hint">Дневной лимит Gemini исчерпан. Попробуйте позже.</p>}
+        {aiState === 'bad-key' && (
+          <p className="field-hint">Ключ Gemini недействителен.{' '}
+            <button type="button" className="btn btn-ghost sm" onClick={() => setKeyModal(true)}>Изменить ключ</button>
+          </p>
+        )}
+        {aiState === 'refusal' && <p className="field-hint">Модель не смогла обработать это слово.</p>}
+        {aiState === 'overload' && <p className="field-hint">Модель Gemini сейчас перегружена. Попробуйте через минуту.</p>}
+        {aiState !== 'idle' && aiState !== 'loading'
+          && !['quota', 'bad-key', 'refusal', 'overload'].includes(aiState)
+          && <p className="field-hint">Ошибка AI-сервиса. Попробуйте позже.</p>}
+      </div>
+
+      {keyModal && (
+        <GeminiKeyModal
+          onClose={() => setKeyModal(false)}
+          onSaved={(ok) => { if (ok && word.trim()) runAiFill(); }}
+        />
+      )}
 
       <div className="field">
         <span className="field-label">Photo</span>
@@ -560,6 +661,8 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
   const leafGroups = lwLeafGroups(groups);
   const [groupId, setGroupId] = React.useState(defaultGroupId || (leafGroups[0] && leafGroups[0].id));
   const fileInputRef = React.useRef(null);
+  const [aiState, setAiState] = React.useState('idle'); // idle | loading | <error code>
+  const [keyModal, setKeyModal] = React.useState(false);
 
   const handleFile = (e) => {
     const file = e.target.files && e.target.files[0];
@@ -570,14 +673,54 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
     e.target.value = '';
   };
 
-  const rows = text.split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map(lwParseImportLine);
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  const rows = lines.map(lwParseImportLine);
 
   const validCount = rows.filter(Boolean).length;
   const invalidCount = rows.length - validCount;
   const canImport = validCount > 0 && groupId;
+
+  // «Сырые» строки — те, где нет ни транскрипции, ни перевода (обычно просто
+  // одно слово). Их AI может обогатить. Кнопку AI показываем, только пока
+  // такие строки есть, — после успешного ответа она сама исчезнет, и повторное
+  // нажатие невозможно.
+  const rawWords = lines
+    .filter((l) => {
+      // Голое слово без разделителей (парсер вернёт null) — тоже «сырое».
+      if (l.indexOf('|') === -1) return true;
+      const p = lwParseImportLine(l);
+      return p && !p.ipa && !p.tr;
+    })
+    .map((l) => l.split('|')[0].trim())
+    .filter(Boolean);
+  const showAi = rawWords.length > 0;
+
+  const runAi = () => {
+    setAiState('loading');
+    window.lwAiFillWords(rawWords)
+      .then((res) => {
+        // Обогащённые строки; исходно уже полные строки оставляем как есть.
+        const byWord = {};
+        res.forEach((r) => { byWord[r.word.toLowerCase()] = r; });
+        const out = lines.map((l) => {
+          const p = lwParseImportLine(l);
+          // Для голого слова без разделителей берём саму строку как слово.
+          const w = (p && p.word) || (l.indexOf('|') === -1 ? l : '');
+          const r = w && byWord[w.toLowerCase()];
+          if (!r) return l; // не изменяем строки, которые AI не трогал
+          return [r.word, r.ipa, r.tr, r.example, r.exampleTr].join(' | ');
+        });
+        setText(out.join('\n'));
+        setAiState('idle');
+      })
+      .catch((e) => setAiState((e && e.code) || 'error'));
+  };
+
+  const fillWithAi = () => {
+    if (!rawWords.length) return;
+    if (!window.lwHasGeminiKey()) { setKeyModal(true); return; }
+    runAi();
+  };
 
   const submit = () => {
     if (!canImport) return;
@@ -602,6 +745,12 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
       <label className="field">
         <div className="field-label-row">
           <span className="field-label">Текст для импорта</span>
+          {showAi && (
+            <button type="button" className="btn btn-soft sm" disabled={aiState === 'loading'} onClick={fillWithAi}>
+              {aiState === 'loading' ? <span className="spinner" aria-hidden="true" /> : <Ic.Bulb width="15" height="15" />}
+              {aiState === 'loading' ? 'AI заполняет…' : `Заполнить с AI (${rawWords.length})`}
+            </button>
+          )}
           <button type="button" className="btn btn-soft sm" onClick={() => fileInputRef.current && fileInputRef.current.click()}>
             <Ic.Plus width="15" height="15" /> Load file
           </button>
@@ -610,6 +759,17 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
         <textarea className="input mono" rows={8} value={text} autoFocus
           placeholder={'journey | /ˈdʒɜː.ni/ | путешествие | We went on a long journey. | Мы отправились в долгое путешествие.\nbook || книга'}
           onChange={(e) => setText(e.target.value)} />
+        {aiState === 'quota' && <p className="field-hint">Дневной лимит Gemini исчерпан. Попробуйте позже.</p>}
+        {aiState === 'bad-key' && (
+          <p className="field-hint">Ключ Gemini недействителен.{' '}
+            <button type="button" className="btn btn-ghost sm" onClick={() => setKeyModal(true)}>Изменить ключ</button>
+          </p>
+        )}
+        {aiState === 'overload' && <p className="field-hint">Модель Gemini сейчас перегружена. Попробуйте через минуту.</p>}
+        {aiState === 'refusal' && <p className="field-hint">Модель не смогла обработать список. Попробуйте меньше слов.</p>}
+        {aiState !== 'idle' && aiState !== 'loading'
+          && !['quota', 'bad-key', 'overload', 'refusal'].includes(aiState)
+          && <p className="field-hint">Ошибка AI-сервиса. Попробуйте позже.</p>}
       </label>
 
       <div className="field">
@@ -632,6 +792,13 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
         </p>
       )}
 
+      {keyModal && (
+        <GeminiKeyModal
+          onClose={() => setKeyModal(false)}
+          onSaved={(ok) => { if (ok && rawWords.length) runAi(); }}
+        />
+      )}
+
       <div className="form-foot">
         <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
         <button className="btn btn-primary" disabled={!canImport} onClick={submit}>
@@ -642,4 +809,4 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
   );
 }
 
-Object.assign(window, { Ic, PhotoFill, Flashcard, GroupChip, ActionsMenu, Modal, WordForm, ImportForm, lwLeafGroups, SpeakButton });
+Object.assign(window, { Ic, PhotoFill, Flashcard, GroupChip, ActionsMenu, Modal, WordForm, ImportForm, lwLeafGroups, SpeakButton, GeminiKeyModal });
