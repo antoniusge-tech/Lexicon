@@ -6,7 +6,14 @@ const LW_KEYS = {
   direction: 'lw_study_direction_v1',
   studySession: 'lw_study_session_v1',
   geminiKey: 'lw_gemini_key_v1', // личный API-ключ Gemini пользователя (только его устройство)
+  reading: 'lw_reading_cards_v1', // последняя пачка сгенерированных текстов-карточек
 };
+
+/* Сколько текстов-карточек генерировать за один прогон в разделе Reading.
+   Держим маленьким (2 запроса к Gemini за раз), чтобы не выедать дневную квоту
+   бесплатного тира: следующая пара догенерируется лениво, только когда
+   пользователь долистал до конца пачки (см. continueReadingGeneration). */
+const LW_READING_BATCH = 2;
 
 const LW_LANGUAGES = [
   { code: 'en', name: 'English', flag: '🇬🇧' },
@@ -241,7 +248,10 @@ async function lwAiFillWords(words) {
       parts: [{
         text: 'Ты — лексикограф для приложения изучения английского. '
           + 'Тебе дают список английских слов. Для КАЖДОГО слова верни объект: '
-          + 'word — само слово (как в запросе); '
+          + 'word — само слово (как в запросе). '
+          + 'ВАЖНО: слово пиши строчными буквами (нижний регистр), '
+          + 'заглавную первую букву оставляй ТОЛЬКО у имён собственных — '
+          + 'названий городов, стран, имён людей и т.п.; '
           + 'ipa — транскрипцию IPA (без косых черт); '
           + 'tr — краткий перевод на русский (1–3 варианта через запятую, как в Cambridge Dictionary); '
           + 'example — запоминающееся простое предложение-пример с этим словом; '
@@ -306,13 +316,30 @@ async function lwAiFillWords(words) {
   catch (e) { const err = new Error('AI вернул некорректный ответ.'); err.code = 'refusal'; throw err; }
   if (!Array.isArray(parsed)) { const e = new Error('AI вернул некорректный ответ.'); e.code = 'refusal'; throw e; }
 
-  return parsed.map((p, i) => ({
-    word: String((p && p.word) || list[i] || '').trim(),
-    ipa: String((p && p.ipa) || '').trim(),
-    tr: String((p && p.tr) || '').trim(),
-    example: String((p && p.example) || '').trim(),
-    exampleTr: String((p && p.exampleTr) || '').trim(),
-  })).filter((r) => r.word);
+  // Множество входных слов, которые пользователь ввёл строчными, — они точно не
+  // имена собственные, и капитализировать их ответ модели нельзя.
+  const lowerInputs = new Set(
+    list.filter((w) => w && w[0] === w[0].toLowerCase()).map((w) => w.toLowerCase())
+  );
+  return parsed.map((p, i) => {
+    let word = String((p && p.word) || list[i] || '').trim();
+    // Модель порой капитализирует обычные слова. Если это же слово во входе было
+    // строчным (по индексу или по совпадению без учёта регистра) — понижаем
+    // первую букву. Слова, которые пользователь сам ввёл с заглавной (имена,
+    // города), не трогаем.
+    const src = String(list[i] || '').trim();
+    const srcLower = !src || src[0] === src[0].toLowerCase();
+    if (word && (srcLower || lowerInputs.has(word.toLowerCase()))) {
+      word = word[0].toLowerCase() + word.slice(1);
+    }
+    return {
+      word,
+      ipa: String((p && p.ipa) || '').trim(),
+      tr: String((p && p.tr) || '').trim(),
+      example: String((p && p.example) || '').trim(),
+      exampleTr: String((p && p.exampleTr) || '').trim(),
+    };
+  }).filter((r) => r.word);
 }
 
 /* ---------------- AI: генерация обучающего текста через Gemini ----------------
@@ -326,12 +353,13 @@ const LW_CEFR_LEVELS = ['A2', 'B1', 'B2', 'C1', 'C2'];
 /* Темы для генерируемого текста. id — стабильный ключ, prompt — как описать
    тему модели. Первая тема считается темой по умолчанию. */
 const LW_TEXT_TOPICS = [
-  { id: 'the-office', name: 'Сериал «Офис» (The Office US)', prompt: 'a scene inspired by the American sitcom "The Office" (Dunder Mifflin, Michael Scott and colleagues), in its dry mockumentary humour' },
-  { id: 'friends', name: 'Сериал «Друзья» (Friends)', prompt: 'a scene inspired by the sitcom "Friends", light and funny, among the group of friends in the coffee house' },
   { id: 'daily-life', name: 'Повседневная жизнь', prompt: 'an everyday slice-of-life situation' },
   { id: 'business', name: 'Деловая переписка / работа', prompt: 'a workplace / business setting (emails, meetings, projects)' },
   { id: 'travel', name: 'Путешествия', prompt: 'a travel story (airports, hotels, sightseeing)' },
   { id: 'sci-fi', name: 'Фантастика', prompt: 'a short science-fiction scene' },
+  { id: 'detective', name: 'Детектив', prompt: 'a short detective mystery scene (a crime, clues and an investigator)' },
+  { id: 'cooking', name: 'Кулинария', prompt: 'a cooking / food scene (recipes, kitchen, a restaurant)' },
+  { id: 'sport', name: 'Спорт', prompt: 'a sports scene (a match, training or a competition)' },
 ];
 
 /* Желаемая длина текста: id для UI + примерное число слов для модели. */
@@ -348,7 +376,7 @@ const LW_TEXT_LENGTHS = [
      length  — примерное число слов (из LW_TEXT_LENGTHS[].words).
    Возвращает { title, text, textRu, used } — used — слова, реально
    использованные в тексте. Бросает Error с теми же .code, что lwAiFillWord. */
-async function lwAiGenerateText(words, level, topic, length) {
+async function lwAiGenerateText(words, level, topic, length, count) {
   const list = (words || [])
     .map((w) => String(w || '').trim().slice(0, 100))
     .filter(Boolean)
@@ -361,6 +389,7 @@ async function lwAiGenerateText(words, level, topic, length) {
   const lvl = LW_CEFR_LEVELS.includes(level) ? level : 'B1';
   const topicText = (topic || '').trim() || LW_TEXT_TOPICS[0].prompt;
   const wordCount = Number(length) > 0 ? Math.round(Number(length)) : 150;
+  const nTexts = Number(count) > 0 ? Math.round(Number(count)) : 1; // сколько текстов вернуть за один запрос
 
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
     + LW_GEMINI_MODEL + ':generateContent?key=' + encodeURIComponent(key);
@@ -383,12 +412,15 @@ async function lwAiGenerateText(words, level, topic, length) {
           + 'Число слов в списке — это НЕ требуемое количество: используй столько, сколько органично ложится в текст. '
           + 'Не выдумывай перевод слов, просто вплети их в текст. '
           + 'Язык и грамматика должны строго соответствовать уровню CEFR: для A2 — очень простые предложения, '
-          + 'для C1–C2 — богатая лексика и сложные конструкции. Верни: '
+          + 'для C1–C2 — богатая лексика и сложные конструкции. '
+          + 'Напиши РОВНО ' + nTexts + ' независимых текст(а/ов) по этим правилам. Тексты должны заметно '
+          + 'отличаться друг от друга по сюжету/ракурсу (даже при одной теме) и не повторять друг друга. '
+          + 'Верни поле texts — массив из ' + nTexts + ' объект(а/ов), где каждый объект это один текст со следующими полями: '
           + 'title — короткий заголовок на английском; '
           + 'sentences — массив предложений текста ПО ПОРЯДКУ, где каждый элемент это объект '
           + '{ en, ru }: en — одно предложение на английском, ru — его точный перевод на русский. '
           + 'Разбивай текст на естественные предложения; вместе они образуют связный текст. '
-          + 'used — массив слов из списка, которые ты реально использовал в тексте.',
+          + 'used — массив слов из списка, которые ты реально использовал в этом тексте.',
       }],
     },
     contents: [{
@@ -396,7 +428,8 @@ async function lwAiGenerateText(words, level, topic, length) {
       parts: [{
         text: 'Уровень CEFR: ' + lvl + '\n'
           + 'Тема (желательный ориентир, естественность важнее): ' + topicText + '\n'
-          + 'Примерная длина: ' + wordCount + ' слов\n'
+          + 'Примерная длина каждого текста: ' + wordCount + ' слов\n'
+          + 'Сколько текстов вернуть: ' + nTexts + '\n'
           + 'Слова для использования:\n' + list.join('\n'),
       }],
     }],
@@ -406,21 +439,30 @@ async function lwAiGenerateText(words, level, topic, length) {
       responseSchema: {
         type: 'OBJECT',
         properties: {
-          title: { type: 'STRING' },
-          sentences: {
+          texts: {
             type: 'ARRAY',
             items: {
               type: 'OBJECT',
               properties: {
-                en: { type: 'STRING' },
-                ru: { type: 'STRING' },
+                title: { type: 'STRING' },
+                sentences: {
+                  type: 'ARRAY',
+                  items: {
+                    type: 'OBJECT',
+                    properties: {
+                      en: { type: 'STRING' },
+                      ru: { type: 'STRING' },
+                    },
+                    required: ['en', 'ru'],
+                  },
+                },
+                used: { type: 'ARRAY', items: { type: 'STRING' } },
               },
-              required: ['en', 'ru'],
+              required: ['title', 'sentences', 'used'],
             },
           },
-          used: { type: 'ARRAY', items: { type: 'STRING' } },
         },
-        required: ['title', 'sentences', 'used'],
+        required: ['texts'],
       },
     },
   };
@@ -461,25 +503,79 @@ async function lwAiGenerateText(words, level, topic, length) {
   try { parsed = JSON.parse(text); }
   catch (e) { const err = new Error('AI вернул некорректный ответ.'); err.code = 'refusal'; throw err; }
 
-  const sentences = Array.isArray(parsed && parsed.sentences)
-    ? parsed.sentences
-        .map((s) => ({ en: String((s && s.en) || '').trim(), ru: String((s && s.ru) || '').trim() }))
-        .filter((s) => s.en)
-    : [];
-  if (!sentences.length) { const e = new Error('AI вернул пустой текст.'); e.code = 'refusal'; throw e; }
-
-  return {
-    title: String((parsed && parsed.title) || '').trim(),
-    sentences,
-    /* производные для совместимости / полного показа */
-    text: sentences.map((s) => s.en).join(' '),
-    textRu: sentences.map((s) => s.ru).filter(Boolean).join(' '),
-    used: Array.isArray(parsed && parsed.used) ? parsed.used.map((w) => String(w || '').trim()).filter(Boolean) : [],
+  /* Собираем одну карточку из объекта { title, sentences, used }. Возвращает null,
+     если у текста нет ни одного валидного предложения. */
+  const buildCard = (t) => {
+    const sentences = Array.isArray(t && t.sentences)
+      ? t.sentences
+          .map((s) => ({ en: String((s && s.en) || '').trim(), ru: String((s && s.ru) || '').trim() }))
+          .filter((s) => s.en)
+      : [];
+    if (!sentences.length) return null;
+    return {
+      title: String((t && t.title) || '').trim(),
+      sentences,
+      /* производные для совместимости / полного показа */
+      text: sentences.map((s) => s.en).join(' '),
+      textRu: sentences.map((s) => s.ru).filter(Boolean).join(' '),
+      used: Array.isArray(t && t.used) ? t.used.map((w) => String(w || '').trim()).filter(Boolean) : [],
+    };
   };
+
+  const cards = (Array.isArray(parsed && parsed.texts) ? parsed.texts : [])
+    .map(buildCard)
+    .filter(Boolean);
+  if (!cards.length) { const e = new Error('AI вернул пустой текст.'); e.code = 'refusal'; throw e; }
+
+  return cards; // всегда массив (длиной 1..nTexts)
+}
+
+/* Fisher–Yates shuffle (не мутирует вход) — свой случайный срез слов на каждый текст. */
+function lwShuffle(arr) {
+  const a = (arr || []).slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/* Сгенерировать пачку из `count` текстов одним прогоном. Аргументы:
+     words         — весь пул английских слов категории (перетасуем сами);
+     levels        — массив выбранных уровней CEFR (для каждого текста берём случайный);
+     topicPrompts  — массив prompt-описаний тем (для каждого текста берём случайную);
+     length        — примерная длина каждого текста в словах;
+     count         — сколько текстов сгенерировать (по умолчанию LW_READING_BATCH).
+   Делает ОДИН запрос к Gemini, который возвращает `count` текстов сразу (общий уровень
+   и тема на все тексты — выбираются случайно из выбранных). Возвращает массив карточек
+   { title, sentences, text, textRu, used, source, level, id }. Ошибку (с её .code)
+   пробрасывает наверх, чтобы UI показал причину. */
+async function lwAiGenerateBatch(words, levels, topicPrompts, length, count) {
+  const pool = (words || []).map((w) => String(w || '').trim()).filter(Boolean);
+  if (!pool.length) { const e = new Error('Нет слов для текста.'); e.code = 'empty'; throw e; }
+  if (!lwGetGeminiKey()) { const e = new Error('Не задан ключ Gemini.'); e.code = 'no-key'; throw e; }
+
+  const lvls = (levels && levels.length) ? levels : ['B1'];
+  const topics = (topicPrompts && topicPrompts.length) ? topicPrompts : [LW_TEXT_TOPICS[0].prompt];
+  const n = Number(count) > 0 ? Math.round(Number(count)) : LW_READING_BATCH;
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+  const level = pick(lvls);
+  const topic = pick(topics);
+  const picked = lwShuffle(pool); // lwAiGenerateText сам возьмёт первые 60
+
+  const texts = await lwAiGenerateText(picked, level, topic, length, n); // один HTTP-запрос → массив текстов
+  return texts.map((r) => ({
+    ...r,
+    source: picked,
+    level,
+    id: 'rd_' + Date.now().toString(36) + '_' + lwUid(),
+  }));
 }
 
 Object.assign(window, {
   LW_KEYS,
+  LW_READING_BATCH,
   LW_LANGUAGES,
   LW_CEFR_LEVELS,
   LW_TEXT_TOPICS,
@@ -495,4 +591,6 @@ Object.assign(window, {
   lwAiFillWord,
   lwAiFillWords,
   lwAiGenerateText,
+  lwAiGenerateBatch,
+  lwShuffle,
 });

@@ -85,7 +85,52 @@ const Ic = {
       <path d="m4 18 1.5 1.5L8 17" /><path d="M11 18h9" />
     </svg>
   ),
+  Blank: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M4 7h6M14 7h6M4 12h4M20 12h-4M4 17h6M14 17h6" />
+      <rect x="9" y="9.5" width="6" height="5" rx="1.2" strokeDasharray="2 2" />
+    </svg>
+  ),
 };
+
+/* ---------------- Fill-the-blank helpers ----------------
+   Given a word and its example sentence, replace the (first) occurrence of the
+   word — in any of its inflected forms — with a blank. Reuses the same set of
+   word forms that Reading highlights with. Returns the sentence split around the
+   blank ({ before, after, matched }) or null if no form was found. */
+function lwWordForms(word) {
+  const w = String(word || '').toLowerCase().trim();
+  if (!w) return [];
+  const forms = new Set([w]);
+  forms.add(w + 's');
+  forms.add(w + 'es');
+  forms.add(w + 'ed');
+  forms.add(w + 'ing');
+  if (w.endsWith('e')) { forms.add(w.slice(0, -1) + 'ing'); forms.add(w + 'd'); }
+  if (w.endsWith('y')) { forms.add(w.slice(0, -1) + 'ies'); forms.add(w.slice(0, -1) + 'ied'); }
+  return [...forms];
+}
+
+/* Split `sentence` at the first token that matches a form of `word`. Returns
+   { before, matched, after } or null when no whole-word match is found. */
+function lwBlankSentence(sentence, word) {
+  const text = String(sentence || '');
+  if (!text.trim()) return null;
+  const forms = new Set(lwWordForms(word));
+  if (!forms.size) return null;
+  /* split keeping delimiters (non-letters) so we can re-join verbatim */
+  const parts = text.split(/([A-Za-z’']+)/);
+  let idx = -1;
+  for (let i = 1; i < parts.length; i += 2) {
+    if (forms.has(parts[i].toLowerCase())) { idx = i; break; }
+  }
+  if (idx === -1) return null;
+  return {
+    before: parts.slice(0, idx).join(''),
+    matched: parts[idx],
+    after: parts.slice(idx + 1).join(''),
+  };
+}
 
 /* ---------------- Speech synthesis helper ---------------- */
 function lwSpeak(text) {
@@ -314,6 +359,156 @@ function ExampleBulb({ example, onShow }) {
       onPointerDown={(e) => e.stopPropagation()}>
       <Ic.Bulb />
     </button>
+  );
+}
+
+/* ---------------- Fill-the-blank card ----------------
+   Front: the example sentence with the word blanked out. Flip (click / space)
+   to reveal the word + IPA. Lightbulb toggles the sentence translation.
+   Swipe like the flashcards: right = known (card flies off), left = unknown
+   (the sentence is re-queued and shows up again later — via onSwipe). Swipe
+   down = shuffle the deck, swipe up = skip (via onShuffle / onSwipe('skip')). */
+function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, blank }) {
+  const [showTr, setShowTr] = React.useState(false);
+  const [drag, setDrag] = React.useState(null);   // {startX, startY, dx, dy, moved} | null
+  const [flyDir, setFlyDir] = React.useState(null); // 'known' | 'unknown' | 'shuffle' | 'skip' | null
+  const dragRef = React.useRef(null);
+  dragRef.current = drag;
+
+  React.useEffect(() => {
+    setShowTr(false);
+    setDrag(null);
+    setFlyDir(null);
+  }, [entry && entry.id]);
+
+  if (!entry) return null;
+  const hue = group ? group.color : '#E8552F';
+  const hasTr = !!(entry.exampleTr && entry.exampleTr.trim());
+
+  const onPointerDown = (e) => {
+    if (flyDir) return;
+    setDrag({ startX: e.clientX, startY: e.clientY, dx: 0, dy: 0, moved: false });
+  };
+  const onPointerMove = (e) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    const moved = d.moved || Math.abs(dx) > 4 || Math.abs(dy) > 4;
+    setDrag({ ...d, dx, dy, moved });
+  };
+  const endDrag = () => {
+    const d = dragRef.current;
+    if (!d) return;
+    if (d.dy > SWIPE_THRESHOLD && d.dy > Math.abs(d.dx)) {
+      setFlyDir('shuffle');
+      setDrag(null);
+      setTimeout(() => onShuffle && onShuffle(), 560);
+    } else if (-d.dy > SWIPE_THRESHOLD && -d.dy > Math.abs(d.dx)) {
+      setFlyDir('skip');
+      setDrag(null);
+      setTimeout(() => onSwipe('skip'), 220);
+    } else if (Math.abs(d.dx) > SWIPE_THRESHOLD) {
+      const dir = d.dx > 0 ? 'known' : 'unknown';
+      setFlyDir(dir);
+      setDrag(null);
+      setTimeout(() => onSwipe(dir), 220);
+    } else {
+      setDrag(null);
+    }
+  };
+  const onPointerUp = () => endDrag();
+  const onPointerLeave = () => { if (dragRef.current && !flyDir) endDrag(); };
+  const onClick = () => {
+    if (drag && drag.moved) return;
+    if (showTr) { setShowTr(false); return; }
+    onFlip();
+  };
+
+  let style = {};
+  let swipeClass = '';
+  if (flyDir === 'shuffle') {
+    style = { transition: 'none' };
+    swipeClass = ' swipe-shuffle';
+  } else if (flyDir === 'skip') {
+    style = { transform: 'translateY(-600px) rotate(0deg)', opacity: 0, transition: 'transform .22s ease-in, opacity .22s ease-in' };
+    swipeClass = ' swipe-skip';
+  } else if (flyDir) {
+    const sign = flyDir === 'known' ? 1 : -1;
+    style = { transform: `translateX(${sign * 600}px) rotate(${sign * 24}deg)`, opacity: 0, transition: 'transform .22s ease-in, opacity .22s ease-in' };
+    swipeClass = flyDir === 'known' ? ' swipe-known' : ' swipe-unknown';
+  } else if (drag) {
+    if (Math.abs(drag.dy) > Math.abs(drag.dx)) {
+      style = { transform: `translateY(${drag.dy}px)`, transition: 'none' };
+      if (drag.dy > 24) swipeClass = ' swipe-shuffle-hint';
+      else if (drag.dy < -24) swipeClass = ' swipe-skip-hint';
+    } else {
+      const rotate = drag.dx / 18;
+      style = { transform: `translateX(${drag.dx}px) rotate(${rotate}deg)`, transition: 'none' };
+      if (drag.dx > 24) swipeClass = ' swipe-known';
+      else if (drag.dx < -24) swipeClass = ' swipe-unknown';
+    }
+  }
+  const swipeStrength = drag
+    ? Math.min(Math.max(Math.abs(drag.dx), Math.abs(drag.dy)) / SWIPE_THRESHOLD, 1)
+    : (flyDir && flyDir !== 'shuffle' ? 1 : 0);
+
+  return (
+    <div className={'fill-scene' + (flipped ? ' is-flipped' : '') + swipeClass} style={style}
+      role="button" tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => { if (e.key === 'Enter') onFlip(); }}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
+      {swipeClass === ' swipe-known' && <div className="swipe-stamp" style={{ opacity: swipeStrength }}>Know</div>}
+      {swipeClass === ' swipe-unknown' && <div className="swipe-stamp" style={{ opacity: swipeStrength }}>Don't know</div>}
+      {swipeClass === ' swipe-shuffle-hint' && <div className="swipe-stamp swipe-stamp-shuffle" style={{ opacity: swipeStrength }}><Ic.Shuffle width="14" height="14" /> Shuffle</div>}
+      {(swipeClass === ' swipe-skip-hint' || swipeClass === ' swipe-skip') && <div className="swipe-stamp swipe-stamp-skip" style={{ opacity: swipeStrength }}>Skip</div>}
+      {flyDir === 'shuffle' && (
+        <div className="shuffle-fx" aria-hidden="true">
+          <span className="shuffle-card sc-1" />
+          <span className="shuffle-card sc-2" />
+          <span className="shuffle-card sc-3" />
+          <Ic.Shuffle className="shuffle-icon" width="28" height="28" />
+        </div>
+      )}
+      <div className="fill-inner">
+        {/* FRONT: sentence with a blank */}
+        <div className="fill-face fill-front">
+          {group && (
+            <div className="choice-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
+          )}
+          <p className="fill-sentence">
+            {blank ? (
+              <>
+                {blank.before}
+                <span className="fill-blank" />
+                {blank.after}
+              </>
+            ) : entry.example}
+          </p>
+          {showTr && hasTr && (
+            <p className="fill-sentence-tr">{entry.exampleTr}</p>
+          )}
+          <button type="button" className={'card-bulb' + (hasTr ? ' card-bulb-on' : '')}
+            disabled={!hasTr} aria-label="Show sentence translation" aria-pressed={showTr}
+            onClick={(e) => { e.stopPropagation(); if (hasTr) setShowTr((v) => !v); }}
+            onPointerDown={(e) => e.stopPropagation()}>
+            <Ic.Bulb />
+          </button>
+        </div>
+        {/* BACK: the missing word */}
+        <div className="fill-face fill-back" style={{ '--hue': hue }}>
+          <div className="back-label">word</div>
+          <div className="card-tr">{entry.word}</div>
+          {entry.ipa && <div className="back-word">{entry.ipa}</div>}
+          {group && (
+            <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
+          )}
+          <SpeakButton word={entry.word} />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -825,4 +1020,4 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
   );
 }
 
-Object.assign(window, { Ic, PhotoFill, Flashcard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, SpeakButton, GeminiKeyModal });
+Object.assign(window, { Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwBlankSentence, SpeakButton, GeminiKeyModal });
