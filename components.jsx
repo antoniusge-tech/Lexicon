@@ -656,13 +656,23 @@ function lwParseImportLine(line) {
   return null;
 }
 
-function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
-  const [text, setText] = React.useState('');
+/* Full-page import view. Draft text + chosen group + AI status live in App
+   (importState) so a typed/generated list survives leaving the tab; the AI
+   fill runs at the App level (startAiFill) and reports back via toast. */
+function ImportView({ groups, importState, setImportState, startAiFill, onImport, goLibrary }) {
+  const { text, groupId, status, error } = importState;
   const leafGroups = lwLeafGroups(groups);
-  const [groupId, setGroupId] = React.useState(defaultGroupId || (leafGroups[0] && leafGroups[0].id));
   const fileInputRef = React.useRef(null);
-  const [aiState, setAiState] = React.useState('idle'); // idle | loading | <error code>
   const [keyModal, setKeyModal] = React.useState(false);
+
+  const setText = (t) => setImportState((s) => ({ ...s, text: t }));
+  const setGroupId = (id) => setImportState((s) => ({ ...s, groupId: id }));
+
+  /* default to the first available category once groups load */
+  React.useEffect(() => {
+    if (!groupId && leafGroups.length) setGroupId(leafGroups[0].id);
+    // eslint-disable-next-line
+  }, [leafGroups, groupId]);
 
   const handleFile = (e) => {
     const file = e.target.files && e.target.files[0];
@@ -678,7 +688,8 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
 
   const validCount = rows.filter(Boolean).length;
   const invalidCount = rows.length - validCount;
-  const canImport = validCount > 0 && groupId;
+  const loading = status === 'loading';
+  const canImport = validCount > 0 && groupId && !loading;
 
   // «Сырые» строки — те, где нет ни транскрипции, ни перевода (обычно просто
   // одно слово). Их AI может обогатить. Кнопку AI показываем, только пока
@@ -695,31 +706,10 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
     .filter(Boolean);
   const showAi = rawWords.length > 0;
 
-  const runAi = () => {
-    setAiState('loading');
-    window.lwAiFillWords(rawWords)
-      .then((res) => {
-        // Обогащённые строки; исходно уже полные строки оставляем как есть.
-        const byWord = {};
-        res.forEach((r) => { byWord[r.word.toLowerCase()] = r; });
-        const out = lines.map((l) => {
-          const p = lwParseImportLine(l);
-          // Для голого слова без разделителей берём саму строку как слово.
-          const w = (p && p.word) || (l.indexOf('|') === -1 ? l : '');
-          const r = w && byWord[w.toLowerCase()];
-          if (!r) return l; // не изменяем строки, которые AI не трогал
-          return [r.word, r.ipa, r.tr, r.example, r.exampleTr].join(' | ');
-        });
-        setText(out.join('\n'));
-        setAiState('idle');
-      })
-      .catch((e) => setAiState((e && e.code) || 'error'));
-  };
-
   const fillWithAi = () => {
-    if (!rawWords.length) return;
+    if (!rawWords.length || loading) return;
     if (!window.lwHasGeminiKey()) { setKeyModal(true); return; }
-    runAi();
+    startAiFill(rawWords);
   };
 
   const submit = () => {
@@ -733,11 +723,26 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
       example: r.example || '',
       exampleTr: r.exampleTr || '',
     }));
+    // Импортируем и очищаем черновик — иначе текст «не пропадает» до импорта.
     onImport(items);
+    setImportState((s) => ({ ...s, text: '', status: 'idle', error: null }));
   };
 
+  const clearText = () => setImportState((s) => ({ ...s, text: '', status: 'idle', error: null }));
+
   return (
-    <div className="form">
+    <div className="library import-view">
+      <div className="lib-head">
+        <div>
+          <h1 className="lib-title">Import words</h1>
+          <p className="lib-sub">Вставьте список, выберите категорию и импортируйте.</p>
+        </div>
+        <div className="lib-head-actions">
+          <button className="btn btn-soft" onClick={goLibrary} disabled={loading}><Ic.Library /> Library</button>
+        </div>
+      </div>
+
+      <div className="form">
       <p className="field-hint">
         Одна строка — одно слово. Формат: <code>слово | транскрипция | перевод | пример использования | перевод примера</code>
         {' '}(пример и его перевод опциональны), или <code>слово || перевод</code> (без транскрипции), или <code>слово | перевод</code>.
@@ -746,37 +751,45 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
         <div className="field-label-row">
           <span className="field-label">Текст для импорта</span>
           {showAi && (
-            <button type="button" className="btn btn-soft sm" disabled={aiState === 'loading'} onClick={fillWithAi}>
-              {aiState === 'loading' ? <span className="spinner" aria-hidden="true" /> : <Ic.Bulb width="15" height="15" />}
-              {aiState === 'loading' ? 'AI заполняет…' : `Заполнить с AI (${rawWords.length})`}
+            <button type="button" className="btn btn-soft sm" disabled={loading} onClick={fillWithAi}>
+              {loading ? <span className="spinner" aria-hidden="true" /> : <Ic.Bulb width="15" height="15" />}
+              {loading ? 'AI заполняет…' : `Заполнить с AI (${rawWords.length})`}
             </button>
           )}
-          <button type="button" className="btn btn-soft sm" onClick={() => fileInputRef.current && fileInputRef.current.click()}>
+          <button type="button" className="btn btn-soft sm" disabled={loading}
+            onClick={() => fileInputRef.current && fileInputRef.current.click()}>
             <Ic.Plus width="15" height="15" /> Load file
           </button>
+          {text.trim() && (
+            <button type="button" className="btn btn-ghost sm" disabled={loading} onClick={clearText}>
+              <Ic.Trash width="15" height="15" /> Очистить
+            </button>
+          )}
           <input ref={fileInputRef} type="file" accept=".txt,text/plain" style={{ display: 'none' }} onChange={handleFile} />
         </div>
-        <textarea className="input mono" rows={8} value={text} autoFocus
+        <textarea className="input mono" rows={10} value={text} autoFocus disabled={loading}
           placeholder={'journey | /ˈdʒɜː.ni/ | путешествие | We went on a long journey. | Мы отправились в долгое путешествие.\nbook || книга'}
           onChange={(e) => setText(e.target.value)} />
-        {aiState === 'quota' && <p className="field-hint">Дневной лимит Gemini исчерпан. Попробуйте позже.</p>}
-        {aiState === 'bad-key' && (
+        {error === 'bad-key' ? (
           <p className="field-hint">Ключ Gemini недействителен.{' '}
             <button type="button" className="btn btn-ghost sm" onClick={() => setKeyModal(true)}>Изменить ключ</button>
           </p>
-        )}
-        {aiState === 'overload' && <p className="field-hint">Модель Gemini сейчас перегружена. Попробуйте через минуту.</p>}
-        {aiState === 'refusal' && <p className="field-hint">Модель не смогла обработать список. Попробуйте меньше слов.</p>}
-        {aiState !== 'idle' && aiState !== 'loading'
-          && !['quota', 'bad-key', 'overload', 'refusal'].includes(aiState)
-          && <p className="field-hint">Ошибка AI-сервиса. Попробуйте позже.</p>}
+        ) : error === 'quota' ? (
+          <p className="field-hint">Дневной лимит Gemini исчерпан. Попробуйте позже.</p>
+        ) : error === 'overload' ? (
+          <p className="field-hint">Модель Gemini сейчас перегружена. Попробуйте через минуту.</p>
+        ) : error === 'refusal' ? (
+          <p className="field-hint">Модель не смогла обработать список. Попробуйте меньше слов.</p>
+        ) : error ? (
+          <p className="field-hint">Ошибка AI-сервиса. Попробуйте позже.</p>
+        ) : null}
       </label>
 
       <div className="field">
         <span className="field-label">Group</span>
         <div className="group-pick">
           {leafGroups.map((g) => (
-            <button key={g.id} type="button"
+            <button key={g.id} type="button" disabled={loading}
               className={'gp-opt' + (g.id === groupId ? ' gp-on' : '')}
               onClick={() => setGroupId(g.id)}>
               <span className="chip-dot" style={{ background: g.color }} />
@@ -784,6 +797,9 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
             </button>
           ))}
         </div>
+        {leafGroups.length === 0 && (
+          <p className="field-hint">Сначала создайте категорию в разделе Library.</p>
+        )}
       </div>
 
       {rows.length > 0 && (
@@ -795,18 +811,18 @@ function ImportForm({ groups, defaultGroupId, onImport, onCancel }) {
       {keyModal && (
         <GeminiKeyModal
           onClose={() => setKeyModal(false)}
-          onSaved={(ok) => { if (ok && rawWords.length) runAi(); }}
+          onSaved={(ok) => { if (ok && rawWords.length) startAiFill(rawWords); }}
         />
       )}
 
       <div className="form-foot">
-        <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
         <button className="btn btn-primary" disabled={!canImport} onClick={submit}>
           Import {validCount > 0 ? `(${validCount})` : ''}
         </button>
+      </div>
       </div>
     </div>
   );
 }
 
-Object.assign(window, { Ic, PhotoFill, Flashcard, GroupChip, ActionsMenu, Modal, WordForm, ImportForm, lwLeafGroups, SpeakButton, GeminiKeyModal });
+Object.assign(window, { Ic, PhotoFill, Flashcard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, SpeakButton, GeminiKeyModal });

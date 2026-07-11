@@ -11,7 +11,7 @@ function shuffle(arr) {
   return a;
 }
 
-const LW_VIEW_ORDER = ['study', 'choice', 'reading', 'category', 'library'];
+const LW_VIEW_ORDER = ['study', 'choice', 'reading', 'category', 'library', 'import'];
 
 /* Human-readable reading-generation errors, keyed by the .code set in data.jsx.
    Reused by the reading tab's inline hints and by the toast messages. */
@@ -21,6 +21,15 @@ const LW_READING_ERROR_MSG = {
   refusal: 'Модель не смогла составить текст. Попробуйте ещё раз.',
   overload: 'Модель Gemini сейчас перегружена. Попробуйте через минуту.',
   empty: 'В этой категории пока нет слов.',
+  error: 'Ошибка AI-сервиса. Попробуйте позже.',
+};
+
+/* Same, but for the import tab's "Заполнить с AI" (batch word enrichment). */
+const LW_IMPORT_ERROR_MSG = {
+  quota: 'Дневной лимит Gemini исчерпан. Попробуйте позже.',
+  'bad-key': 'Ключ Gemini недействителен. Обновите ключ в настройках.',
+  refusal: 'Модель не смогла обработать список. Попробуйте меньше слов.',
+  overload: 'Модель Gemini сейчас перегружена. Попробуйте через минуту.',
   error: 'Ошибка AI-сервиса. Попробуйте позже.',
 };
 
@@ -41,6 +50,10 @@ function App() {
      started on the reading tab keeps running — and stays visible — even after
      the user navigates away and comes back. */
   const [reading, setReading] = useState({ result: null, flipped: false, status: 'idle', error: null });
+  /* Import draft lives here so the generated/typed text survives leaving the
+     import tab. status/error drive the AI-fill button + toasts, same as reading.
+     groupId is chosen lazily once groups load (see effect below). */
+  const [importState, setImportState] = useState({ text: '', groupId: '', status: 'idle', error: null });
   const [toasts, setToasts] = useState([]);
   /* monotonically increasing id: lets us ignore a stale response when the user
      kicks off a newer generation ("Другой текст") before the previous resolves. */
@@ -84,6 +97,60 @@ function App() {
         });
       });
   }, [pushToast]);
+
+  /* Enrich the import draft with AI. Like startReadingGeneration, the promise
+     runs at the App level so it outlives the import tab; blocks the form via
+     status:'loading' and raises a toast when done. rawWords are the bare words
+     (no ipa/tr yet) extracted by ImportView. */
+  const startImportAiFill = useCallback((rawWords) => {
+    const myGen = ++genIdRef.current;
+    setImportState((s) => ({ ...s, status: 'loading', error: null }));
+    window.lwAiFillWords(rawWords)
+      .then((res) => {
+        if (genIdRef.current !== myGen) return;
+        const byWord = {};
+        res.forEach((r) => { byWord[r.word.toLowerCase()] = r; });
+        setImportState((s) => {
+          const lines = s.text.split('\n');
+          const out = lines.map((line) => {
+            const l = line.trim();
+            if (!l) return line;
+            const p = window.lwParseImportLine(l);
+            const w = (p && p.word) || (l.indexOf('|') === -1 ? l : '');
+            const r = w && byWord[w.toLowerCase()];
+            if (!r) return line; // leave lines AI didn't touch untouched
+            return [r.word, r.ipa, r.tr, r.example, r.exampleTr].join(' | ');
+          });
+          return { ...s, text: out.join('\n'), status: 'idle', error: null };
+        });
+        pushToast({
+          kind: 'success',
+          title: 'Слова заполнены',
+          msg: 'AI дополнил транскрипции, переводы и примеры.',
+          action: { label: 'Открыть', view: 'import' },
+        });
+      })
+      .catch((e) => {
+        if (genIdRef.current !== myGen) return;
+        const code = (e && e.code) || 'error';
+        setImportState((s) => ({ ...s, status: 'idle', error: code }));
+        pushToast({
+          kind: 'error',
+          title: 'Не удалось заполнить слова',
+          msg: LW_IMPORT_ERROR_MSG[code] || LW_IMPORT_ERROR_MSG.error,
+          action: { label: 'К импорту', view: 'import' },
+        });
+      });
+  }, [pushToast]);
+
+  /* write imported words to Firestore (owned by this user) */
+  const importWords = useCallback((items) => {
+    if (!authUser) return;
+    const isAdmin = userDoc && userDoc.role === 'admin';
+    items.forEach((w) => window.lwSetDoc(window.LW_COLLECTIONS.words,
+      { ...w, userId: authUser.uid, username: userDoc && userDoc.username, shared: isAdmin })
+      .catch((e) => { console.error('importWords failed', e); alert('Не удалось импортировать слово: ' + (e && e.message || e)); }));
+  }, [authUser, userDoc]);
 
   /* auth state */
   useEffect(() => window.lwWatchAuth(setAuthUser), []);
@@ -196,7 +263,12 @@ function App() {
             startGenerate={startReadingGeneration}
             goLibrary={() => setView('library')} />
         ) : view === 'library' ? (
-          <LibraryView groups={scopedGroups} words={scopedWords} userId={authUser.uid} username={userDoc.username} isAdmin={userDoc.role === 'admin'} />
+          <LibraryView groups={scopedGroups} words={scopedWords} userId={authUser.uid} username={userDoc.username} isAdmin={userDoc.role === 'admin'}
+            goImport={() => setView('import')} />
+        ) : view === 'import' ? (
+          <ImportView groups={scopedGroups} importState={importState} setImportState={setImportState}
+            startAiFill={startImportAiFill} onImport={importWords}
+            goLibrary={() => setView('library')} />
         ) : view === 'admin' ? (
           <AdminView currentUid={authUser.uid} />
         ) : (
@@ -231,6 +303,12 @@ function App() {
       {view === 'library' && (
         <footer className="appfooter">
           {scopedWords.length} words across {scopedGroups.filter((g) => !g.parentId).length} groups
+          <ViewDots view={view} setView={setView} />
+        </footer>
+      )}
+      {view === 'import' && (
+        <footer className="appfooter">
+          Import words
           <ViewDots view={view} setView={setView} />
         </footer>
       )}
@@ -401,6 +479,9 @@ function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, 
             </button>
             <button className={'menu-item' + (view === 'library' ? ' on' : '')} onClick={() => go('library')}>
               <Ic.Library /> Library
+            </button>
+            <button className={'menu-item' + (view === 'import' ? ' on' : '')} onClick={() => go('import')}>
+              <Ic.Plus /> Import
             </button>
             <div className="menu-sep" />
             <button className="menu-item" onClick={() => setDirection(direction === 'en-ru' ? 'ru-en' : 'en-ru')} type="button">
@@ -1231,10 +1312,9 @@ function AdminAllDataView({ data, onChanged }) {
 }
 
 /* ---------------- Library view ---------------- */
-function LibraryView({ groups, words, userId, username, isAdmin }) {
+function LibraryView({ groups, words, userId, username, isAdmin, goImport }) {
   const [wordModal, setWordModal] = useState(null); // {mode, initial?, groupId?}
   const [groupModal, setGroupModal] = useState(null); // {mode, initial?, parentGroup?}
-  const [importModal, setImportModal] = useState(null); // {groupId?}
   const [confirm, setConfirm] = useState(null); // {kind, id, label}
   const [openGroups, setOpenGroups] = useState([]);
   const [query, setQuery] = useState('');
@@ -1269,11 +1349,6 @@ function LibraryView({ groups, words, userId, username, isAdmin }) {
     if (!openGroups.includes(g.id)) setOpenGroups((o) => [...o, g.id]);
     if (g.parentId && !openGroups.includes(g.parentId)) setOpenGroups((o) => [...o, g.parentId]);
     setGroupModal(null);
-  };
-  const importWords = (items) => {
-    items.forEach((w) => window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId, username, shared: isAdmin })
-      .catch((e) => { console.error('importWords failed', e); alert('Не удалось импортировать слово: ' + (e && e.message || e)); }));
-    setImportModal(null);
   };
   const doDelete = () => {
     if (!confirm) return;
@@ -1322,7 +1397,7 @@ function LibraryView({ groups, words, userId, username, isAdmin }) {
             value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
         <div className="lib-head-actions">
-          <button className="btn btn-soft" onClick={() => setImportModal({})}><Ic.Plus /> Import</button>
+          <button className="btn btn-soft" onClick={goImport}><Ic.Plus /> Import</button>
           <button className="btn btn-primary" onClick={() => setGroupModal({ mode: 'new' })}><Ic.Plus /> New group</button>
         </div>
       </div>
@@ -1353,7 +1428,6 @@ function LibraryView({ groups, words, userId, username, isAdmin }) {
                   <ActionsMenu items={[
                     ...(subGroups.length === 0 ? [
                       { label: 'Word', icon: <Ic.Plus width="15" height="15" />, onClick: () => setWordModal({ mode: 'new', groupId: g.id }) },
-                      { label: 'Import', icon: <Ic.Plus width="15" height="15" />, onClick: () => setImportModal({ groupId: g.id }) },
                     ] : []),
                     ...(items.length === 0 ? [
                       { label: 'Subgroup', icon: <Ic.Plus width="15" height="15" />, onClick: () => setGroupModal({ mode: 'new', parentGroup: g }) },
@@ -1383,7 +1457,6 @@ function LibraryView({ groups, words, userId, username, isAdmin }) {
                           <div className="grp-tools">
                             <ActionsMenu items={[
                               { label: 'Word', icon: <Ic.Plus width="15" height="15" />, onClick: () => setWordModal({ mode: 'new', groupId: sg.id }) },
-                              { label: 'Import', icon: <Ic.Plus width="15" height="15" />, onClick: () => setImportModal({ groupId: sg.id }) },
                               ...(canEdit(sg) ? [
                                 { label: 'Edit subgroup', icon: <Ic.Edit />, onClick: () => setGroupModal({ mode: 'edit', initial: sg }) },
                                 { label: 'Delete subgroup', icon: <Ic.Trash />, danger: true, onClick: () => setConfirm({ kind: 'group', id: sg.id, label: sg.name }) },
@@ -1407,12 +1480,6 @@ function LibraryView({ groups, words, userId, username, isAdmin }) {
         <Modal title={wordModal.mode === 'edit' ? 'Edit word' : 'New word'} onClose={() => setWordModal(null)}>
           <WordForm initial={wordModal.initial} groups={groups} defaultGroupId={wordModal.groupId}
             onSave={saveWord} onCancel={() => setWordModal(null)} />
-        </Modal>
-      )}
-      {importModal && (
-        <Modal title="Import words" onClose={() => setImportModal(null)}>
-          <ImportForm groups={groups} defaultGroupId={importModal.groupId}
-            onImport={importWords} onCancel={() => setImportModal(null)} />
         </Modal>
       )}
       {groupModal && (
