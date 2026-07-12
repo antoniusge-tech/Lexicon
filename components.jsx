@@ -154,7 +154,7 @@ function PhotoFill({ word, hue }) {
 /* ---------------- Flashcard ---------------- */
 const SWIPE_THRESHOLD = 100;
 
-function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, direction = 'en-ru' }) {
+function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupClick, direction = 'en-ru' }) {
   const [drag, setDrag] = React.useState(null); // {startX, startY, dx, dy} or null
   const [flyDir, setFlyDir] = React.useState(null); // 'known' | 'unknown' | null
   const [showExample, setShowExample] = React.useState(false);
@@ -169,6 +169,19 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, directio
 
   if (!entry) return null;
   const hue = group ? group.color : '#E8552F';
+
+  const groupTag = group ? (
+    onGroupClick ? (
+      <button type="button" className="card-tag card-tag-btn"
+        onClick={(e) => { e.stopPropagation(); onGroupClick(group); }}
+        onPointerDown={(e) => e.stopPropagation()}
+        title="Open categories">
+        <span className="dot" style={{ background: hue }} />{group.name}
+      </button>
+    ) : (
+      <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
+    )
+  ) : null;
 
   const onPointerDown = (e) => {
     if (flyDir) return;
@@ -269,9 +282,7 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, directio
               <div className="card-body">
                 <div className="card-word">{entry.tr}</div>
               </div>
-              {group && (
-                <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
-              )}
+              {groupTag}
               <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
             </div>
             {/* BACK: English word */}
@@ -283,9 +294,7 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, directio
               <div className="back-word">
                 {entry.ipa}
               </div>
-              {group && (
-                <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
-              )}
+              {groupTag}
               <SpeakButton word={entry.word} />
               <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
             </div>
@@ -303,9 +312,7 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, directio
                 <div className="card-word">{entry.word}</div>
                 <div className="card-ipa">{entry.ipa}</div>
               </div>
-              {group && (
-                <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
-              )}
+              {groupTag}
               <SpeakButton word={entry.word} />
               <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
             </div>
@@ -316,9 +323,7 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, directio
                 {entry.tr}
               </div>
               <div className="back-word">{entry.word} <span className="back-ipa">{entry.ipa}</span></div>
-              {group && (
-                <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
-              )}
+              {groupTag}
               <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
             </div>
           </>
@@ -368,15 +373,13 @@ function ExampleBulb({ example, onShow }) {
    Swipe like the flashcards: right = known (card flies off), left = unknown
    (the sentence is re-queued and shows up again later — via onSwipe). Swipe
    down = shuffle the deck, swipe up = skip (via onShuffle / onSwipe('skip')). */
-function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, blank }) {
-  const [showTr, setShowTr] = React.useState(false);
+function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupClick, blank }) {
   const [drag, setDrag] = React.useState(null);   // {startX, startY, dx, dy, moved} | null
   const [flyDir, setFlyDir] = React.useState(null); // 'known' | 'unknown' | 'shuffle' | 'skip' | null
   const dragRef = React.useRef(null);
   dragRef.current = drag;
 
   React.useEffect(() => {
-    setShowTr(false);
     setDrag(null);
     setFlyDir(null);
   }, [entry && entry.id]);
@@ -384,6 +387,21 @@ function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, blank }) 
   if (!entry) return null;
   const hue = group ? group.color : '#E8552F';
   const hasTr = !!(entry.exampleTr && entry.exampleTr.trim());
+
+  const makeGroupTag = (baseClass) => {
+    if (!group) return null;
+    if (!onGroupClick) {
+      return <div className={baseClass}><span className="dot" style={{ background: hue }} />{group.name}</div>;
+    }
+    return (
+      <button type="button" className={baseClass + ' ' + baseClass + '-btn'}
+        onClick={(e) => { e.stopPropagation(); onGroupClick(group); }}
+        onPointerDown={(e) => e.stopPropagation()}
+        title="Open categories">
+        <span className="dot" style={{ background: hue }} />{group.name}
+      </button>
+    );
+  };
 
   const onPointerDown = (e) => {
     if (flyDir) return;
@@ -421,7 +439,6 @@ function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, blank }) 
   const onPointerLeave = () => { if (dragRef.current && !flyDir) endDrag(); };
   const onClick = () => {
     if (drag && drag.moved) return;
-    if (showTr) { setShowTr(false); return; }
     onFlip();
   };
 
@@ -475,9 +492,7 @@ function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, blank }) 
       <div className="fill-inner">
         {/* FRONT: sentence with a blank */}
         <div className="fill-face fill-front">
-          {group && (
-            <div className="choice-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
-          )}
+          {makeGroupTag('choice-tag')}
           <p className="fill-sentence">
             {blank ? (
               <>
@@ -487,24 +502,16 @@ function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, blank }) 
               </>
             ) : entry.example}
           </p>
-          {showTr && hasTr && (
+          {hasTr && (
             <p className="fill-sentence-tr">{entry.exampleTr}</p>
           )}
-          <button type="button" className={'card-bulb' + (hasTr ? ' card-bulb-on' : '')}
-            disabled={!hasTr} aria-label="Show sentence translation" aria-pressed={showTr}
-            onClick={(e) => { e.stopPropagation(); if (hasTr) setShowTr((v) => !v); }}
-            onPointerDown={(e) => e.stopPropagation()}>
-            <Ic.Bulb />
-          </button>
         </div>
         {/* BACK: the missing word */}
         <div className="fill-face fill-back" style={{ '--hue': hue }}>
           <div className="back-label">word</div>
           <div className="card-tr">{entry.word}</div>
           {entry.ipa && <div className="back-word">{entry.ipa}</div>}
-          {group && (
-            <div className="card-tag"><span className="dot" style={{ background: hue }} />{group.name}</div>
-          )}
+          {makeGroupTag('card-tag')}
           <SpeakButton word={entry.word} />
         </div>
       </div>

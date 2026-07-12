@@ -55,11 +55,13 @@ function App() {
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [geminiKeyOpen, setGeminiKeyOpen] = useState(false);
   /* Reading practice state lives here so it survives switching tabs.
-     cards — пачка из ~10 сгенерированных текстов-карточек, index — текущая.
+     cards — пачка из LW_READING_BATCH сгенерированных текстов-карточек, index — текущая.
      status/error live here too (not inside ReadingView) so that a generation
      started on the reading tab keeps running — and stays visible — even after
      the user navigates away and comes back. cards+index персистятся в
-     localStorage (см. эффект ниже), status/error/flipped — эфемерны. */
+     localStorage (см. эффект ниже), status/error — эфемерны. Какая сторона
+     показана (тексты или настройки) определяется в ReadingView наличием
+     карточек, отдельного флага нет. */
   const [reading, setReading] = useState(() => {
     const saved = window.lwLoad(window.LW_KEYS.reading, null);
     const cards = saved && Array.isArray(saved.cards) ? saved.cards : [];
@@ -67,10 +69,8 @@ function App() {
     return {
       cards,
       index: cards.length ? Math.min(index, cards.length - 1) : 0,
-      flipped: cards.length > 0,
       status: 'idle',
       error: null,
-      params: null, // параметры генерации; заполняются при старте, живут в рамках сессии
     };
   });
   /* Import draft lives here so the generated/typed text survives leaving the
@@ -97,13 +97,11 @@ function App() {
   const startReadingGeneration = useCallback((params) => {
     const { pool, levels, topicPrompts, lengthWords } = params;
     const myGen = ++genIdRef.current;
-    /* запоминаем параметры генерации, чтобы ленивая догрузка (continue…) шла
-       по тем же настройкам без участия ReadingView */
-    setReading((r) => ({ ...r, cards: [], index: 0, flipped: false, status: 'loading', error: null, params }));
+    setReading((r) => ({ ...r, cards: [], index: 0, status: 'loading', error: null }));
     window.lwAiGenerateBatch(pool, levels, topicPrompts, lengthWords, window.LW_READING_BATCH)
       .then((cards) => {
         if (genIdRef.current !== myGen) return; // superseded by a newer request
-        setReading((r) => ({ cards, index: 0, flipped: true, status: 'idle', error: null, params: r.params }));
+        setReading((r) => ({ ...r, cards, index: 0, status: 'idle', error: null }));
         pushToast({
           kind: 'success',
           title: 'Тексты готовы (' + cards.length + ')',
@@ -120,43 +118,6 @@ function App() {
           title: 'Не удалось сгенерировать текст',
           msg: LW_READING_ERROR_MSG[code] || LW_READING_ERROR_MSG.error,
           action: { label: 'К настройкам', view: 'reading' },
-        });
-      });
-  }, [pushToast]);
-
-  /* Ленивая догрузка следующей пары текстов той же пачки. Вызывается, когда
-     пользователь долистал до конца и нажал «Дальше». В отличие от start:
-     — не сбрасывает уже сгенерированные карточки, а ДОБАВЛЯЕТ новые в конец;
-     — статус 'appending' (не 'loading'), чтобы текущая карточка оставалась
-       видимой и настройки не блокировались;
-     — по завершении переводит index на первую из новых карточек. */
-  const continueReadingGeneration = useCallback(() => {
-    const myGen = ++genIdRef.current;
-    let params = null;
-    setReading((r) => {
-      params = r.params;
-      if (!params || r.status === 'loading' || r.status === 'appending') return r;
-      return { ...r, status: 'appending', error: null };
-    });
-    if (!params) return; // нет запомненных параметров — нечего догружать
-    const { pool, levels, topicPrompts, lengthWords } = params;
-    window.lwAiGenerateBatch(pool, levels, topicPrompts, lengthWords, window.LW_READING_BATCH)
-      .then((cards) => {
-        if (genIdRef.current !== myGen) return;
-        setReading((r) => {
-          const next = [...(r.cards || []), ...cards];
-          return { ...r, cards: next, index: (r.cards || []).length, flipped: true, status: 'idle', error: null };
-        });
-      })
-      .catch((e) => {
-        if (genIdRef.current !== myGen) return;
-        const code = (e && e.code) || 'error';
-        setReading((r) => ({ ...r, status: 'idle', error: code }));
-        pushToast({
-          kind: 'error',
-          title: 'Не удалось догрузить тексты',
-          msg: LW_READING_ERROR_MSG[code] || LW_READING_ERROR_MSG.error,
-          action: { label: 'К чтению', view: 'reading' },
         });
       });
   }, [pushToast]);
@@ -242,7 +203,7 @@ function App() {
   useEffect(() => { document.documentElement.dataset.theme = theme; window.lwSave(LW_KEYS.theme, theme); }, [theme]);
   useEffect(() => { window.lwSave(LW_KEYS.selected, selected); }, [selected]);
   useEffect(() => { window.lwSave(LW_KEYS.direction, direction); }, [direction]);
-  /* персистим пачку карточек чтения (без эфемерных status/error/flipped) */
+  /* персистим пачку карточек чтения (без эфемерных status/error) */
   useEffect(() => {
     window.lwSave(LW_KEYS.reading, { cards: reading.cards, index: reading.index });
   }, [reading.cards, reading.index]);
@@ -313,7 +274,6 @@ function App() {
           <ReadingView groups={scopedGroups} words={scopedWords} countByGroup={scopedCountByGroup}
             reading={reading} setReading={setReading}
             startGenerate={startReadingGeneration}
-            continueGenerate={continueReadingGeneration}
             goLibrary={() => setView('library')} />
         ) : view === 'library' ? (
           <LibraryView groups={scopedGroups} words={scopedWords} userId={authUser.uid} username={userDoc.username} isAdmin={userDoc.role === 'admin'}
@@ -750,7 +710,8 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, directio
       <div className="stage">
         {entry ? (
           <Flashcard entry={entry} group={group} flipped={flipped} direction={direction}
-            onFlip={() => setFlipped((f) => !f)} onSwipe={mark} onShuffle={shuffleDeck} />
+            onFlip={() => setFlipped((f) => !f)} onSwipe={mark} onShuffle={shuffleDeck}
+            onGroupClick={goCategory} />
         ) : allDone ? (
           <div className="empty-card">
             <Ic.Check width="30" height="30" />
@@ -847,7 +808,10 @@ function ChoiceView({ words, selected, groupById, direction, goLibrary, goCatego
       {entry ? (
         <div className="choice-card">
           {group && (
-            <div className="choice-tag"><span className="dot" style={{ background: group.color }} />{group.name}</div>
+            <button type="button" className="choice-tag choice-tag-btn"
+              onClick={() => goCategory()} title="Open categories">
+              <span className="dot" style={{ background: group.color }} />{group.name}
+            </button>
           )}
           <div className="choice-prompt-row">
             <div className="choice-prompt">{askEnglish ? entry.tr : entry.word}</div>
@@ -991,7 +955,8 @@ function FillView({ words, selected, groupById, goLibrary, goCategory }) {
       <div className="stage">
         {entry ? (
           <FillCard entry={entry} group={group} flipped={flipped} blank={blank}
-            onFlip={() => setFlipped((f) => !f)} onSwipe={mark} onShuffle={shuffleDeck} />
+            onFlip={() => setFlipped((f) => !f)} onSwipe={mark} onShuffle={shuffleDeck}
+            onGroupClick={goCategory} />
         ) : allDone ? (
           <div className="empty-card">
             <Ic.Check width="30" height="30" />
@@ -1022,35 +987,90 @@ function FillView({ words, selected, groupById, goLibrary, goCategory }) {
 
 /* ---------------- Reading view (AI-generated text from a category) ---------------- */
 
-/* split a base word into forms we highlight (plural/verb endings) */
-function readingWordForms(word) {
-  const w = String(word || '').toLowerCase().trim();
-  if (!w) return [];
-  const forms = new Set([w]);
-  forms.add(w + 's');
-  forms.add(w + 'es');
-  forms.add(w + 'ed');
-  forms.add(w + 'ing');
-  if (w.endsWith('e')) { forms.add(w.slice(0, -1) + 'ing'); forms.add(w + 'd'); }
-  if (w.endsWith('y')) { forms.add(w.slice(0, -1) + 'ies'); forms.add(w.slice(0, -1) + 'ied'); }
-  return [...forms];
+/* reduce a token to a rough stem so grader↔graders, plan↔planning etc. match
+   regardless of which form is stored in the category vs. printed in the text */
+function readingStem(token) {
+  let w = String(token || '').toLowerCase().replace(/[’']/g, '');
+  if (!w) return '';
+  /* strip common inflectional endings */
+  if (w.length > 4 && w.endsWith('ies')) return w.slice(0, -3) + 'y';
+  if (w.length > 4 && w.endsWith('ied')) return w.slice(0, -3) + 'y';
+  if (w.length > 4 && w.endsWith('ing')) w = w.slice(0, -3);
+  else if (w.length > 3 && w.endsWith('ed')) w = w.slice(0, -2);
+  else if (w.length > 3 && w.endsWith('es')) w = w.slice(0, -2);
+  else if (w.length > 2 && w.endsWith('s')) w = w.slice(0, -1);
+  /* undo consonant doubling (dig→digging, plan→planning) */
+  if (w.length > 2 && /([bcdfghjklmnpqrstvwxz])\1$/.test(w)) w = w.slice(0, -1);
+  /* drop a trailing silent-e artefact so care/caring, spade/spaded align */
+  return w;
 }
 
-/* render a sentence, wrapping tokens that match the active highlighted word in <mark> */
+/* two tokens match if they share a stem (either direction of inflection) */
+function readingTokensMatch(a, b) {
+  const la = String(a).toLowerCase().replace(/[’']/g, '');
+  const lb = String(b).toLowerCase().replace(/[’']/g, '');
+  if (la === lb) return true;
+  const sa = readingStem(a);
+  const sb = readingStem(b);
+  if (!sa || !sb) return false;
+  if (sa === sb) return true;
+  /* handle silent-e: spade→spaded stems to "spad", base is "spade" */
+  return sa === sb.replace(/e$/, '') || sb === sa.replace(/e$/, '');
+}
+
+/* split the highlight phrase into meaningful sub-words (drops filler like "on") */
+function readingPhraseTokens(highlight) {
+  return String(highlight || '').match(/[A-Za-z0-9’']+/g) || [];
+}
+
+/* render a sentence, wrapping tokens that match the active highlighted word/phrase in <mark>.
+   Supports multi-word phrases (on cloud 9, work out) by matching a run of tokens. */
 function ReadingSentenceText({ text, highlight }) {
   if (!highlight) return text;
-  const forms = new Set(readingWordForms(highlight));
-  /* split keeping delimiters (non-letters) so we can re-join verbatim */
-  const parts = text.split(/([A-Za-z’']+)/);
-  return parts.map((part, i) => {
-    if (i % 2 === 1 && forms.has(part.toLowerCase())) {
-      return <mark key={i} className="reading-hl">{part}</mark>;
+  const target = readingPhraseTokens(highlight);
+  if (target.length === 0) return text;
+
+  /* split keeping delimiters so we can re-join verbatim */
+  const parts = String(text).split(/([A-Za-z0-9’']+)/);
+  /* map word-part indices (odd positions) to their token order */
+  const wordIdx = [];
+  for (let i = 1; i < parts.length; i += 2) wordIdx.push(i);
+
+  /* mark which parts belong to a match */
+  const marked = new Array(parts.length).fill(false);
+  for (let k = 0; k <= wordIdx.length - target.length; k++) {
+    let ok = true;
+    for (let t = 0; t < target.length; t++) {
+      if (!readingTokensMatch(parts[wordIdx[k + t]], target[t])) { ok = false; break; }
     }
-    return part;
+    if (!ok) continue;
+    /* mark the words and any delimiters between them (so "work out" highlights as one) */
+    const from = wordIdx[k];
+    const to = wordIdx[k + target.length - 1];
+    for (let p = from; p <= to; p++) marked[p] = true;
+  }
+
+  /* collapse consecutive marked parts into single <mark> spans */
+  const out = [];
+  let buf = '';
+  let bufKey = null;
+  const flush = () => {
+    if (bufKey !== null) { out.push(<mark key={'m' + bufKey} className="reading-hl">{buf}</mark>); buf = ''; bufKey = null; }
+  };
+  parts.forEach((part, i) => {
+    if (marked[i]) {
+      if (bufKey === null) bufKey = i;
+      buf += part;
+    } else {
+      flush();
+      out.push(part);
+    }
   });
+  flush();
+  return out;
 }
 
-function ReadingView({ groups, words, countByGroup, reading, setReading, startGenerate, continueGenerate, goLibrary }) {
+function ReadingView({ groups, words, countByGroup, reading, setReading, startGenerate, goLibrary }) {
   const leafGroups = useMemo(
     () => (window.lwLeafGroups ? window.lwLeafGroups(groups) : groups).filter((g) => countByGroup[g.id] > 0),
     [groups, countByGroup]
@@ -1074,14 +1094,11 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
   const cards = reading.cards || [];
   const index = Math.min(reading.index || 0, Math.max(0, cards.length - 1));
   const result = cards[index] || null; // текущая карточка
-  const flipped = reading.flipped;
+  /* сторона определяется наличием текстов: пока пачка непустая — показываем
+     тексты, как только все прочитаны (пачка пуста) — открываются настройки. */
+  const showText = cards.length > 0;
   /* generation status/error live in App (survive tab switches) */
   const state = reading.status === 'loading' ? 'loading' : (reading.error || 'idle');
-  /* догрузка следующей пары текстов идёт в фоне (status:'appending'), не блокируя
-     текущую карточку. canContinue — можно ли лениво догрузить ещё (нужны
-     запомненные params: они есть только пока не перезагружали страницу). */
-  const appending = reading.status === 'appending';
-  const canContinue = !!reading.params;
   const atLast = index === cards.length - 1;
 
   /* переключение между карточками: сбрасываем UI-состояние показа текста */
@@ -1091,12 +1108,10 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
     setReading((r) => ({ ...r, index: i }));
   };
 
-  /* «Дальше»: если есть следующая карточка — просто листаем; если мы на
-     последней и есть запомненные настройки — догружаем ещё пару (continueGenerate
-     сам переведёт index на первую из новых по завершении). */
+  /* «Дальше»: листаем к следующему тексту пачки (автодогрузки нет — когда
+     все тексты прочитаны, пользователь сам запускает новую генерацию). */
   const goNext = () => {
-    if (index < cards.length - 1) { goToCard(index + 1); return; }
-    if (canContinue && !appending) { resetTextUi(); continueGenerate(); }
+    if (index < cards.length - 1) goToCard(index + 1);
   };
 
   /* default to the first available category once groups load */
@@ -1104,17 +1119,16 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
     if (!groupId && leafGroups.length) setGroupId(leafGroups[0].id);
   }, [leafGroups, groupId]);
 
-  /* перелистывание карточек стрелками клавиатуры, когда открыт текст.
-     ArrowRight на последней карточке догружает следующую пару (goNext). */
+  /* перелистывание карточек пачки стрелками клавиатуры, когда открыт текст */
   useEffect(() => {
-    if (!flipped || !cards.length) return;
+    if (!showText || !cards.length) return;
     const onKey = (e) => {
-      if (e.key === 'ArrowRight') { goNext(); }
+      if (e.key === 'ArrowRight' && index < cards.length - 1) { goToCard(index + 1); }
       else if (e.key === 'ArrowLeft' && index > 0) { goToCard(index - 1); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [flipped, cards.length, index, appending, canContinue]);
+  }, [showText, cards.length, index]);
 
   const activeGroup = leafGroups.find((g) => g.id === groupId) || null;
   const groupWords = useMemo(
@@ -1148,14 +1162,14 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
     runGenerate();
   };
 
-  /* "Прочитано": убрать текущую карточку из пачки; если пачка опустела —
-     вернуться к настройкам. */
+  /* "Прочитано": удалить текущий текст из пачки. Когда пачка опустеет,
+     showText станет false и автоматически откроются настройки. */
   const markRead = () => {
     resetTextUi();
     setReading((r) => {
       const rest = (r.cards || []).filter((_, i) => i !== index);
-      if (!rest.length) return { cards: [], index: 0, flipped: false, status: 'idle', error: null };
-      return { ...r, cards: rest, index: Math.min(index, rest.length - 1), flipped: true, status: 'idle', error: null };
+      if (!rest.length) return { cards: [], index: 0, status: 'idle', error: null };
+      return { ...r, cards: rest, index: Math.min(index, rest.length - 1), status: 'idle', error: null };
     });
   };
 
@@ -1183,7 +1197,7 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
 
   return (
     <div className="reading">
-      <div className={'reading-scene' + (flipped ? ' is-flipped' : '')}>
+      <div className={'reading-scene' + (showText ? ' is-flipped' : '')}>
         <div className="reading-inner">
           {/* ---------- FRONT: settings ---------- */}
           <div className="reading-face reading-front">
@@ -1227,13 +1241,6 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
                 {state === 'loading' ? <span className="spinner" aria-hidden="true" /> : <Ic.Bulb width="16" height="16" />}
                 {state === 'loading' ? 'Generating...' : 'Generate cards'}
               </button>
-
-              {cards.length > 0 && state !== 'loading' && (
-                <button className="btn btn-soft btn-cta-study" type="button"
-                  onClick={() => setReading((r) => ({ ...r, flipped: true }))}>
-                  <Ic.Book width="16" height="16" /> Вернуться к текстам ({cards.length})
-                </button>
-              )}
 
               {state === 'bad-key' ? (
                 <p className="field-hint">Ключ Gemini недействителен.{' '}
@@ -1304,7 +1311,7 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
                   </div>
                 )}
 
-                {(cards.length > 1 || canContinue) && (
+                {cards.length > 1 && (
                   <div className="reading-nav">
                     <button className="reading-nav-btn" type="button" title="Предыдущий текст"
                       disabled={index === 0}
@@ -1320,12 +1327,10 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
                           onClick={() => goToCard(i)} />
                       ))}
                     </div>
-                    {/* на последней карточке стрелка «Дальше» догружает ещё пару */}
-                    <button className="reading-nav-btn" type="button"
-                      title={atLast ? (canContinue ? 'Сгенерировать ещё' : 'Следующий текст') : 'Следующий текст'}
-                      disabled={appending || (atLast && !canContinue)}
+                    <button className="reading-nav-btn" type="button" title="Следующий текст"
+                      disabled={atLast}
                       onClick={goNext}>
-                      {appending ? <span className="spinner" aria-hidden="true" /> : <Ic.Arrow />}
+                      <Ic.Arrow />
                     </button>
                   </div>
                 )}
@@ -1333,13 +1338,6 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
                 <div className="reading-actions">
                   <button className="btn btn-primary sm" onClick={markRead} type="button">
                     <Ic.Check width="15" height="15" /> Прочитано
-                  </button>
-                  <button className="btn btn-soft sm" onClick={runGenerate} type="button" disabled={state === 'loading'}>
-                    <Ic.Shuffle width="15" height="15" /> Новая пачка
-                  </button>
-                  <button className="btn btn-ghost sm" type="button"
-                    onClick={() => setReading((r) => ({ ...r, flipped: false }))}>
-                    <Ic.Swap width="15" height="15" /> Настройки
                   </button>
                 </div>
               </article>
@@ -1637,14 +1635,16 @@ function LibraryView({ groups, words, userId, username, isAdmin, goImport }) {
     // всегда генерирует id, в т.ч. для новых слов, где userId/username ещё нет.
     const existing = words.find((x) => x.id === w.id);
     const shared = existing ? existing.shared : isAdmin;
-    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId: existing ? existing.userId : userId, username: existing ? existing.username : username, shared })
+    // legacy-документы могут не иметь userId/username — тогда назначаем владельцем
+    // текущего пользователя, иначе слово выпадет из выборки where('userId','==',uid).
+    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId: (existing && existing.userId) || userId, username: (existing && existing.username) || username, shared })
       .catch((e) => { console.error('saveWord failed', e); alert('Не удалось сохранить слово: ' + (e && e.message || e)); });
     setWordModal(null);
   };
   const saveGroup = (g) => {
     const existing = groups.find((x) => x.id === g.id);
     const shared = existing ? existing.shared : isAdmin;
-    window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, userId: existing ? existing.userId : userId, username: existing ? existing.username : username, shared })
+    window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, userId: (existing && existing.userId) || userId, username: (existing && existing.username) || username, shared })
       .catch((e) => { console.error('saveGroup failed', e); alert('Не удалось сохранить группу: ' + (e && e.message || e)); });
     if (!openGroups.includes(g.id)) setOpenGroups((o) => [...o, g.id]);
     if (g.parentId && !openGroups.includes(g.parentId)) setOpenGroups((o) => [...o, g.parentId]);

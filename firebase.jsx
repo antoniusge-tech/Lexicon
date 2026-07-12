@@ -144,6 +144,9 @@ function lwWatchUserAndSharedCollection(name, uid, onChange) {
 
 function lwSetDoc(collectionName, item) {
   const { id, ...data } = item;
+  // Firestore rejects any field whose value is undefined. Strip such fields so
+  // partially-populated items (e.g. legacy docs without userId/username) still save.
+  Object.keys(data).forEach((k) => { if (data[k] === undefined) delete data[k]; });
   return lwDb.collection(collectionName).doc(id).set(data);
 }
 
