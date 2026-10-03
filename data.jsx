@@ -45,8 +45,9 @@ function lwSave(key, value) {
 
 const LW_PHOTO_MAX = 640;
 
-/* Resize/compress an image (File or Blob) into a JPEG data URL, longest side <= LW_PHOTO_MAX */
-function lwFileToPhoto(file) {
+/* Resize/compress an image (File or Blob) into a JPEG data URL, longest side <= max.
+   square: center-crop to a max×max square first (avatars). */
+function lwFileToPhoto(file, max = LW_PHOTO_MAX, square = false) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(reader.error);
@@ -55,16 +56,25 @@ function lwFileToPhoto(file) {
       img.onerror = () => reject(new Error('Invalid image'));
       img.onload = () => {
         let { width, height } = img;
-        if (width > LW_PHOTO_MAX || height > LW_PHOTO_MAX) {
+        const canvas = document.createElement('canvas');
+        if (square) {
+          const side = Math.min(width, height);
+          const out = Math.min(side, max);
+          canvas.width = out;
+          canvas.height = out;
+          canvas.getContext('2d').drawImage(img, (width - side) / 2, (height - side) / 2, side, side, 0, 0, out, out);
+          resolve(canvas.toDataURL('image/jpeg', 0.85));
+          return;
+        }
+        if (width > max || height > max) {
           if (width >= height) {
-            height = Math.round((height * LW_PHOTO_MAX) / width);
-            width = LW_PHOTO_MAX;
+            height = Math.round((height * max) / width);
+            width = max;
           } else {
-            width = Math.round((width * LW_PHOTO_MAX) / height);
-            height = LW_PHOTO_MAX;
+            width = Math.round((width * max) / height);
+            height = max;
           }
         }
-        const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
         canvas.getContext('2d').drawImage(img, 0, 0, width, height);

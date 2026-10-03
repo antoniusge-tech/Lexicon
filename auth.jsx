@@ -10,6 +10,11 @@ function lwAuthErrorMessage(err) {
     case 'auth/invalid-credential': return 'Wrong username/email or password.';
     case 'auth/invalid-email': return 'Invalid email.';
     case 'auth/too-many-requests': return 'Too many attempts. Try again later.';
+    case 'auth/account-exists-with-different-credential':
+      return 'This email already has a password account. Sign in with your password, then link Google in Profile.';
+    case 'auth/operation-not-allowed': return 'Google sign-in is not enabled for this app yet.';
+    case 'auth/unauthorized-domain': return 'Google sign-in is not allowed on this domain yet (Firebase → Authorized domains).';
+    case 'auth/popup-blocked': return 'The browser blocked the Google window. Allow pop-ups and try again.';
     default: return 'Something went wrong. Try again.';
   }
 }
@@ -74,6 +79,20 @@ function AuthView() {
     }
   };
 
+  const google = async () => {
+    setBusy(true);
+    setError('');
+    setInfo('');
+    try {
+      await window.lwSignInWithGoogle();
+      /* App takes over: existing profile -> the app, new Google user -> pick a username */
+    } catch (err) {
+      const code = err && err.code;
+      if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') setError(lwAuthErrorMessage(err));
+      setBusy(false);
+    }
+  };
+
   const switchMode = (m) => {
     setMode(m);
     setError('');
@@ -96,6 +115,14 @@ function AuthView() {
         </div>
         <p className="lang-select-title">{title}</p>
         <p className="lang-select-sub">{sub}</p>
+        {mode !== 'reset' && (
+          <>
+            <button type="button" className="btn btn-google lg" onClick={google} disabled={busy}>
+              <Ic.Google width="20" height="20" /> Continue with Google
+            </button>
+            <div className="or-sep"><span>or</span></div>
+          </>
+        )}
         <form className="form" onSubmit={submit}>
           {mode !== 'reset' && (
             <label className="field">
@@ -153,4 +180,56 @@ function AuthView() {
   );
 }
 
-Object.assign(window, { AuthView });
+/* First Google sign-in: the account exists in Firebase Auth but has no profile
+   yet, so the user picks a username (suggested from their email). */
+function ChooseUsernameView({ email }) {
+  const suggestion = ((email || '').split('@')[0] || '').replace(/[^a-zA-Z0-9_]/g, '').slice(0, 20);
+  const [username, setUsername] = React.useState(suggestion.length >= 3 ? suggestion : '');
+  const [error, setError] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!LW_USERNAME_RE.test(username.trim())) {
+      setError('Username: 3–20 characters, Latin letters, digits and "_".');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await window.lwCreateProfile(username);
+      /* the profile snapshot in App moves on to the language picker */
+    } catch (err) {
+      setError(err && err.code === 'lw/username-taken' ? err.message
+        : err && err.code === 'permission-denied' ? 'This username is taken.' : lwAuthErrorMessage(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="lang-select">
+      <div className="lang-select-card auth-card">
+        <div className="auth-brand">
+          <span className="drawer-logo"><Ic.Library /></span>
+          <span className="brand-name">Lexicon</span>
+        </div>
+        <p className="lang-select-title">Pick a username</p>
+        <p className="lang-select-sub">Signed in as {email}. Your username is how others see you.</p>
+        <form className="form" onSubmit={submit}>
+          <label className="field">
+            <span className="field-label">Username</span>
+            <input className="input" value={username} autoFocus autoComplete="username"
+              placeholder="e.g. anton_92" onChange={(e) => setUsername(e.target.value)} />
+          </label>
+          {error && <p className="field-hint" style={{ color: 'var(--error)' }}>{error}</p>}
+          <button className="btn btn-primary lg" type="submit" disabled={busy}>{busy ? 'Please wait…' : 'Continue'}</button>
+        </form>
+        <p className="lang-select-sub" style={{ marginTop: 14 }}>
+          <button type="button" className="btn btn-ghost sm" onClick={() => window.lwLogout()}>Use another account</button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { AuthView, ChooseUsernameView });

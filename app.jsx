@@ -51,7 +51,9 @@ const LW_IMPORT_ERROR_MSG = {
 function App() {
   const [theme, setTheme] = useState(() => window.lwLoad(LW_KEYS.theme, 'light'));
   const [authUser, setAuthUser] = useState(undefined); // undefined = loading, null = signed out
-  const [userDoc, setUserDoc] = useState(null);
+  const [userDoc, setUserDoc] = useState(undefined); // undefined = loading, null = no profile yet (new Google user)
+  const [online, setOnline] = useState(() => navigator.onLine);
+  const [authInfo, setAuthInfo] = useState(() => window.lwAuthInfo()); // sign-in methods (password / Google)
   const [groups, setGroups] = useState([]);
   const [words, setWords] = useState([]);
   const [progress, setProgress] = useState({}); // { [wordId]: Leitner progress doc }
@@ -199,15 +201,30 @@ function App() {
 
   /* user profile (role, lang) */
   useEffect(() => {
-    if (!authUser) { setUserDoc(null); return; }
+    setAuthInfo(window.lwAuthInfo());
+    if (!authUser) { setUserDoc(undefined); return; }
     return window.lwWatchUserDoc(authUser.uid, setUserDoc);
   }, [authUser]);
 
   const lang = userDoc ? userDoc.lang : null;
-  const setLang = useCallback((l) => {
-    if (!authUser || !userDoc) return;
-    window.lwSetDoc(window.LW_COLLECTIONS.users, { ...userDoc, id: authUser.uid, lang: l });
-  }, [authUser, userDoc]);
+  /* write some of the user's own profile fields (lang, dailyGoal, cefr, avatar) */
+  const updateProfile = useCallback((fields) => {
+    if (!authUser) return Promise.resolve();
+    return window.lwUpdateUser(authUser.uid, fields).catch((e) => {
+      console.error('updateProfile failed', e);
+      pushToast({ kind: 'error', title: 'Could not save your profile', msg: (e && e.message) || String(e) });
+    });
+  }, [authUser, pushToast]);
+  const setLang = useCallback((l) => { updateProfile({ lang: l }); }, [updateProfile]);
+
+  /* online/offline banner; Firestore keeps working from its cache meanwhile */
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
+  }, []);
 
   /* live sync with this user's Firestore data */
   useEffect(() => {
@@ -238,9 +255,12 @@ function App() {
      the word plus today's XP. A +50 bonus lands once, on the answer that reaches
      the daily goal. Snapshots apply local writes immediately, so rapid answers
      already see the updated progress/activity. */
+  const lastAnswerAt = useRef(0); // for practice time (activity.ms)
   const recordAnswer = useCallback((wordId, known, mode) => {
     if (!authUser) return;
     const t = Date.now();
+    const ms = window.lwPracticeMs(lastAnswerAt.current, t);
+    lastAnswerAt.current = t;
     const date = window.lwLocalDate(t);
     const today = activity[date] || {};
     const goalBonus = !today.goalMet && (today.answers || 0) + 1 >= dailyGoal ? window.LW_XP_GOAL_BONUS : 0;
@@ -251,6 +271,7 @@ function App() {
       correct: known,
       xp: known ? window.LW_XP_CORRECT : window.LW_XP_WRONG,
       goalBonus,
+      ms,
     }).catch((e) => {
       console.error('recordAnswer failed', e);
       pushToast({ kind: 'error', title: 'Could not save progress', msg: (e && e.message) || String(e) });
@@ -297,6 +318,7 @@ function App() {
     const xp = window.lwTotalXp(activity);
     const wordIds = new Set(words.map((w) => w.id));
     const dueCount = Object.values(progress).filter((p) => wordIds.has(p.wordId) && p.due <= now).length;
+    const statusCounts = window.lwStatusCounts(progress, words, now);
     return {
       streak: window.lwStreak(activity, now),
       todayAnswers: today.answers || 0,
@@ -304,6 +326,9 @@ function App() {
       xp,
       level: window.lwLevel(xp),
       dueCount,
+      statusCounts,
+      totalMs: window.lwTotalMs(activity),
+      week: window.lwLastDays(activity, now, 7),
     };
   }, [activity, progress, words, now, dailyGoal]);
 
@@ -329,8 +354,15 @@ function App() {
   if (authUser === null) {
     return <AuthView />;
   }
-  if (!userDoc) {
+  if (userDoc === undefined) {
     return null; /* user profile still loading */
+  }
+  if (userDoc === null) {
+    /* signed in but no profile: a first Google sign-in picks a username. Password
+       sign-ups write their profile right after creating the account, so for them
+       this is only a moment between the two writes. */
+    if (authInfo.password) return null;
+    return <ChooseUsernameView email={authUser.email} />;
   }
   if (!lang) {
     return <LanguageSelectView onSelect={setLang} />;
@@ -348,11 +380,16 @@ function App() {
     <div className="app">
       <NavDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}
         tab={tab} learnMode={learnMode} goTo={goTo} stats={stats}
-        username={userDoc.username} isAdmin={isAdmin} wordCount={scopedWords.length}
+        user={userDoc} isAdmin={isAdmin} wordCount={scopedWords.length}
         theme={theme} onToggleTheme={toggleTheme}
         onGeminiKey={() => { setDrawerOpen(false); setGeminiKeyOpen(true); }} />
       <div className="app-main">
         <AppBar onMenu={() => setDrawerOpen(true)} level={stats.level} xp={stats.xp} onLevel={() => goTo('profile')} />
+        {!online && (
+          <div className="offline-bar" role="status">
+            <Ic.CloudOff width="16" height="16" /> Offline — answers will sync when you're back.
+          </div>
+        )}
         <main className={'content content-' + tab}>
           {tab === 'learn' ? (
             <LearnView mode={learnMode} setMode={(m) => goTo(m)} stats={stats} studyStats={studyStats}
@@ -371,6 +408,7 @@ function App() {
             <ReadingView groups={scopedGroups} words={scopedWords} countByGroup={scopedCountByGroup}
               reading={reading} setReading={setReading}
               startGenerate={startReadingGeneration}
+              defaultLevel={userDoc.cefr}
               goLibrary={() => goTo('library')} />
           ) : tab === 'library' ? (
             <LibraryView groups={scopedGroups} words={scopedWords} userId={authUser.uid} username={userDoc.username} isAdmin={isAdmin}
@@ -383,7 +421,9 @@ function App() {
           ) : tab === 'admin' && isAdmin ? (
             <AdminView currentUid={authUser.uid} />
           ) : (
-            <ProfileView username={userDoc.username} role={userDoc.role} stats={stats}
+            <ProfileView user={userDoc} stats={stats} updateProfile={updateProfile}
+              authInfo={authInfo} refreshAuthInfo={() => setAuthInfo(window.lwAuthInfo())}
+              pushToast={pushToast} goLearn={() => goTo('cards')}
               theme={theme} onToggleTheme={toggleTheme}
               direction={direction} setDirection={setDirection}
               lang={lang} setLang={setLang}
@@ -400,7 +440,7 @@ function App() {
             countByGroup={scopedCountByGroup} ctaLabel="Done" goStudy={() => setGroupsOpen(false)} />
         </Modal>
       )}
-      {deleteAccountOpen && <DeleteAccountModal onClose={() => setDeleteAccountOpen(false)} />}
+      {deleteAccountOpen && <DeleteAccountModal hasPassword={authInfo.password} onClose={() => setDeleteAccountOpen(false)} />}
       {geminiKeyOpen && <GeminiKeyModal onClose={() => setGeminiKeyOpen(false)} />}
       <ToastStack toasts={toasts}
         onDismiss={dismissToast}
@@ -410,26 +450,27 @@ function App() {
 }
 
 /* ---------------- Delete account confirmation ---------------- */
-function DeleteAccountModal({ onClose }) {
+function DeleteAccountModal({ hasPassword, onClose }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const ready = !hasPassword || !!password; // Google-only accounts confirm in a Google popup instead
 
   const submit = async () => {
-    if (!password || busy) return;
+    if (!ready || busy) return;
     setBusy(true);
     setError('');
     try {
       await window.lwDeleteAccount(password);
       try {
-        localStorage.removeItem(LW_KEYS.studySession);
-        localStorage.removeItem(LW_KEYS.selected);
+        [LW_KEYS.studySession, LW_KEYS.selected, LW_KEYS.nav].forEach((k) => localStorage.removeItem(k));
       } catch (e) { /* ignore */ }
       /* onAuthStateChanged in App unmounts the signed-in UI from here */
     } catch (err) {
       const code = err && err.code;
-      setError(code === 'auth/wrong-password' || code === 'auth/invalid-credential'
-        ? 'Wrong password.'
+      setError(code === 'auth/wrong-password' || code === 'auth/invalid-credential' ? 'Wrong password.'
+        : code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request' ? ''
+        : code === 'auth/user-mismatch' ? 'Pick the same Google account you signed in with.'
         : 'Could not delete the account. Try again.');
       setBusy(false);
     }
@@ -439,20 +480,22 @@ function DeleteAccountModal({ onClose }) {
     <Modal title="Delete account" onClose={busy ? () => {} : onClose}
       footer={<>
         <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
-        <button className="btn btn-danger" onClick={submit} disabled={!password || busy}>
-          {busy ? 'Deleting…' : 'Delete forever'}
+        <button className="btn btn-danger" onClick={submit} disabled={!ready || busy}>
+          {busy ? 'Deleting…' : hasPassword ? 'Delete forever' : 'Confirm with Google & delete'}
         </button>
       </>}>
       <p className="confirm-text">
         This permanently deletes <strong>all your words, groups, progress and profile</strong>.
-        It can't be undone. Enter your password to confirm.
+        It can't be undone. {hasPassword ? 'Enter your password to confirm.' : 'Confirm with your Google account.'}
       </p>
-      <label className="field">
-        <span className="field-label">Password</span>
-        <input className="input" type="password" value={password} autoFocus autoComplete="current-password"
-          onChange={(e) => setPassword(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
-      </label>
+      {hasPassword && (
+        <label className="field">
+          <span className="field-label">Password</span>
+          <input className="input" type="password" value={password} autoFocus autoComplete="current-password"
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
+        </label>
+      )}
       {error && <p className="field-hint" style={{ color: 'var(--error)', marginTop: 10 }}>{error}</p>}
     </Modal>
   );
@@ -525,7 +568,13 @@ function AppBar({ onMenu, level, xp, onLevel }) {
   );
 }
 
-function NavDrawer({ open, onClose, tab, learnMode, goTo, stats, username, isAdmin, wordCount, theme, onToggleTheme, onGeminiKey }) {
+/* the user's photo, or the first letter of their username */
+function Avatar({ user, className = '' }) {
+  if (user && user.avatar) return <img className={'avatar ' + className} src={user.avatar} alt="" />;
+  return <span className={'avatar ' + className}>{((user && user.username) || '?').slice(0, 1).toUpperCase()}</span>;
+}
+
+function NavDrawer({ open, onClose, tab, learnMode, goTo, stats, user, isAdmin, wordCount, theme, onToggleTheme, onGeminiKey }) {
   useEffect(() => {
     if (!open) return;
     const h = (e) => { if (e.key === 'Escape') onClose(); };
@@ -556,9 +605,9 @@ function NavDrawer({ open, onClose, tab, learnMode, goTo, stats, username, isAdm
 
         <button type="button" className="drawer-profile" onClick={() => goTo('profile')}>
           <div className="drawer-profile-top">
-            <span className="avatar">{(username || '?').slice(0, 1).toUpperCase()}</span>
+            <Avatar user={user} />
             <span className="drawer-profile-text">
-              <span className="drawer-name">{username}</span>
+              <span className="drawer-name">{user.username}</span>
               <span className="drawer-meta">Level {stats.level} · {stats.xp} XP</span>
             </span>
           </div>
@@ -668,38 +717,187 @@ function LearnView({ mode, setMode, stats, studyStats, selectedCount, onPickGrou
   );
 }
 
-/* ---------------- Profile (stage 1: account + settings; stats arrive in stage 3) ---------------- */
-function ProfileView({ username, role, stats, theme, onToggleTheme, direction, setDirection, lang, setLang, onGeminiKey, onLogout, onDeleteAccount }) {
+/* ---------------- Profile: who you are, your progress (dashboard), settings ---------------- */
+const LW_STATUS_META = [
+  { id: 'new', label: 'New' },
+  { id: 'learning', label: 'Learning' },
+  { id: 'review', label: 'To review' },
+  { id: 'mastered', label: 'Mastered' },
+];
+
+function ProfileView({ user, stats, updateProfile, authInfo, refreshAuthInfo, pushToast, goLearn,
+  theme, onToggleTheme, direction, setDirection, lang, setLang, onGeminiKey, onLogout, onDeleteAccount }) {
+  const fileRef = useRef(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+
   /* lwLevel: level n starts at 50·(n−1)² XP */
   const levelStart = 50 * (stats.level - 1) ** 2;
   const levelEnd = 50 * stats.level ** 2;
   const levelPct = Math.round(((stats.xp - levelStart) / (levelEnd - levelStart)) * 100);
+  const langInfo = LW_LANGUAGES.find((l) => l.code === lang);
+  const since = user.createdAt && user.createdAt.toDate
+    ? user.createdAt.toDate().toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : null;
+  const left = Math.max(0, stats.goal - stats.todayAnswers);
+  const counts = stats.statusCounts;
+  const totalWords = counts.new + counts.learning + counts.review + counts.mastered;
+
+  const pickAvatar = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    setAvatarBusy(true);
+    try {
+      await updateProfile({ avatar: await window.lwFileToPhoto(file, 256, true) });
+    } catch (err) {
+      pushToast({ kind: 'error', title: 'Could not use this image', msg: 'Try a JPEG or PNG photo.' });
+    }
+    setAvatarBusy(false);
+  };
+
+  const googleAction = async (link) => {
+    setGoogleBusy(true);
+    try {
+      if (link) await window.lwLinkGoogle(); else await window.lwUnlinkGoogle();
+      refreshAuthInfo();
+      pushToast({ kind: 'success', title: link ? 'Google account linked' : 'Google account unlinked',
+        msg: link ? 'You can now sign in with Google.' : 'Sign in with your password from now on.' });
+    } catch (err) {
+      const code = err && err.code;
+      if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') {
+        pushToast({ kind: 'error', title: link ? 'Could not link Google' : 'Could not unlink Google',
+          msg: code === 'auth/credential-already-in-use' ? 'This Google account already belongs to another Lexicon account.'
+            : code === 'auth/operation-not-allowed' ? 'Google sign-in is not enabled for this app yet.'
+            : (err && err.message) || String(err) });
+      }
+    }
+    setGoogleBusy(false);
+  };
+
   return (
     <div className="profile">
+      {/* who you are */}
       <section className="profile-card">
-        <span className="avatar avatar-lg">{(username || '?').slice(0, 1).toUpperCase()}</span>
-        <div className="profile-id">
-          <h1 className="profile-name">{username}</h1>
-          <div className="profile-meta">
-            Level {stats.level}{role && role !== 'user' ? <span className="role-chip">{LW_ROLE_LABEL[role] || role}</span> : null}
+        <div className="profile-avatar-wrap">
+          <Avatar user={user} className="avatar-xl" />
+          <button type="button" className="avatar-edit" onClick={() => fileRef.current && fileRef.current.click()}
+            disabled={avatarBusy} aria-label="Change photo" title="Change photo">
+            {avatarBusy ? <span className="spinner" /> : <Ic.Camera width="16" height="16" />}
+          </button>
+          <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickAvatar} />
+        </div>
+        <span className="level-pill"><Ic.Star width="14" height="14" /> Level {stats.level}
+          {user.role && user.role !== 'user' ? ' · ' + (LW_ROLE_LABEL[user.role] || user.role) : ''}</span>
+        <h1 className="profile-name">{user.username}</h1>
+        <p className="profile-handle">@{user.username.toLowerCase()}{since ? ' · Member since ' + since : ''}</p>
+        <span className="learning-chip">
+          {langInfo ? langInfo.flag + ' Learning ' + langInfo.name : 'Learning'}
+          {user.cefr ? ' · ' + user.cefr : ''}{user.cefrTarget ? ' → ' + user.cefrTarget : ''}
+        </span>
+        {user.avatar && (
+          <button type="button" className="btn btn-ghost sm" onClick={() => updateProfile({ avatar: '' })}>Remove photo</button>
+        )}
+      </section>
+
+      {/* headline numbers */}
+      <section className="tiles">
+        <div className="tile"><span className="tile-icon tile-icon-blue"><Ic.Check width="18" height="18" /></span>
+          <span className="tile-num">{counts.mastered}</span><span className="tile-label">Words mastered</span></div>
+        <div className="tile"><span className="tile-icon tile-icon-gold"><Ic.Flame width="18" height="18" /></span>
+          <span className="tile-num">{stats.streak} {stats.streak === 1 ? 'day' : 'days'}</span><span className="tile-label">Current streak</span></div>
+        <div className="tile"><span className="tile-icon tile-icon-teal"><Ic.Clock width="18" height="18" /></span>
+          <span className="tile-num">{window.lwFormatDuration(stats.totalMs)}</span><span className="tile-label">Practice time</span></div>
+      </section>
+
+      {/* level progress */}
+      <section className="dash-card">
+        <div className="goal-row">
+          <span className="goal-label">Level {stats.level} · {stats.xp} XP</span>
+          <span className="goal-count">{levelEnd - stats.xp} XP to level {stats.level + 1}</span>
+        </div>
+        <div className="goal-track"><div className="goal-fill" style={{ width: levelPct + '%' }} /></div>
+      </section>
+
+      {/* this week */}
+      <section className="dash-card">
+        <div className="dash-head">
+          <div>
+            <h2 className="dash-title">This week</h2>
+            <p className="dash-sub">Answers per day · goal {stats.goal}</p>
+          </div>
+          <span className={'dash-badge' + (left === 0 ? ' met' : '')}>Today {stats.todayAnswers} / {stats.goal}</span>
+        </div>
+        <WeekChart days={stats.week} goal={stats.goal} />
+      </section>
+
+      {/* words by status */}
+      <section className="dash-card">
+        <div className="dash-head">
+          <div>
+            <h2 className="dash-title">Your words</h2>
+            <p className="dash-sub">{totalWords} words in your groups</p>
           </div>
         </div>
-        <div className="profile-xp">
-          <div className="goal-row">
-            <span className="goal-label">{stats.xp} XP</span>
-            <span className="goal-count">{levelEnd - stats.xp} XP to level {stats.level + 1}</span>
+        {totalWords > 0 && (
+          <div className="status-bar" aria-hidden="true">
+            {LW_STATUS_META.map((m) => counts[m.id] > 0 && (
+              <span key={m.id} className={'status-seg status-' + m.id} style={{ flexGrow: counts[m.id] }} />
+            ))}
           </div>
-          <div className="goal-track"><div className="goal-fill" style={{ width: levelPct + '%' }} /></div>
+        )}
+        <div className="status-legend">
+          {LW_STATUS_META.map((m) => (
+            <div key={m.id} className="status-item">
+              <span className={'status-swatch status-' + m.id} />
+              <span className="status-name">{m.label}</span>
+              <span className="status-num">{counts[m.id]}</span>
+            </div>
+          ))}
         </div>
-        <div className="profile-stats">
-          <div className="pstat"><span className="pstat-num"><Ic.Flame width="18" height="18" /> {stats.streak}</span><span className="pstat-label">Day streak</span></div>
-          <div className="pstat"><span className="pstat-num">{stats.todayAnswers}/{stats.goal}</span><span className="pstat-label">Today</span></div>
-          <div className="pstat"><span className="pstat-num">{stats.dueCount}</span><span className="pstat-label">To review</span></div>
+      </section>
+
+      {/* CEFR: self-assessed level and target */}
+      <section className="dash-card">
+        <h2 className="dash-title">English level</h2>
+        <p className="dash-sub">Your level sets the default difficulty of reading texts.</p>
+        <div className="cefr-row">
+          <span className="cefr-label">I'm at</span>
+          <div className="cefr-pills">
+            {window.LW_CEFR_ALL.map((lv) => (
+              <button key={lv} type="button" className={'cefr-pill' + (user.cefr === lv ? ' on' : '')}
+                onClick={() => updateProfile({ cefr: lv })}>{lv}</button>
+            ))}
+          </div>
         </div>
+        <div className="cefr-row">
+          <span className="cefr-label">Goal</span>
+          <div className="cefr-pills">
+            {window.LW_CEFR_ALL.map((lv) => (
+              <button key={lv} type="button" className={'cefr-pill' + (user.cefrTarget === lv ? ' on' : '')}
+                onClick={() => updateProfile({ cefrTarget: lv })}>{lv}</button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* nudge */}
+      <section className="cta-card">
+        <h2 className="cta-title">{left > 0 ? left + (left === 1 ? ' answer' : ' answers') + ' to today\'s goal' : 'Daily goal reached 🎉'}</h2>
+        <p className="cta-sub">{left > 0 ? 'Reach it to earn +' + window.LW_XP_GOAL_BONUS + ' XP and keep your streak going.' : 'Come back tomorrow to keep your ' + stats.streak + '-day streak.'}</p>
+        <button type="button" className="btn btn-primary lg" onClick={goLearn}><Ic.Learn width="18" height="18" /> {left > 0 ? 'Start learning' : 'Keep practicing'}</button>
       </section>
 
       <h2 className="section-label">Learning</h2>
       <section className="settings-list">
+        <div className="setting-row">
+          <span className="setting-label"><Ic.Flag /> Daily goal</span>
+          <div className="seg">
+            {window.LW_GOAL_OPTIONS.map((g) => (
+              <button key={g} type="button" className={'seg-btn' + (stats.goal === g ? ' on' : '')}
+                onClick={() => updateProfile({ dailyGoal: g })}>{g}</button>
+            ))}
+          </div>
+        </div>
         <div className="setting-row">
           <span className="setting-label"><Ic.Swap /> Card direction</span>
           <div className="seg">
@@ -732,6 +930,22 @@ function ProfileView({ username, role, stats, theme, onToggleTheme, direction, s
 
       <h2 className="section-label">Account</h2>
       <section className="settings-list">
+        <div className="setting-row">
+          <span className="setting-label">
+            <Ic.Google />
+            <span className="setting-stack">
+              <span>{authInfo.google ? 'Google account linked' : 'Google account'}</span>
+              <span className="setting-sub">{authInfo.google ? authInfo.googleEmail : 'Sign in with Google next time'}</span>
+            </span>
+          </span>
+          {authInfo.google ? (
+            authInfo.password && (
+              <button type="button" className="btn btn-ghost sm" disabled={googleBusy} onClick={() => googleAction(false)}>Unlink</button>
+            )
+          ) : (
+            <button type="button" className="btn btn-soft sm" disabled={googleBusy} onClick={() => googleAction(true)}>Link</button>
+          )}
+        </div>
         <button type="button" className="setting-row" onClick={onLogout}>
           <span className="setting-label"><Ic.Logout /> Sign out</span>
         </button>
@@ -1307,14 +1521,14 @@ function ReadingSentenceText({ text, highlight }) {
   return out;
 }
 
-function ReadingView({ groups, words, countByGroup, reading, setReading, startGenerate, goLibrary }) {
+function ReadingView({ groups, words, countByGroup, reading, setReading, startGenerate, defaultLevel, goLibrary }) {
   const leafGroups = useMemo(
     () => (window.lwLeafGroups ? window.lwLeafGroups(groups) : groups).filter((g) => countByGroup[g.id] > 0),
     [groups, countByGroup]
   );
 
   const [groupId, setGroupId] = useState('');
-  const [levels, setLevels] = useState(['B1']);
+  const [levels, setLevels] = useState(() => [LW_CEFR_LEVELS.includes(defaultLevel) ? defaultLevel : defaultLevel === 'A1' ? 'A2' : 'B1']);
   const [topicIds, setTopicIds] = useState([LW_TEXT_TOPICS[0].id]);
   const [keyModal, setKeyModal] = useState(false);
 

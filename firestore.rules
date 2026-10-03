@@ -17,11 +17,17 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
+      // optional profile fields: avatar is a small inline JPEG, dailyGoal a sane number
+      function validProfile() {
+        let d = request.resource.data;
+        return (!('avatar' in d) || (d.avatar is string && d.avatar.size() < 200000))
+          && (!('dailyGoal' in d) || (d.dailyGoal is int && d.dailyGoal >= 1 && d.dailyGoal <= 200));
+      }
       allow read: if isOwner(uid) || isAdmin();
       allow list: if isAdmin();
       allow create: if isOwner(uid) && request.resource.data.role == 'user';
-      allow update: if (isOwner(uid) && request.resource.data.role == resource.data.role)
-        || (isAdmin() && !isOwner(uid));
+      allow update: if ((isOwner(uid) && request.resource.data.role == resource.data.role)
+        || (isAdmin() && !isOwner(uid))) && validProfile();
       allow delete: if isOwner(uid); // self-service account deletion
     }
 

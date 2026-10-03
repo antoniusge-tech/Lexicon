@@ -11,6 +11,11 @@ const LW_FIREBASE_CONFIG = {
 
 firebase.initializeApp(LW_FIREBASE_CONFIG);
 const lwDb = firebase.firestore();
+/* Offline cache: reads come from IndexedDB and writes queue up while the network
+   is gone, then sync. Must run before any other Firestore call. Fails harmlessly
+   in browsers without IndexedDB (unimplemented) or when another tab holds it. */
+lwDb.enablePersistence({ synchronizeTabs: true })
+  .catch((e) => console.warn('Firestore offline cache unavailable:', e.code));
 const lwAuth = firebase.auth();
 lwAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
 
@@ -72,8 +77,14 @@ async function lwDeleteAccount(password) {
     err.code = 'lw/not-signed-in';
     throw err;
   }
-  const cred = firebase.auth.EmailAuthProvider.credential(user.email, password);
-  await user.reauthenticateWithCredential(cred);
+  /* Firebase wants a recent sign-in: password accounts confirm with the
+     password, Google-only accounts with a Google popup. */
+  if (lwHasPassword(user)) {
+    const cred = firebase.auth.EmailAuthProvider.credential(user.email, password);
+    await user.reauthenticateWithCredential(cred);
+  } else {
+    await user.reauthenticateWithPopup(lwGoogleProvider());
+  }
 
   const uid = user.uid;
   for (const coll of [LW_COLLECTIONS.words, LW_COLLECTIONS.groups, LW_COLLECTIONS.progress, LW_COLLECTIONS.activity]) {
@@ -103,11 +114,86 @@ function lwWatchAuth(onChange) {
   return lwAuth.onAuthStateChanged(onChange);
 }
 
-/* Subscribe to the current user's profile doc (role, lang). Returns an unsubscribe function. */
+/* Subscribe to the current user's profile doc. Calls onChange(profile) or
+   onChange(null) when the server says there is no profile (a new Google user).
+   A "missing" answer from the offline cache alone is ignored — the doc may just
+   not be cached on this device yet. Returns an unsubscribe function. */
 function lwWatchUserDoc(uid, onChange) {
-  return lwDb.collection(LW_COLLECTIONS.users).doc(uid).onSnapshot((doc) => {
+  return lwDb.collection(LW_COLLECTIONS.users).doc(uid).onSnapshot({ includeMetadataChanges: true }, (doc) => {
+    if (!doc.exists && doc.metadata.fromCache) return;
     onChange(doc.exists ? { id: doc.id, ...doc.data() } : null);
   });
+}
+
+/* Update some of the signed-in user's own profile fields (lang, dailyGoal, cefr, avatar…). */
+function lwUpdateUser(uid, fields) {
+  const data = { ...fields };
+  Object.keys(data).forEach((k) => { if (data[k] === undefined) delete data[k]; });
+  return lwDb.collection(LW_COLLECTIONS.users).doc(uid).update(data);
+}
+
+/* ---------------- Google sign-in ---------------- */
+
+function lwGoogleProvider() {
+  const p = new firebase.auth.GoogleAuthProvider();
+  p.setCustomParameters({ prompt: 'select_account' });
+  return p;
+}
+
+function lwHasPassword(user) {
+  return !!user && user.providerData.some((p) => p.providerId === 'password');
+}
+
+/* which sign-in methods the current user has, and the linked Google email */
+function lwAuthInfo() {
+  const user = lwAuth.currentUser;
+  if (!user) return { password: false, google: false, googleEmail: null, email: null };
+  const g = user.providerData.find((p) => p.providerId === 'google.com');
+  return { password: lwHasPassword(user), google: !!g, googleEmail: g ? g.email : null, email: user.email };
+}
+
+/* Popup sign-in; falls back to a full-page redirect when the popup is blocked.
+   A first-time Google user has no profile yet — App then asks for a username. */
+async function lwSignInWithGoogle() {
+  try {
+    return (await lwAuth.signInWithPopup(lwGoogleProvider())).user;
+  } catch (e) {
+    if (e && e.code === 'auth/popup-blocked') {
+      await lwAuth.signInWithRedirect(lwGoogleProvider());
+      return null;
+    }
+    throw e;
+  }
+}
+
+/* Create the profile for a signed-in user who has none (first Google sign-in).
+   The username is reserved first: usernames/{name} can only be created, never
+   overwritten, so a taken name fails here before anything else is written. */
+async function lwCreateProfile(username) {
+  const user = lwAuth.currentUser;
+  const name = username.trim();
+  const nameLower = name.toLowerCase();
+  const existing = await lwDb.collection(LW_COLLECTIONS.usernames).doc(nameLower).get();
+  if (existing.exists) {
+    const err = new Error('This username is taken.');
+    err.code = 'lw/username-taken';
+    throw err;
+  }
+  await lwDb.collection(LW_COLLECTIONS.usernames).doc(nameLower).set({ uid: user.uid });
+  await lwDb.collection(LW_COLLECTIONS.users).doc(user.uid).set({
+    username: name,
+    role: 'user',
+    lang: null,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+function lwLinkGoogle() {
+  return lwAuth.currentUser.linkWithPopup(lwGoogleProvider());
+}
+
+function lwUnlinkGoogle() {
+  return lwAuth.currentUser.unlink('google.com');
 }
 
 /* Subscribe to a collection, calling onChange(items) on every update.
@@ -172,11 +258,11 @@ async function lwDeleteWordsByGroup(groupId, userId) {
 /* Record one answer in a single batch: the word's new progress doc plus the
    day's activity counters. Uses merge + increment (no transaction), so it also
    works offline. `progress` is the full doc from lwNextProgress. */
-function lwRecordAnswer({ uid, progress, date, correct, xp, goalBonus }) {
+function lwRecordAnswer({ uid, progress, date, correct, xp, goalBonus, ms }) {
   const inc = firebase.firestore.FieldValue.increment;
   const batch = lwDb.batch();
   batch.set(lwDb.collection(LW_COLLECTIONS.progress).doc(uid + '_' + progress.wordId), { ...progress, userId: uid });
-  const day = { userId: uid, date, answers: inc(1), correct: inc(correct ? 1 : 0), xp: inc(xp + (goalBonus || 0)) };
+  const day = { userId: uid, date, answers: inc(1), correct: inc(correct ? 1 : 0), xp: inc(xp + (goalBonus || 0)), ms: inc(ms || 0) };
   if (goalBonus) day.goalMet = true;
   batch.set(lwDb.collection(LW_COLLECTIONS.activity).doc(uid + '_' + date), day, { merge: true });
   return batch.commit();
@@ -251,6 +337,12 @@ Object.assign(window, {
   lwDeleteAccount,
   lwWatchAuth,
   lwWatchUserDoc,
+  lwUpdateUser,
+  lwAuthInfo,
+  lwSignInWithGoogle,
+  lwCreateProfile,
+  lwLinkGoogle,
+  lwUnlinkGoogle,
   lwAdminFetchUsers,
   lwAdminSetRole,
   lwAdminFetchAllData,

@@ -140,6 +140,35 @@ const Ic = {
   ChevronRight: (p) => (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="m9 6 6 6-6 6" /></svg>
   ),
+  Google: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" {...p}>
+      <path fill="#4285F4" d="M22.5 12.3c0-.8-.1-1.5-.2-2.2H12v4.2h5.9a5 5 0 0 1-2.2 3.3v2.7h3.5c2.1-1.9 3.3-4.7 3.3-8Z" />
+      <path fill="#34A853" d="M12 23c3 0 5.5-1 7.3-2.7l-3.5-2.7c-1 .7-2.3 1.1-3.8 1.1-2.9 0-5.4-2-6.3-4.6H2.1v2.8A11 11 0 0 0 12 23Z" />
+      <path fill="#FBBC05" d="M5.7 14.1a6.6 6.6 0 0 1 0-4.2V7.1H2.1a11 11 0 0 0 0 9.8l3.6-2.8Z" />
+      <path fill="#EA4335" d="M12 5.4c1.6 0 3.1.6 4.2 1.7l3.2-3.2A11 11 0 0 0 2.1 7.1l3.6 2.8C6.6 7.3 9.1 5.4 12 5.4Z" />
+    </svg>
+  ),
+  Camera: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z" /><circle cx="12" cy="13.5" r="3.5" />
+    </svg>
+  ),
+  Clock: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
+    </svg>
+  ),
+  CloudOff: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M3 3l18 18" /><path d="M8.5 6.3A6 6 0 0 1 17.7 10h.3a4 4 0 0 1 2.6 7" /><path d="M17 19H7a5 5 0 0 1-1.6-9.7" />
+    </svg>
+  ),
+  Flag: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M5 21V4" /><path d="M5 4h11l-2 4 2 4H5" />
+    </svg>
+  ),
+
 };
 
 /* ---------------- Fill-the-blank helpers ----------------
@@ -1077,4 +1106,40 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
   );
 }
 
-Object.assign(window, { Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwBlankSentence, SpeakButton, GeminiKeyModal });
+/* ---------------- Week chart (answers per day, last 7 days) ----------------
+   One series, so no legend: the card title names it. Bars <= 24px with a 4px
+   rounded top, a solid hairline for the daily goal, only today's value is
+   labelled; every bar carries its own hover/focus tooltip. */
+const LW_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function WeekChart({ days, goal }) {
+  const [hover, setHover] = React.useState(null);
+  const max = Math.max(goal, ...days.map((d) => d.answers), 1);
+  const goalPct = (goal / max) * 100;
+  return (
+    <div className="week-chart">
+      <div className="week-plot">
+        <div className="week-goal" style={{ bottom: goalPct + '%' }}><span className="week-goal-label">Goal</span></div>
+        {days.map((d, i) => {
+          const today = i === days.length - 1;
+          const pct = (d.answers / max) * 100;
+          const label = LW_WEEKDAYS[d.weekday] + (today ? ' (today)' : '') + ': ' + d.answers + ' answers' + (d.goalMet ? ', goal met' : '');
+          return (
+            <div key={d.date} className={'week-col' + (today ? ' today' : '') + (hover === i ? ' hover' : '')}
+              tabIndex={0} aria-label={label}
+              onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)}
+              onFocus={() => setHover(i)} onBlur={() => setHover(null)}>
+              {today && d.answers > 0 && hover !== i && <span className="week-val" style={{ bottom: pct + '%' }}>{d.answers}</span>}
+              <div className="week-bar" style={{ height: pct + '%' }} />
+              {hover === i && <div className="week-tip" style={{ bottom: 'calc(' + pct + '% + 8px)' }}>{label}</div>}
+            </div>
+          );
+        })}
+      </div>
+      <div className="week-labels" aria-hidden="true">
+        {days.map((d, i) => <span key={d.date} className={i === days.length - 1 ? 'today' : ''}>{LW_WEEKDAYS[d.weekday].slice(0, 2)}</span>)}
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart });

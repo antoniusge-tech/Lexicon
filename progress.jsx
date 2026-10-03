@@ -13,6 +13,9 @@ const LW_DEFAULT_DAILY_GOAL = 20; // answers per day
 const LW_XP_CORRECT = 10;
 const LW_XP_WRONG = 5;
 const LW_XP_GOAL_BONUS = 50;
+const LW_GOAL_OPTIONS = [10, 20, 30, 50]; // daily goal choices, in answers
+const LW_CEFR_ALL = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+const LW_PRACTICE_GAP_MS = 60 * 1000; // longer pauses between answers don't count as practice
 
 /* Next progress doc for a word after one answer. `prev` is the stored doc or
    null for a word never studied. Know only moves the word up a box once it is
@@ -79,7 +82,54 @@ function lwLevel(xp) {
   return Math.floor(Math.sqrt(xp / 50)) + 1;
 }
 
+/* Practice time credited for one answer: time since the previous answer,
+   capped so that breaks don't count. 0 for the first answer of a visit. */
+function lwPracticeMs(prevAt, now) {
+  if (!prevAt) return 0;
+  return Math.max(0, Math.min(now - prevAt, LW_PRACTICE_GAP_MS));
+}
+
+/* how many of the given words are in each status */
+function lwStatusCounts(progress, words, now) {
+  const counts = { new: 0, learning: 0, review: 0, mastered: 0 };
+  words.forEach((w) => { counts[lwWordStatus(progress[w.id], now)]++; });
+  return counts;
+}
+
+/* the last n calendar days (oldest first) with their activity */
+function lwLastDays(activityByDate, now, n) {
+  const out = [];
+  const d = new Date(now);
+  d.setDate(d.getDate() - (n - 1));
+  for (let i = 0; i < n; i++) {
+    const date = lwLocalDate(d.getTime());
+    const a = activityByDate[date] || {};
+    out.push({ date, weekday: d.getDay(), answers: a.answers || 0, goalMet: !!a.goalMet });
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+
+function lwTotalMs(activityByDate) {
+  return Object.values(activityByDate).reduce((sum, a) => sum + (a.ms || 0), 0);
+}
+
+/* 95 min -> "1h 35m", 12 min -> "12m" */
+function lwFormatDuration(ms) {
+  const min = Math.round(ms / LW_MIN_MS);
+  if (min < 60) return min + 'm';
+  const h = Math.floor(min / 60);
+  return h + 'h' + (min % 60 ? ' ' + (min % 60) + 'm' : '');
+}
+
 Object.assign(window, {
+  LW_GOAL_OPTIONS,
+  LW_CEFR_ALL,
+  lwPracticeMs,
+  lwStatusCounts,
+  lwLastDays,
+  lwTotalMs,
+  lwFormatDuration,
   LW_BOXES,
   LW_MASTERED_BOX,
   LW_DEFAULT_DAILY_GOAL,
