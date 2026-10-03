@@ -11,35 +11,41 @@ function shuffle(arr) {
   return a;
 }
 
-const LW_VIEW_ORDER = ['study', 'choice', 'fill', 'reading', 'category', 'library', 'import'];
-const LW_VIEW_LABELS = {
-  study: 'Study',
-  choice: 'Choice',
-  fill: 'Fill',
-  reading: 'Reading',
-  category: 'Category',
-  library: 'Library',
-  import: 'Import',
-};
+/* Navigation: four tabs (bottom tab bar on mobile, sidebar on desktop) plus
+   import/admin screens reached from the menu. Learn has four sub-modes. */
+const LW_LEARN_MODES = [
+  { id: 'cards', label: 'Cards' },
+  { id: 'review', label: 'Review' },
+  { id: 'choice', label: 'Choice' },
+  { id: 'fill', label: 'Fill' },
+];
+const LW_TABS = [
+  { id: 'learn', label: 'Learn', icon: Ic.Learn },
+  { id: 'reading', label: 'Reading', icon: Ic.Book },
+  { id: 'library', label: 'Library', icon: Ic.Library },
+  { id: 'profile', label: 'Profile', icon: Ic.Person },
+];
+const LW_SCREENS = ['learn', 'reading', 'library', 'profile', 'import', 'admin'];
+const LW_ROLE_LABEL = { admin: 'Admin', premium: 'Premium', user: 'User' };
 
 /* Human-readable reading-generation errors, keyed by the .code set in data.jsx.
    Reused by the reading tab's inline hints and by the toast messages. */
 const LW_READING_ERROR_MSG = {
-  quota: 'Дневной лимит Gemini исчерпан. Попробуйте позже.',
-  'bad-key': 'Ключ Gemini недействителен. Обновите ключ в настройках.',
-  refusal: 'Модель не смогла составить текст. Попробуйте ещё раз.',
-  overload: 'Модель Gemini сейчас перегружена. Попробуйте через минуту.',
-  empty: 'В этой категории пока нет слов.',
-  error: 'Ошибка AI-сервиса. Попробуйте позже.',
+  quota: 'Daily Gemini limit reached. Try again later.',
+  'bad-key': 'Your Gemini key is invalid. Update it in Profile → Gemini API key.',
+  refusal: 'The model could not write a text. Try again.',
+  overload: 'Gemini is overloaded right now. Try again in a minute.',
+  empty: 'This group has no words yet.',
+  error: 'AI service error. Try again later.',
 };
 
 /* Same, but for the import tab's "Заполнить с AI" (batch word enrichment). */
 const LW_IMPORT_ERROR_MSG = {
-  quota: 'Дневной лимит Gemini исчерпан. Попробуйте позже.',
-  'bad-key': 'Ключ Gemini недействителен. Обновите ключ в настройках.',
-  refusal: 'Модель не смогла обработать список. Попробуйте меньше слов.',
-  overload: 'Модель Gemini сейчас перегружена. Попробуйте через минуту.',
-  error: 'Ошибка AI-сервиса. Попробуйте позже.',
+  quota: 'Daily Gemini limit reached. Try again later.',
+  'bad-key': 'Your Gemini key is invalid. Update it in Profile → Gemini API key.',
+  refusal: 'The model could not process the list. Try fewer words.',
+  overload: 'Gemini is overloaded right now. Try again in a minute.',
+  error: 'AI service error. Try again later.',
 };
 
 function App() {
@@ -48,7 +54,19 @@ function App() {
   const [userDoc, setUserDoc] = useState(null);
   const [groups, setGroups] = useState([]);
   const [words, setWords] = useState([]);
-  const [view, setView] = useState('study');
+  const [progress, setProgress] = useState({}); // { [wordId]: Leitner progress doc }
+  const [activity, setActivity] = useState({}); // { 'YYYY-MM-DD': daily activity doc }
+  const [now, setNow] = useState(() => Date.now()); // ticks each minute so due counts stay fresh
+  /* where the user is: a screen (tab) + the Learn sub-mode; both survive reloads */
+  const [nav, setNav] = useState(() => {
+    const saved = window.lwLoad(LW_KEYS.nav, null) || {};
+    return {
+      tab: LW_SCREENS.includes(saved.tab) ? saved.tab : 'learn',
+      learnMode: LW_LEARN_MODES.some((m) => m.id === saved.learnMode) ? saved.learnMode : 'cards',
+    };
+  });
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [groupsOpen, setGroupsOpen] = useState(false); // group picker sheet on Learn
   const [selected, setSelected] = useState(() => window.lwLoad(LW_KEYS.selected, null) || []);
   const [direction, setDirection] = useState(() => window.lwLoad(LW_KEYS.direction, 'en-ru'));
   const [studyStats, setStudyStats] = useState({ knownCount: 0, poolCount: 0, groupCount: 0 });
@@ -79,7 +97,7 @@ function App() {
   const [importState, setImportState] = useState({ text: '', groupId: '', status: 'idle', error: null });
   const [toasts, setToasts] = useState([]);
   /* monotonically increasing id: lets us ignore a stale response when the user
-     kicks off a newer generation ("Другой текст") before the previous resolves. */
+     kicks off a newer generation ("Another text") before the previous resolves. */
   const genIdRef = useRef(0);
 
   const dismissToast = useCallback((id) => {
@@ -104,9 +122,9 @@ function App() {
         setReading((r) => ({ ...r, cards, index: 0, status: 'idle', error: null }));
         pushToast({
           kind: 'success',
-          title: 'Тексты готовы (' + cards.length + ')',
-          msg: 'Откройте вкладку «Чтение» и листайте карточки.',
-          action: { label: 'Открыть', view: 'reading' },
+          title: 'Texts ready (' + cards.length + ')',
+          msg: 'Open the Reading tab and swipe through the cards.',
+          action: { label: 'Open', view: 'reading' },
         });
       })
       .catch((e) => {
@@ -115,9 +133,9 @@ function App() {
         setReading((r) => ({ ...r, status: 'idle', error: code }));
         pushToast({
           kind: 'error',
-          title: 'Не удалось сгенерировать текст',
+          title: 'Could not generate texts',
           msg: LW_READING_ERROR_MSG[code] || LW_READING_ERROR_MSG.error,
-          action: { label: 'К настройкам', view: 'reading' },
+          action: { label: 'Settings', view: 'reading' },
         });
       });
   }, [pushToast]);
@@ -149,9 +167,9 @@ function App() {
         });
         pushToast({
           kind: 'success',
-          title: 'Слова заполнены',
-          msg: 'AI дополнил транскрипции, переводы и примеры.',
-          action: { label: 'Открыть', view: 'import' },
+          title: 'Words filled in',
+          msg: 'AI added transcriptions, translations and examples.',
+          action: { label: 'Open', view: 'import' },
         });
       })
       .catch((e) => {
@@ -160,9 +178,9 @@ function App() {
         setImportState((s) => ({ ...s, status: 'idle', error: code }));
         pushToast({
           kind: 'error',
-          title: 'Не удалось заполнить слова',
+          title: 'Could not fill in the words',
           msg: LW_IMPORT_ERROR_MSG[code] || LW_IMPORT_ERROR_MSG.error,
-          action: { label: 'К импорту', view: 'import' },
+          action: { label: 'Import', view: 'import' },
         });
       });
   }, [pushToast]);
@@ -173,7 +191,7 @@ function App() {
     const isAdmin = userDoc && userDoc.role === 'admin';
     items.forEach((w) => window.lwSetDoc(window.LW_COLLECTIONS.words,
       { ...w, userId: authUser.uid, username: userDoc && userDoc.username, shared: isAdmin })
-      .catch((e) => { console.error('importWords failed', e); alert('Не удалось импортировать слово: ' + (e && e.message || e)); }));
+      .catch((e) => { console.error('importWords failed', e); alert('Could not import a word: ' + (e && e.message || e)); }));
   }, [authUser, userDoc]);
 
   /* auth state */
@@ -199,10 +217,52 @@ function App() {
     return () => { unsubGroups(); unsubWords(); };
   }, [authUser]);
 
+  /* live sync with this user's progress + daily activity */
+  useEffect(() => {
+    if (!authUser) { setProgress({}); setActivity({}); return; }
+    const unsubProgress = window.lwWatchUserCollection(window.LW_COLLECTIONS.progress, authUser.uid,
+      (items) => setProgress(Object.fromEntries(items.map((p) => [p.wordId, p]))));
+    const unsubActivity = window.lwWatchUserCollection(window.LW_COLLECTIONS.activity, authUser.uid,
+      (items) => setActivity(Object.fromEntries(items.map((a) => [a.date, a]))));
+    return () => { unsubProgress(); unsubActivity(); };
+  }, [authUser]);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const dailyGoal = (userDoc && userDoc.dailyGoal) || window.LW_DEFAULT_DAILY_GOAL;
+
+  /* Record one answer from Study / Choice / Fill / Review: next Leitner box for
+     the word plus today's XP. A +50 bonus lands once, on the answer that reaches
+     the daily goal. Snapshots apply local writes immediately, so rapid answers
+     already see the updated progress/activity. */
+  const recordAnswer = useCallback((wordId, known, mode) => {
+    if (!authUser) return;
+    const t = Date.now();
+    const date = window.lwLocalDate(t);
+    const today = activity[date] || {};
+    const goalBonus = !today.goalMet && (today.answers || 0) + 1 >= dailyGoal ? window.LW_XP_GOAL_BONUS : 0;
+    window.lwRecordAnswer({
+      uid: authUser.uid,
+      progress: window.lwNextProgress(progress[wordId] || null, wordId, known, mode, t),
+      date,
+      correct: known,
+      xp: known ? window.LW_XP_CORRECT : window.LW_XP_WRONG,
+      goalBonus,
+    }).catch((e) => {
+      console.error('recordAnswer failed', e);
+      pushToast({ kind: 'error', title: 'Could not save progress', msg: (e && e.message) || String(e) });
+    });
+    setNow(t);
+  }, [authUser, activity, progress, dailyGoal, pushToast]);
+
   /* persistence (local-only settings) */
   useEffect(() => { document.documentElement.dataset.theme = theme; window.lwSave(LW_KEYS.theme, theme); }, [theme]);
   useEffect(() => { window.lwSave(LW_KEYS.selected, selected); }, [selected]);
   useEffect(() => { window.lwSave(LW_KEYS.direction, direction); }, [direction]);
+  useEffect(() => { window.lwSave(LW_KEYS.nav, nav); }, [nav]);
   /* персистим пачку карточек чтения (без эфемерных status/error) */
   useEffect(() => {
     window.lwSave(LW_KEYS.reading, { cards: reading.cards, index: reading.index });
@@ -230,10 +290,38 @@ function App() {
     return m;
   }, [groups, words]);
 
+  /* streak / goal / XP / review queue size for the footer (dashboard comes in stage 3).
+     Progress for words that no longer exist (e.g. a shared word an admin deleted) is ignored. */
+  const stats = useMemo(() => {
+    const today = activity[window.lwLocalDate(now)] || {};
+    const xp = window.lwTotalXp(activity);
+    const wordIds = new Set(words.map((w) => w.id));
+    const dueCount = Object.values(progress).filter((p) => wordIds.has(p.wordId) && p.due <= now).length;
+    return {
+      streak: window.lwStreak(activity, now),
+      todayAnswers: today.answers || 0,
+      goal: dailyGoal,
+      xp,
+      level: window.lwLevel(xp),
+      dueCount,
+    };
+  }, [activity, progress, words, now, dailyGoal]);
+
   const scopedGroups = groups;
   const scopedWords = words;
   const scopedSelected = selected;
   const scopedCountByGroup = countByGroup;
+
+  /* Navigate by name. Accepts screens ('reading', 'library', ...), Learn modes
+     ('cards', 'review', 'choice', 'fill'; legacy 'study' = cards) and 'category'
+     (opens the group picker on Learn) — toast actions use these names. */
+  const goTo = useCallback((name) => {
+    setDrawerOpen(false);
+    if (name === 'study') name = 'cards';
+    if (name === 'category') { setNav((n) => ({ ...n, tab: 'learn' })); setGroupsOpen(true); return; }
+    if (LW_LEARN_MODES.some((m) => m.id === name)) { setNav({ tab: 'learn', learnMode: name }); return; }
+    if (LW_SCREENS.includes(name)) setNav((n) => ({ ...n, tab: name }));
+  }, []);
 
   if (authUser === undefined) {
     return null; /* firebase auth still initializing */
@@ -248,94 +336,75 @@ function App() {
     return <LanguageSelectView onSelect={setLang} />;
   }
 
+  const { tab, learnMode } = nav;
+  const isAdmin = userDoc.role === 'admin';
+  const toggleTheme = () => setTheme((t) => (t === 'light' ? 'dark' : 'light'));
+  const learnProps = {
+    words: scopedWords, groupById, direction, progress, recordAnswer,
+    goLibrary: () => goTo('library'), goCategory: () => setGroupsOpen(true),
+  };
+
   return (
     <div className="app">
-      <TopBar view={view} setView={setView} theme={theme}
-        onToggleTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
-        direction={direction} setDirection={setDirection}
-        lang={lang} setLang={setLang}
-        username={userDoc.username} role={userDoc.role} onLogout={() => window.lwLogout()}
-        onGeminiKey={() => setGeminiKeyOpen(true)}
-        onDeleteAccount={() => setDeleteAccountOpen(true)} />
-      <main className="content">
-        {view === 'study' ? (
-          <StudyView groups={scopedGroups} words={scopedWords} selected={scopedSelected}
-            groupById={groupById} onStatsChange={setStudyStats}
-            direction={direction}
-            goLibrary={() => setView('library')} goCategory={() => setView('category')} />
-        ) : view === 'choice' ? (
-          <ChoiceView words={scopedWords} selected={scopedSelected} groupById={groupById}
-            direction={direction}
-            goLibrary={() => setView('library')} goCategory={() => setView('category')} />
-        ) : view === 'fill' ? (
-          <FillView words={scopedWords} selected={scopedSelected} groupById={groupById}
-            goLibrary={() => setView('library')} goCategory={() => setView('category')} />
-        ) : view === 'reading' ? (
-          <ReadingView groups={scopedGroups} words={scopedWords} countByGroup={scopedCountByGroup}
-            reading={reading} setReading={setReading}
-            startGenerate={startReadingGeneration}
-            goLibrary={() => setView('library')} />
-        ) : view === 'library' ? (
-          <LibraryView groups={scopedGroups} words={scopedWords} userId={authUser.uid} username={userDoc.username} isAdmin={userDoc.role === 'admin'}
-            goImport={() => setView('import')} />
-        ) : view === 'import' ? (
-          <ImportView groups={scopedGroups} importState={importState} setImportState={setImportState}
-            startAiFill={startImportAiFill} onImport={importWords}
-            goLibrary={() => setView('library')} />
-        ) : view === 'admin' ? (
-          <AdminView currentUid={authUser.uid} />
-        ) : (
+      <NavDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}
+        tab={tab} learnMode={learnMode} goTo={goTo} stats={stats}
+        username={userDoc.username} isAdmin={isAdmin} wordCount={scopedWords.length}
+        theme={theme} onToggleTheme={toggleTheme}
+        onGeminiKey={() => { setDrawerOpen(false); setGeminiKeyOpen(true); }} />
+      <div className="app-main">
+        <AppBar onMenu={() => setDrawerOpen(true)} level={stats.level} xp={stats.xp} onLevel={() => goTo('profile')} />
+        <main className={'content content-' + tab}>
+          {tab === 'learn' ? (
+            <LearnView mode={learnMode} setMode={(m) => goTo(m)} stats={stats} studyStats={studyStats}
+              selectedCount={scopedSelected.length} onPickGroups={() => setGroupsOpen(true)}>
+              {learnMode === 'review' ? (
+                <ReviewView {...learnProps} now={now} goStudy={() => goTo('cards')} />
+              ) : learnMode === 'choice' ? (
+                <ChoiceView {...learnProps} selected={scopedSelected} />
+              ) : learnMode === 'fill' ? (
+                <FillView {...learnProps} selected={scopedSelected} />
+              ) : (
+                <StudyView {...learnProps} groups={scopedGroups} selected={scopedSelected} onStatsChange={setStudyStats} />
+              )}
+            </LearnView>
+          ) : tab === 'reading' ? (
+            <ReadingView groups={scopedGroups} words={scopedWords} countByGroup={scopedCountByGroup}
+              reading={reading} setReading={setReading}
+              startGenerate={startReadingGeneration}
+              goLibrary={() => goTo('library')} />
+          ) : tab === 'library' ? (
+            <LibraryView groups={scopedGroups} words={scopedWords} userId={authUser.uid} username={userDoc.username} isAdmin={isAdmin}
+              progress={progress}
+              goImport={() => goTo('import')} />
+          ) : tab === 'import' ? (
+            <ImportView groups={scopedGroups} importState={importState} setImportState={setImportState}
+              startAiFill={startImportAiFill} onImport={importWords}
+              goLibrary={() => goTo('library')} />
+          ) : tab === 'admin' && isAdmin ? (
+            <AdminView currentUid={authUser.uid} />
+          ) : (
+            <ProfileView username={userDoc.username} role={userDoc.role} stats={stats}
+              theme={theme} onToggleTheme={toggleTheme}
+              direction={direction} setDirection={setDirection}
+              lang={lang} setLang={setLang}
+              onGeminiKey={() => setGeminiKeyOpen(true)}
+              onLogout={() => window.lwLogout()}
+              onDeleteAccount={() => setDeleteAccountOpen(true)} />
+          )}
+        </main>
+      </div>
+      <TabBar tab={tab} goTo={goTo} />
+      {groupsOpen && (
+        <Modal title="Study groups" sheet onClose={() => setGroupsOpen(false)}>
           <CategoryView groups={scopedGroups} selected={scopedSelected} setSelected={setSelected}
-            countByGroup={scopedCountByGroup} goStudy={() => setView('study')} />
-        )}
-      </main>
-      {view === 'study' && studyStats.poolCount > 0 && (
-        <footer className="appfooter">
-          {studyStats.knownCount} / {studyStats.poolCount} known · {studyStats.poolCount} words · {studyStats.groupCount} {studyStats.groupCount === 1 ? 'group' : 'groups'}
-          <ViewWheel view={view} setView={setView} />
-        </footer>
-      )}
-      {view === 'choice' && (
-        <footer className="appfooter">
-          {scopedWords.filter((w) => scopedSelected.includes(w.groupId)).length} words · {scopedSelected.length} {scopedSelected.length === 1 ? 'group' : 'groups'}
-          <ViewWheel view={view} setView={setView} />
-        </footer>
-      )}
-      {view === 'fill' && (
-        <footer className="appfooter">
-          {scopedWords.filter((w) => scopedSelected.includes(w.groupId) && w.example && w.example.trim()).length} sentences · {scopedSelected.length} {scopedSelected.length === 1 ? 'group' : 'groups'}
-          <ViewWheel view={view} setView={setView} />
-        </footer>
-      )}
-      {view === 'reading' && (
-        <footer className="appfooter">
-          AI reading practice
-          <ViewWheel view={view} setView={setView} />
-        </footer>
-      )}
-      {view === 'category' && (
-        <footer className="appfooter">
-          {scopedSelected.length} {scopedSelected.length === 1 ? 'group' : 'groups'} selected
-          <ViewWheel view={view} setView={setView} />
-        </footer>
-      )}
-      {view === 'library' && (
-        <footer className="appfooter">
-          {scopedWords.length} words across {scopedGroups.filter((g) => !g.parentId).length} groups
-          <ViewWheel view={view} setView={setView} />
-        </footer>
-      )}
-      {view === 'import' && (
-        <footer className="appfooter">
-          Import words
-          <ViewWheel view={view} setView={setView} />
-        </footer>
+            countByGroup={scopedCountByGroup} ctaLabel="Done" goStudy={() => setGroupsOpen(false)} />
+        </Modal>
       )}
       {deleteAccountOpen && <DeleteAccountModal onClose={() => setDeleteAccountOpen(false)} />}
       {geminiKeyOpen && <GeminiKeyModal onClose={() => setGeminiKeyOpen(false)} />}
       <ToastStack toasts={toasts}
         onDismiss={dismissToast}
-        onAction={(action) => { if (action && action.view) setView(action.view); }} />
+        onAction={(action) => { if (action && action.view) goTo(action.view); }} />
     </div>
   );
 }
@@ -360,31 +429,31 @@ function DeleteAccountModal({ onClose }) {
     } catch (err) {
       const code = err && err.code;
       setError(code === 'auth/wrong-password' || code === 'auth/invalid-credential'
-        ? 'Неверный пароль.'
-        : 'Не удалось удалить аккаунт. Попробуйте ещё раз.');
+        ? 'Wrong password.'
+        : 'Could not delete the account. Try again.');
       setBusy(false);
     }
   };
 
   return (
-    <Modal title="Удалить аккаунт" onClose={busy ? () => {} : onClose}
+    <Modal title="Delete account" onClose={busy ? () => {} : onClose}
       footer={<>
-        <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Отмена</button>
+        <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
         <button className="btn btn-danger" onClick={submit} disabled={!password || busy}>
-          {busy ? 'Удаление…' : 'Удалить навсегда'}
+          {busy ? 'Deleting…' : 'Delete forever'}
         </button>
       </>}>
       <p className="confirm-text">
-        Будут безвозвратно удалены <strong>все ваши слова, группы и профиль</strong>.
-        Отменить это действие невозможно. Для подтверждения введите пароль.
+        This permanently deletes <strong>all your words, groups, progress and profile</strong>.
+        It can't be undone. Enter your password to confirm.
       </p>
       <label className="field">
-        <span className="field-label">Пароль</span>
+        <span className="field-label">Password</span>
         <input className="input" type="password" value={password} autoFocus autoComplete="current-password"
           onChange={(e) => setPassword(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
       </label>
-      {error && <p className="field-hint" style={{ color: 'var(--danger)', marginTop: 10 }}>{error}</p>}
+      {error && <p className="field-hint" style={{ color: 'var(--error)', marginTop: 10 }}>{error}</p>}
     </Modal>
   );
 }
@@ -423,7 +492,7 @@ function Toast({ toast, onDismiss, onAction }) {
           </button>
         )}
       </div>
-      <button type="button" className="toast-close" aria-label="Закрыть" onClick={close}>
+      <button type="button" className="toast-close" aria-label="Close" onClick={close}>
         <Ic.Close width="16" height="16" />
       </button>
     </div>
@@ -441,176 +510,241 @@ function ToastStack({ toasts, onDismiss, onAction }) {
   );
 }
 
-/* ---------------- View wheel (bottom page switcher) ----------------
-   A horizontal, swipeable strip of page names. The active page is kept
-   centered; swiping left/right scrolls the strip (it does NOT change the
-   page), and tapping a name switches to that page. Replaces the old dots +
-   the full-page swipe navigation. */
-function ViewWheel({ view, setView }) {
-  const trackRef = useRef(null);
-  const itemRefs = useRef({});
-  /* drag-to-scroll state; also used to suppress the click that ends a drag */
-  const drag = useRef({ active: false, startX: 0, startScroll: 0, moved: false });
-
-  /* keep the active item centered whenever the view changes */
-  useEffect(() => {
-    const el = itemRefs.current[view];
-    const track = trackRef.current;
-    if (!el || !track) return;
-    const target = el.offsetLeft - (track.clientWidth - el.offsetWidth) / 2;
-    track.scrollTo({ left: target, behavior: 'smooth' });
-  }, [view]);
-
-  const onPointerDown = (e) => {
-    const track = trackRef.current;
-    if (!track) return;
-    drag.current = { active: true, startX: e.clientX, startScroll: track.scrollLeft, moved: false };
-    track.setPointerCapture(e.pointerId);
-  };
-  const onPointerMove = (e) => {
-    const d = drag.current;
-    if (!d.active) return;
-    const dx = e.clientX - d.startX;
-    if (Math.abs(dx) > 4) d.moved = true;
-    trackRef.current.scrollLeft = d.startScroll - dx;
-  };
-  const endDrag = (e) => {
-    const track = trackRef.current;
-    if (track && e.pointerId != null) { try { track.releasePointerCapture(e.pointerId); } catch (_) {} }
-    drag.current.active = false;
-  };
-
+/* ---------------- App shell: app bar, navigation drawer / sidebar, tab bar ----------------
+   Below 1024px: glass app bar on top, slide-in drawer, bottom tab bar.
+   From 1024px the drawer is a permanent sidebar and the app bar + tab bar hide (CSS). */
+function AppBar({ onMenu, level, xp, onLevel }) {
   return (
-    <div
-      className="view-wheel"
-      ref={trackRef}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={endDrag}
-      onPointerCancel={endDrag}>
-      <div className="view-wheel-pad" />
-      {LW_VIEW_ORDER.map((v) => (
-        <button
-          key={v}
-          ref={(el) => { itemRefs.current[v] = el; }}
-          className={'view-wheel-item' + (v === view ? ' on' : '')}
-          type="button"
-          onClick={() => { if (!drag.current.moved) setView(v); }}>
-          {LW_VIEW_LABELS[v] || v}
-        </button>
-      ))}
-      <div className="view-wheel-pad" />
-    </div>
-  );
-}
-
-/* ---------------- Top bar ---------------- */
-const LW_ROLE_LABEL = { admin: 'Admin', premium: 'Premium', user: 'User' };
-
-function TopBar({ view, setView, theme, onToggleTheme, direction, setDirection, lang, setLang, username, role, onLogout, onGeminiKey, onDeleteAccount }) {
-  const [open, setOpen] = useState(false);
-  const [langOpen, setLangOpen] = useState(false);
-  const ref = useRef(null);
-  const currentLang = LW_LANGUAGES.find((l) => l.code === lang);
-
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('mousedown', onClick);
-    document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onClick); document.removeEventListener('keydown', onKey); };
-  }, [open]);
-
-  const go = (v) => { setView(v); setOpen(false); setLangOpen(false); };
-
-  return (
-    <header className="topbar">
-      <div className="brand">
-        <span className="brand-name">Lexicon</span>
-      </div>
-      <div className="menu-wrap" ref={ref}>
-        <button className="icon-btn menu-btn" onClick={() => setOpen((o) => !o)} aria-label="Menu">
-          <Ic.Menu />
-        </button>
-        {open && (
-          <div className="menu-dropdown">
-            <button className={'menu-item' + (view === 'study' ? ' on' : '')} onClick={() => go('study')}>
-              <Ic.Cards /> Study
-            </button>
-            <button className={'menu-item' + (view === 'choice' ? ' on' : '')} onClick={() => go('choice')}>
-              <Ic.ListCheck /> Choice
-            </button>
-            <button className={'menu-item' + (view === 'fill' ? ' on' : '')} onClick={() => go('fill')}>
-              <Ic.Blank /> Fill
-            </button>
-            <button className={'menu-item' + (view === 'reading' ? ' on' : '')} onClick={() => go('reading')}>
-              <Ic.Book /> Reading
-            </button>
-            <button className={'menu-item' + (view === 'category' ? ' on' : '')} onClick={() => go('category')}>
-              <Ic.Tag /> Category
-            </button>
-            <button className={'menu-item' + (view === 'library' ? ' on' : '')} onClick={() => go('library')}>
-              <Ic.Library /> Library
-            </button>
-            <button className={'menu-item' + (view === 'import' ? ' on' : '')} onClick={() => go('import')}>
-              <Ic.Plus /> Import
-            </button>
-            <div className="menu-sep" />
-            <button className="menu-item" onClick={() => setDirection(direction === 'en-ru' ? 'ru-en' : 'en-ru')} type="button">
-              <Ic.Swap /> {direction === 'en-ru' ? 'EN → RU' : 'RU → EN'}
-            </button>
-            <div className="menu-sep" />
-            <button className="menu-item" onClick={() => setLangOpen((o) => !o)} type="button">
-              <span>{currentLang ? currentLang.flag : '🌐'}</span> {currentLang ? currentLang.name : 'Language'}
-            </button>
-            {langOpen && (
-              <div className="menu-sub">
-                {LW_LANGUAGES.filter((l) => l.code !== lang).map((l) => (
-                  <button key={l.code} className="menu-item"
-                    onClick={() => { setLang(l.code); setLangOpen(false); setOpen(false); }} type="button">
-                    <span>{l.flag}</span> {l.name}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="menu-sep" />
-            <button className="menu-item" onClick={onToggleTheme}>
-              {theme === 'light' ? <Ic.Moon /> : <Ic.Sun />}
-              {theme === 'light' ? 'Dark theme' : 'Light theme'}
-            </button>
-            <div className="menu-sep" />
-            <button className="menu-item" onClick={() => { onGeminiKey(); setOpen(false); }} type="button">
-              <Ic.Bulb /> Ключ Gemini (AI)
-            </button>
-            {role === 'admin' && (
-              <>
-                <div className="menu-sep" />
-                <button className={'menu-item' + (view === 'admin' ? ' on' : '')} onClick={() => go('admin')} type="button">
-                  <Ic.Tag /> Admin
-                </button>
-              </>
-            )}
-            <div className="menu-sep" />
-            <div className="menu-item" style={{ cursor: 'default' }}>
-              {username}{role && role !== 'user' ? ` · ${LW_ROLE_LABEL[role] || role}` : ''}
-            </div>
-            <button className="menu-item" onClick={() => { onLogout(); setOpen(false); }} type="button">
-              Выйти
-            </button>
-            <button className="menu-item" style={{ color: 'var(--danger)' }}
-              onClick={() => { onDeleteAccount(); setOpen(false); }} type="button">
-              Удалить аккаунт
-            </button>
-          </div>
-        )}
-      </div>
+    <header className="appbar">
+      <button className="icon-btn" onClick={onMenu} aria-label="Menu"><Ic.Menu /></button>
+      <span className="brand-name">Lexicon</span>
+      <button className="level-chip" type="button" onClick={onLevel} title={xp + ' XP'}>
+        <Ic.Star width="16" height="16" /> LVL {level}
+      </button>
     </header>
   );
 }
 
+function NavDrawer({ open, onClose, tab, learnMode, goTo, stats, username, isAdmin, wordCount, theme, onToggleTheme, onGeminiKey }) {
+  useEffect(() => {
+    if (!open) return;
+    const h = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [open, onClose]);
+
+  const item = (name, Icon, label, active, extra) => (
+    <button key={name} type="button" className={'nav-item' + (active ? ' on' : '')} onClick={() => goTo(name)}>
+      <Icon /><span className="nav-label">{label}</span>{extra}
+    </button>
+  );
+  const learnOn = tab === 'learn' && learnMode !== 'review';
+  const activeToday = stats.todayAnswers > 0;
+
+  return (
+    <>
+      <div className={'drawer-scrim' + (open ? ' open' : '')} onClick={onClose} />
+      <aside className={'drawer' + (open ? ' open' : '')}>
+        <div className="drawer-head">
+          <div className="drawer-logo"><Ic.Library /></div>
+          <div className="drawer-brand">
+            <span className="brand-name">Lexicon</span>
+            <span className="drawer-sub">English lab</span>
+          </div>
+          <button className="icon-btn drawer-close" onClick={onClose} aria-label="Close menu"><Ic.Close /></button>
+        </div>
+
+        <button type="button" className="drawer-profile" onClick={() => goTo('profile')}>
+          <div className="drawer-profile-top">
+            <span className="avatar">{(username || '?').slice(0, 1).toUpperCase()}</span>
+            <span className="drawer-profile-text">
+              <span className="drawer-name">{username}</span>
+              <span className="drawer-meta">Level {stats.level} · {stats.xp} XP</span>
+            </span>
+          </div>
+          <span className="drawer-streak">
+            <Ic.Flame width="18" height="18" />
+            <span>{stats.streak} day streak</span>
+            <span className={'streak-badge' + (activeToday ? ' on' : '')}>{activeToday ? 'Active' : 'Study today'}</span>
+          </span>
+        </button>
+
+        <nav className="drawer-nav">
+          {item('cards', Ic.Learn, 'Learn', learnOn)}
+          {item('review', Ic.Repeat, 'Review', tab === 'learn' && learnMode === 'review',
+            stats.dueCount > 0 && <span className="nav-badge nav-badge-hot">{stats.dueCount}</span>)}
+          {item('reading', Ic.Book, 'Reading', tab === 'reading')}
+          {item('library', Ic.Library, 'Library', tab === 'library', <span className="nav-badge">{wordCount} words</span>)}
+          {item('import', Ic.Plus, 'Import', tab === 'import')}
+          {isAdmin && item('admin', Ic.Settings, 'Admin', tab === 'admin')}
+        </nav>
+
+        <div className="drawer-section">Settings</div>
+        <nav className="drawer-nav">
+          {item('profile', Ic.Person, 'Profile', tab === 'profile')}
+          <button type="button" className="nav-item" onClick={onToggleTheme}>
+            <Ic.Moon /><span className="nav-label">Dark theme</span>
+            <span className={'switch' + (theme === 'dark' ? ' on' : '')} aria-hidden="true" />
+          </button>
+          <button type="button" className="nav-item" onClick={onGeminiKey}>
+            <Ic.Key /><span className="nav-label">Gemini API key</span>
+          </button>
+        </nav>
+      </aside>
+    </>
+  );
+}
+
+function TabBar({ tab, goTo }) {
+  return (
+    <nav className="tabbar">
+      {LW_TABS.map(({ id, label, icon: Icon }) => (
+        <button key={id} type="button" className={'tab' + (tab === id ? ' on' : '')} onClick={() => goTo(id)}>
+          <Icon /><span>{label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+/* ---------------- Learn: header (daily goal, modes, groups) + answer buttons ---------------- */
+
+/* Again / Know under a card — same as swiping left / right, but they show when
+   the word comes back. Know on a word reviewed early keeps its box, so its
+   label shows the time left until it is due. */
+function LeitnerButtons({ prog, wordId, onAnswer }) {
+  const t = Date.now();
+  const knowIn = window.lwNextProgress(prog || null, wordId, true, '', t).due - t;
+  return (
+    <div className="answer-btns">
+      <button className="answer-btn answer-again" type="button" onClick={() => onAnswer('unknown')}>
+        <span className="answer-icon"><Ic.Close width="22" height="22" /></span>
+        <span className="answer-label">Again</span>
+        <span className="answer-int">{window.lwFormatInterval(window.LW_BOXES[0])}</span>
+      </button>
+      <button className="answer-btn answer-know" type="button" onClick={() => onAnswer('known')}>
+        <span className="answer-icon"><Ic.DoubleCheck width="22" height="22" /></span>
+        <span className="answer-label">Know</span>
+        <span className="answer-int">{window.lwFormatInterval(knowIn)}</span>
+      </button>
+    </div>
+  );
+}
+
+function LearnView({ mode, setMode, stats, studyStats, selectedCount, onPickGroups, children }) {
+  const pct = Math.min(100, Math.round((stats.todayAnswers / stats.goal) * 100));
+  return (
+    <div className="learn">
+      <div className="learn-head">
+        <div className="goal">
+          <div className="goal-row">
+            <span className="goal-label">Daily goal</span>
+            <span className={'goal-count' + (pct >= 100 ? ' met' : '')}>{stats.todayAnswers} / {stats.goal} answers</span>
+          </div>
+          <div className="goal-track"><div className="goal-fill" style={{ width: pct + '%' }} /></div>
+        </div>
+        <div className="mode-pills" role="tablist">
+          {LW_LEARN_MODES.map((m) => (
+            <button key={m.id} type="button" role="tab" aria-selected={mode === m.id}
+              className={'mode-pill' + (mode === m.id ? ' on' : '')} onClick={() => setMode(m.id)}>
+              {m.label}
+              {m.id === 'review' && stats.dueCount > 0 && <span className="mode-pill-count">{stats.dueCount}</span>}
+            </button>
+          ))}
+        </div>
+        {mode !== 'review' && (
+          <div className="learn-sub">
+            <button type="button" className="groups-chip" onClick={onPickGroups}>
+              <Ic.Tag width="15" height="15" /> {selectedCount} {selectedCount === 1 ? 'group' : 'groups'} <Ic.Chevron width="15" height="15" />
+            </button>
+            {mode === 'cards' && studyStats.poolCount > 0 && (
+              <span className="learn-session">{studyStats.knownCount} / {studyStats.poolCount} known</span>
+            )}
+          </div>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/* ---------------- Profile (stage 1: account + settings; stats arrive in stage 3) ---------------- */
+function ProfileView({ username, role, stats, theme, onToggleTheme, direction, setDirection, lang, setLang, onGeminiKey, onLogout, onDeleteAccount }) {
+  /* lwLevel: level n starts at 50·(n−1)² XP */
+  const levelStart = 50 * (stats.level - 1) ** 2;
+  const levelEnd = 50 * stats.level ** 2;
+  const levelPct = Math.round(((stats.xp - levelStart) / (levelEnd - levelStart)) * 100);
+  return (
+    <div className="profile">
+      <section className="profile-card">
+        <span className="avatar avatar-lg">{(username || '?').slice(0, 1).toUpperCase()}</span>
+        <div className="profile-id">
+          <h1 className="profile-name">{username}</h1>
+          <div className="profile-meta">
+            Level {stats.level}{role && role !== 'user' ? <span className="role-chip">{LW_ROLE_LABEL[role] || role}</span> : null}
+          </div>
+        </div>
+        <div className="profile-xp">
+          <div className="goal-row">
+            <span className="goal-label">{stats.xp} XP</span>
+            <span className="goal-count">{levelEnd - stats.xp} XP to level {stats.level + 1}</span>
+          </div>
+          <div className="goal-track"><div className="goal-fill" style={{ width: levelPct + '%' }} /></div>
+        </div>
+        <div className="profile-stats">
+          <div className="pstat"><span className="pstat-num"><Ic.Flame width="18" height="18" /> {stats.streak}</span><span className="pstat-label">Day streak</span></div>
+          <div className="pstat"><span className="pstat-num">{stats.todayAnswers}/{stats.goal}</span><span className="pstat-label">Today</span></div>
+          <div className="pstat"><span className="pstat-num">{stats.dueCount}</span><span className="pstat-label">To review</span></div>
+        </div>
+      </section>
+
+      <h2 className="section-label">Learning</h2>
+      <section className="settings-list">
+        <div className="setting-row">
+          <span className="setting-label"><Ic.Swap /> Card direction</span>
+          <div className="seg">
+            <button type="button" className={'seg-btn' + (direction === 'en-ru' ? ' on' : '')} onClick={() => setDirection('en-ru')}>EN → RU</button>
+            <button type="button" className={'seg-btn' + (direction === 'ru-en' ? ' on' : '')} onClick={() => setDirection('ru-en')}>RU → EN</button>
+          </div>
+        </div>
+        <div className="setting-row setting-row-wrap">
+          <span className="setting-label"><Ic.Book /> Language you learn</span>
+          <div className="seg">
+            {LW_LANGUAGES.map((l) => (
+              <button key={l.code} type="button" className={'seg-btn' + (lang === l.code ? ' on' : '')}
+                onClick={() => setLang(l.code)} title={l.name}>{l.flag} {l.code.toUpperCase()}</button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <h2 className="section-label">App</h2>
+      <section className="settings-list">
+        <button type="button" className="setting-row" onClick={onToggleTheme}>
+          <span className="setting-label"><Ic.Moon /> Dark theme</span>
+          <span className={'switch' + (theme === 'dark' ? ' on' : '')} aria-hidden="true" />
+        </button>
+        <button type="button" className="setting-row" onClick={onGeminiKey}>
+          <span className="setting-label"><Ic.Key /> Gemini API key</span>
+          <span className="setting-value">{window.lwHasGeminiKey() ? 'Connected' : 'Not set'} <Ic.ChevronRight width="16" height="16" /></span>
+        </button>
+      </section>
+
+      <h2 className="section-label">Account</h2>
+      <section className="settings-list">
+        <button type="button" className="setting-row" onClick={onLogout}>
+          <span className="setting-label"><Ic.Logout /> Sign out</span>
+        </button>
+        <button type="button" className="setting-row setting-danger" onClick={onDeleteAccount}>
+          <span className="setting-label"><Ic.Trash /> Delete account</span>
+        </button>
+      </section>
+    </div>
+  );
+}
+
 /* ---------------- Study view ---------------- */
-function StudyView({ groups, words, selected, groupById, onStatsChange, direction, goLibrary, goCategory }) {
+function StudyView({ groups, words, selected, groupById, onStatsChange, direction, progress: wordProgress, recordAnswer, goLibrary, goCategory }) {
   const pool = useMemo(() => words.filter((w) => selected.includes(w.groupId)), [words, selected]);
 
   const [queue, setQueue] = useState([]);
@@ -668,10 +802,11 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, directio
   const mark = useCallback((status) => {
     if (!current) return;
     if (status === 'skip') { draw(); return; }
+    recordAnswer(current, status === 'known', 'study');
     setProgress((p) => ({ ...p, [current]: status }));
     const nq = status === 'unknown' ? [...queue, current] : queue;
     advance(nq);
-  }, [current, queue, advance, draw]);
+  }, [current, queue, advance, draw, recordAnswer]);
 
   const shuffleDeck = useCallback(() => {
     if (!current) return;
@@ -715,23 +850,122 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, directio
         ) : allDone ? (
           <div className="empty-card">
             <Ic.Check width="30" height="30" />
-            <p className="empty-title">Все слова изучены!</p>
+            <p className="empty-title">All words done!</p>
             <p className="empty-sub">{pool.length} / {pool.length} known</p>
-            <button className="btn btn-primary" onClick={restart}><Ic.Shuffle /> Начать заново</button>
+            <button className="btn btn-primary" onClick={restart}><Ic.Shuffle /> Start over</button>
           </div>
         ) : (
           <div className="empty-card">
             <Ic.Cards width="30" height="30" />
             <p className="empty-title">{pool.length === 0 && selected.length === 0 ? 'Select a group to begin' : 'No words here yet'}</p>
-            <p className="empty-sub">{selected.length === 0 ? 'Pick one or more groups in Category.' : 'Add words to these groups in the Library.'}</p>
+            <p className="empty-sub">{selected.length === 0 ? 'Pick one or more study groups.' : 'Add words to these groups in the Library.'}</p>
             {selected.length === 0 ? (
-              <button className="btn btn-primary" onClick={goCategory}><Ic.Tag /> Choose categories</button>
+              <button className="btn btn-primary" onClick={goCategory}><Ic.Tag /> Choose groups</button>
             ) : (
               <button className="btn btn-primary" onClick={goLibrary}><Ic.Plus /> Add words</button>
             )}
           </div>
         )}
       </div>
+      {entry && <LeitnerButtons prog={wordProgress[entry.id]} wordId={entry.id} onAnswer={mark} />}
+    </div>
+  );
+}
+
+/* ---------------- Review view (Leitner: every word whose due time has come) ----------------
+   Covers all of the user's words, not just the selected categories. The queue is
+   fixed when the view opens (sorted by due); Again sends the word to the back of
+   this session's queue, Know drops it. Space flips, ← / → answer. */
+function ReviewView({ words, groupById, direction, progress, recordAnswer, now, goStudy, goCategory }) {
+  const [queue, setQueue] = useState(null); // null until the first build
+  const [flipped, setFlipped] = useState(false);
+  const [done, setDone] = useState(0);
+  const [turn, setTurn] = useState(0); // remounts the card, so a re-queued single word animates in again
+
+  const dueIds = useMemo(() => {
+    const wordIds = new Set(words.map((w) => w.id));
+    return Object.values(progress)
+      .filter((p) => wordIds.has(p.wordId) && p.due <= now)
+      .sort((a, b) => a.due - b.due)
+      .map((p) => p.wordId);
+  }, [words, progress, now]);
+
+  /* build the queue on open; refill once it has run dry and more words came due */
+  useEffect(() => {
+    const dry = queue === null || !queue.some((id) => words.some((w) => w.id === id));
+    if (dry && (queue === null || dueIds.length)) setQueue(dueIds);
+    // eslint-disable-next-line
+  }, [dueIds]);
+
+  useEffect(() => { setFlipped(false); }, [direction]);
+
+  /* first queued word that still exists (words can be deleted mid-session) */
+  const current = queue ? queue.find((id) => words.some((w) => w.id === id)) || null : null;
+
+  const mark = useCallback((status) => {
+    if (!current) return;
+    setFlipped(false);
+    setTurn((n) => n + 1);
+    const rest = (q) => q.filter((id) => id !== current);
+    if (status === 'skip') { setQueue((q) => [...rest(q), current]); return; }
+    recordAnswer(current, status === 'known', 'review');
+    setDone((n) => n + 1);
+    setQueue((q) => (status === 'unknown' ? [...rest(q), current] : rest(q)));
+  }, [current, recordAnswer]);
+
+  const shuffleDeck = useCallback(() => {
+    setFlipped(false);
+    setQueue((q) => shuffle(q));
+  }, []);
+
+  useEffect(() => {
+    const h = (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      if (e.code === 'Space') { e.preventDefault(); setFlipped((f) => !f); }
+      else if (e.code === 'ArrowRight') { e.preventDefault(); mark('known'); }
+      else if (e.code === 'ArrowLeft') { e.preventDefault(); mark('unknown'); }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [mark]);
+
+  const entry = current ? words.find((w) => w.id === current) : null;
+  const group = entry ? groupById[entry.groupId] : null;
+
+  /* soonest upcoming review, for the empty state */
+  const nextDue = useMemo(() => {
+    const wordIds = new Set(words.map((w) => w.id));
+    const upcoming = Object.values(progress).filter((p) => wordIds.has(p.wordId) && p.due > now);
+    return upcoming.length ? Math.min(...upcoming.map((p) => p.due)) : null;
+  }, [words, progress, now]);
+
+  return (
+    <div className="study">
+      <div className="stage">
+        {entry ? (
+          <Flashcard key={turn} entry={entry} group={group} flipped={flipped} direction={direction}
+            onFlip={() => setFlipped((f) => !f)} onSwipe={mark} onShuffle={shuffleDeck}
+            onGroupClick={goCategory} />
+        ) : Object.keys(progress).length === 0 ? (
+          <div className="empty-card">
+            <Ic.Repeat width="30" height="30" />
+            <p className="empty-title">Nothing to review yet</p>
+            <p className="empty-sub">Study some words first — they come back here when it's time to repeat them.</p>
+            <button className="btn btn-primary" onClick={goStudy}><Ic.Cards /> Start studying</button>
+          </div>
+        ) : (
+          <div className="empty-card">
+            <Ic.Check width="30" height="30" />
+            <p className="empty-title">All caught up!</p>
+            <p className="empty-sub">
+              {done > 0 ? done + ' reviewed this session. ' : ''}
+              {nextDue ? 'Next review in ' + window.lwFormatInterval(nextDue - now) + '.' : ''}
+            </p>
+            <button className="btn btn-primary" onClick={goStudy}><Ic.Cards /> Study new words</button>
+          </div>
+        )}
+      </div>
+      {entry && <LeitnerButtons prog={progress[entry.id]} wordId={entry.id} onAnswer={mark} />}
     </div>
   );
 }
@@ -740,7 +974,7 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, directio
 const CHOICE_OPTIONS = 4;
 const CHOICE_ADVANCE_DELAY = 700;
 
-function ChoiceView({ words, selected, groupById, direction, goLibrary, goCategory }) {
+function ChoiceView({ words, selected, groupById, direction, recordAnswer, goLibrary, goCategory }) {
   const pool = useMemo(() => words.filter((w) => selected.includes(w.groupId)), [words, selected]);
 
   const [queue, setQueue] = useState([]);
@@ -787,8 +1021,9 @@ function ChoiceView({ words, selected, groupById, direction, goLibrary, goCatego
     setPickedId(id);
     setAnsweredCount((n) => n + 1);
     if (id === current) setCorrectCount((n) => n + 1);
+    recordAnswer(current, id === current, 'choice');
     advanceTimer.current = setTimeout(advance, CHOICE_ADVANCE_DELAY);
-  }, [pickedId, current, advance]);
+  }, [pickedId, current, advance, recordAnswer]);
 
   const restart = useCallback(() => {
     const ids = shuffle(pool.map((w) => w.id));
@@ -809,7 +1044,7 @@ function ChoiceView({ words, selected, groupById, direction, goLibrary, goCatego
         <div className="choice-card">
           {group && (
             <button type="button" className="choice-tag choice-tag-btn"
-              onClick={() => goCategory()} title="Open categories">
+              onClick={() => goCategory()} title="Choose study groups">
               <span className="dot" style={{ background: group.color }} />{group.name}
             </button>
           )}
@@ -840,17 +1075,17 @@ function ChoiceView({ words, selected, groupById, direction, goLibrary, goCatego
       ) : allDone ? (
         <div className="empty-card">
           <Ic.Check width="30" height="30" />
-          <p className="empty-title">Раунд завершён!</p>
+          <p className="empty-title">Round complete!</p>
           <p className="empty-sub">{correctCount} / {answeredCount} correct</p>
-          <button className="btn btn-primary" onClick={restart}><Ic.Shuffle /> Начать заново</button>
+          <button className="btn btn-primary" onClick={restart}><Ic.Shuffle /> Start over</button>
         </div>
       ) : (
         <div className="empty-card">
           <Ic.ListCheck width="30" height="30" />
           <p className="empty-title">{pool.length === 0 && selected.length === 0 ? 'Select a group to begin' : 'No words here yet'}</p>
-          <p className="empty-sub">{selected.length === 0 ? 'Pick one or more groups in Category.' : 'Add words to these groups in the Library.'}</p>
+          <p className="empty-sub">{selected.length === 0 ? 'Pick one or more study groups.' : 'Add words to these groups in the Library.'}</p>
           {selected.length === 0 ? (
-            <button className="btn btn-primary" onClick={goCategory}><Ic.Tag /> Choose categories</button>
+            <button className="btn btn-primary" onClick={goCategory}><Ic.Tag /> Choose groups</button>
           ) : (
             <button className="btn btn-primary" onClick={goLibrary}><Ic.Plus /> Add words</button>
           )}
@@ -866,7 +1101,7 @@ function ChoiceView({ words, selected, groupById, direction, goLibrary, goCatego
    actually blank it out). Swipe (or ←/→) like the flashcards: right = known
    (drops from the deck), left = unknown (re-queued, so it comes up again).
    Space flips. */
-function FillView({ words, selected, groupById, goLibrary, goCategory }) {
+function FillView({ words, selected, groupById, progress: wordProgress, recordAnswer, goLibrary, goCategory }) {
   /* eligible: has an example whose text contains a form of the word to blank */
   const pool = useMemo(
     () => words.filter((w) => selected.includes(w.groupId)
@@ -912,10 +1147,11 @@ function FillView({ words, selected, groupById, goLibrary, goCategory }) {
   const mark = useCallback((status) => {
     if (!current) return;
     if (status === 'skip') { draw(); return; }
+    recordAnswer(current, status === 'known', 'fill');
     setProgress((p) => ({ ...p, [current]: status }));
     const nq = status === 'unknown' ? [...queue, current] : queue;
     advance(nq);
-  }, [current, queue, advance, draw]);
+  }, [current, queue, advance, draw, recordAnswer]);
 
   const shuffleDeck = useCallback(() => {
     if (!current) return;
@@ -960,9 +1196,9 @@ function FillView({ words, selected, groupById, goLibrary, goCategory }) {
         ) : allDone ? (
           <div className="empty-card">
             <Ic.Check width="30" height="30" />
-            <p className="empty-title">Все предложения пройдены!</p>
+            <p className="empty-title">All sentences done!</p>
             <p className="empty-sub">{knownCount} / {pool.length} known</p>
-            <button className="btn btn-primary" onClick={restart}><Ic.Shuffle /> Начать заново</button>
+            <button className="btn btn-primary" onClick={restart}><Ic.Shuffle /> Start over</button>
           </div>
         ) : (
           <div className="empty-card">
@@ -970,17 +1206,18 @@ function FillView({ words, selected, groupById, goLibrary, goCategory }) {
             <p className="empty-title">{selected.length === 0 ? 'Select a group to begin' : 'No sentences here yet'}</p>
             <p className="empty-sub">
               {selected.length === 0
-                ? 'Pick one or more groups in Category.'
+                ? 'Pick one or more study groups.'
                 : 'Add words with example sentences to these groups (the AI fill can write examples for you).'}
             </p>
             {selected.length === 0 ? (
-              <button className="btn btn-primary" onClick={goCategory}><Ic.Tag /> Choose categories</button>
+              <button className="btn btn-primary" onClick={goCategory}><Ic.Tag /> Choose groups</button>
             ) : (
               <button className="btn btn-primary" onClick={goLibrary}><Ic.Plus /> Add words</button>
             )}
           </div>
         )}
       </div>
+      {entry && <LeitnerButtons prog={wordProgress[entry.id]} wordId={entry.id} onAnswer={mark} />}
     </div>
   );
 }
@@ -1179,7 +1416,7 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
         <div className="empty-card">
           <Ic.Book width="30" height="30" />
           <p className="empty-title">No words yet</p>
-          <p className="empty-sub">Add words to a category first, then generate a text from them.</p>
+          <p className="empty-sub">Add words to a group first, then generate a text from them.</p>
           <button className="btn btn-primary" onClick={goLibrary}><Ic.Plus /> Add words</button>
         </div>
       </div>
@@ -1203,7 +1440,7 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
           <div className="reading-face reading-front">
             <div className="reading-controls">
               <label className="field">
-                <span className="field-label">Category</span>
+                <span className="field-label">Group</span>
                 <select className="input" value={groupId} onChange={(e) => setGroupId(e.target.value)}>
                   {leafGroups.map((g) => (
                     <option key={g.id} value={g.id}>{g.name} ({countByGroup[g.id]})</option>
@@ -1243,8 +1480,8 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
               </button>
 
               {state === 'bad-key' ? (
-                <p className="field-hint">Ключ Gemini недействителен.{' '}
-                  <button type="button" className="btn btn-ghost sm" onClick={() => setKeyModal(true)}>Изменить ключ</button>
+                <p className="field-hint">Your Gemini key is invalid.{' '}
+                  <button type="button" className="btn btn-ghost sm" onClick={() => setKeyModal(true)}>Change key</button>
                 </p>
               ) : state !== 'idle' && state !== 'loading' && (
                 <p className="field-hint">{LW_READING_ERROR_MSG[state] || LW_READING_ERROR_MSG.error}</p>
@@ -1266,7 +1503,7 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
                       )}
                     </div>
                   </div>
-                  <button className="reading-bulb" type="button" title="Перевод всего текста"
+                  <button className="reading-bulb" type="button" title="Translate the whole text"
                     aria-pressed={showFullRu}
                     onClick={() => { setShowFullRu((v) => !v); setOpenSentence(-1); }}>
                     <Ic.Bulb width="18" height="18" />
@@ -1295,7 +1532,7 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
 
                 {usedWords.length > 0 && (
                   <div className="reading-words">
-                    <span className="field-label">Слова из категории (нажмите, чтобы подсветить):</span>
+                    <span className="field-label">Words from the group (tap to highlight):</span>
                     <div className="reading-word-tags">
                       {usedWords.map((w) => (
                         <button
@@ -1313,7 +1550,7 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
 
                 {cards.length > 1 && (
                   <div className="reading-nav">
-                    <button className="reading-nav-btn" type="button" title="Предыдущий текст"
+                    <button className="reading-nav-btn" type="button" title="Previous text"
                       disabled={index === 0}
                       onClick={() => goToCard(index - 1)}>
                       <Ic.Arrow style={{ transform: 'scaleX(-1)' }} />
@@ -1322,12 +1559,12 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
                       {cards.map((c, i) => (
                         <button key={c.id || i} type="button"
                           className={'reading-dot' + (i === index ? ' on' : '')}
-                          title={'Текст ' + (i + 1)}
+                          title={'Text ' + (i + 1)}
                           aria-current={i === index}
                           onClick={() => goToCard(i)} />
                       ))}
                     </div>
-                    <button className="reading-nav-btn" type="button" title="Следующий текст"
+                    <button className="reading-nav-btn" type="button" title="Next text"
                       disabled={atLast}
                       onClick={goNext}>
                       <Ic.Arrow />
@@ -1337,7 +1574,7 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
 
                 <div className="reading-actions">
                   <button className="btn btn-primary sm" onClick={markRead} type="button">
-                    <Ic.Check width="15" height="15" /> Прочитано
+                    <Ic.Check width="15" height="15" /> Done reading
                   </button>
                 </div>
               </article>
@@ -1357,7 +1594,7 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
 }
 
 /* ---------------- Category view ---------------- */
-function CategoryView({ groups, selected, setSelected, countByGroup, goStudy }) {
+function CategoryView({ groups, selected, setSelected, countByGroup, goStudy, ctaLabel = 'Start studying' }) {
   const leafGroups = (window.lwLeafGroups ? window.lwLeafGroups(groups) : groups)
     .filter((g) => countByGroup[g.id] > 0);
   const toggle = (id) => {
@@ -1383,7 +1620,7 @@ function CategoryView({ groups, selected, setSelected, countByGroup, goStudy }) 
         </div>
       </div>
       <button className="btn btn-primary btn-cta-study" disabled={!hasWords} onClick={goStudy}>
-        Start studying
+        {ctaLabel}
       </button>
     </div>
   );
@@ -1403,14 +1640,14 @@ function AdminView({ currentUid }) {
     setError('');
     window.lwAdminFetchUsers()
       .then(setUsers)
-      .catch(() => setError('Не удалось загрузить пользователей.'));
+      .catch(() => setError('Could not load users.'));
   }, []);
 
   const loadAllData = useCallback(() => {
     setError('');
     window.lwAdminFetchAllData()
       .then(setAllData)
-      .catch(() => setError('Не удалось загрузить слова и категории.'));
+      .catch(() => setError('Could not load words and groups.'));
   }, []);
 
   useEffect(() => { loadUsers(); }, [loadUsers]);
@@ -1422,7 +1659,7 @@ function AdminView({ currentUid }) {
       await window.lwAdminSetRole(uid, role);
       setUsers((list) => list.map((u) => (u.id === uid ? { ...u, role } : u)));
     } catch (e) {
-      setError('Не удалось изменить роль.');
+      setError('Could not change the role.');
     } finally {
       setSavingId(null);
     }
@@ -1435,20 +1672,20 @@ function AdminView({ currentUid }) {
       <div className="lib-head">
         <div>
           <h1 className="lib-title">Admin</h1>
-          <p className="lib-sub">{tab === 'users' ? 'Пользователи и роли' : 'Все слова и категории'}</p>
+          <p className="lib-sub">{tab === 'users' ? 'Users and roles' : 'All words and groups'}</p>
         </div>
         <div className="lib-head-actions">
           <div className="seg">
-            <button className={'seg-btn' + (tab === 'users' ? ' on' : '')} onClick={() => setTab('users')} type="button">Пользователи</button>
-            <button className={'seg-btn' + (tab === 'data' ? ' on' : '')} onClick={() => setTab('data')} type="button">Все слова и категории</button>
+            <button className={'seg-btn' + (tab === 'users' ? ' on' : '')} onClick={() => setTab('users')} type="button">Users</button>
+            <button className={'seg-btn' + (tab === 'data' ? ' on' : '')} onClick={() => setTab('data')} type="button">All words and groups</button>
           </div>
-          <button className="btn btn-soft" onClick={reload} type="button"><Ic.Shuffle /> Обновить</button>
+          <button className="btn btn-soft" onClick={reload} type="button"><Ic.Shuffle /> Refresh</button>
         </div>
       </div>
-      {error && <p className="field-hint" style={{ color: 'var(--danger)' }}>{error}</p>}
+      {error && <p className="field-hint" style={{ color: 'var(--error)' }}>{error}</p>}
       {tab === 'users' ? (
         users === null ? (
-          <p className="row-empty">Загрузка…</p>
+          <p className="row-empty">Loading…</p>
         ) : (
           <div className="groups-list">
             {users.map((u) => (
@@ -1470,7 +1707,7 @@ function AdminView({ currentUid }) {
                 </header>
               </section>
             ))}
-            {users.length === 0 && <p className="row-empty">Пользователей пока нет.</p>}
+            {users.length === 0 && <p className="row-empty">No users yet.</p>}
           </div>
         )
       ) : (
@@ -1495,7 +1732,7 @@ function AdminAllDataView({ data, onChanged }) {
     return m;
   }, [words]);
 
-  if (!data) return <p className="row-empty">Загрузка…</p>;
+  if (!data) return <p className="row-empty">Loading…</p>;
   const { groups } = data;
   const ownerLabel = (item) => item.username || item.userId || '—';
 
@@ -1540,7 +1777,7 @@ function AdminAllDataView({ data, onChanged }) {
     onChanged();
   };
 
-  if (groups.length === 0) return <p className="row-empty">Категорий пока нет.</p>;
+  if (groups.length === 0) return <p className="row-empty">No groups yet.</p>;
 
   return (
     <div className="groups-list">
@@ -1552,10 +1789,10 @@ function AdminAllDataView({ data, onChanged }) {
             <button className="grp-toggle" onClick={() => toggleOpen(g.id)}>
               <Ic.Chevron style={{ transform: open ? 'none' : 'rotate(-90deg)', transition: 'transform .2s' }} />
               <span className="grp-name">{g.name}</span>
-              <span className="grp-count">{(wordsByGroup[g.id] || []).length} words · добавил: {ownerLabel(g)}</span>
+              <span className="grp-count">{(wordsByGroup[g.id] || []).length} words · added by {ownerLabel(g)}</span>
             </button>
             <div className="grp-tools">
-              {!g.shared && <button className="btn btn-soft sm" onClick={() => makeGroupShared(g)} type="button">Сделать общим</button>}
+              {!g.shared && <button className="btn btn-soft sm" onClick={() => makeGroupShared(g)} type="button">Make shared</button>}
               <button className="icon-btn sm" onClick={() => setGroupModal({ initial: g })} aria-label="Edit"><Ic.Edit /></button>
               <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'group', id: g.id, label: g.name })} aria-label="Delete"><Ic.Trash /></button>
             </div>
@@ -1570,9 +1807,9 @@ function AdminAllDataView({ data, onChanged }) {
                     {w.tr && <span className="wrow-tr">{w.tr}</span>}
                   </div>
                 </div>
-                <span className="grp-count">добавил: {ownerLabel(w)}</span>
+                <span className="grp-count">added by {ownerLabel(w)}</span>
                 <div className="wrow-tools">
-                  {!w.shared && <button className="btn btn-soft sm" onClick={() => makeWordShared(w)} type="button">Сделать общим</button>}
+                  {!w.shared && <button className="btn btn-soft sm" onClick={() => makeWordShared(w)} type="button">Make shared</button>}
                   <button className="icon-btn sm" onClick={() => setWordModal({ initial: w })} aria-label="Edit"><Ic.Edit /></button>
                   <button className="icon-btn sm danger" onClick={() => setConfirm({ kind: 'word', id: w.id, label: w.word })} aria-label="Delete"><Ic.Trash /></button>
                 </div>
@@ -1610,7 +1847,7 @@ function AdminAllDataView({ data, onChanged }) {
 }
 
 /* ---------------- Library view ---------------- */
-function LibraryView({ groups, words, userId, username, isAdmin, goImport }) {
+function LibraryView({ groups, words, userId, username, isAdmin, progress, goImport }) {
   const [wordModal, setWordModal] = useState(null); // {mode, initial?, groupId?}
   const [groupModal, setGroupModal] = useState(null); // {mode, initial?, parentGroup?}
   const [confirm, setConfirm] = useState(null); // {kind, id, label}
@@ -1638,27 +1875,39 @@ function LibraryView({ groups, words, userId, username, isAdmin, goImport }) {
     // legacy-документы могут не иметь userId/username — тогда назначаем владельцем
     // текущего пользователя, иначе слово выпадет из выборки where('userId','==',uid).
     window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId: (existing && existing.userId) || userId, username: (existing && existing.username) || username, shared })
-      .catch((e) => { console.error('saveWord failed', e); alert('Не удалось сохранить слово: ' + (e && e.message || e)); });
+      .catch((e) => { console.error('saveWord failed', e); alert('Could not save the word: ' + (e && e.message || e)); });
     setWordModal(null);
   };
   const saveGroup = (g) => {
     const existing = groups.find((x) => x.id === g.id);
     const shared = existing ? existing.shared : isAdmin;
     window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, userId: (existing && existing.userId) || userId, username: (existing && existing.username) || username, shared })
-      .catch((e) => { console.error('saveGroup failed', e); alert('Не удалось сохранить группу: ' + (e && e.message || e)); });
+      .catch((e) => { console.error('saveGroup failed', e); alert('Could not save the group: ' + (e && e.message || e)); });
     if (!openGroups.includes(g.id)) setOpenGroups((o) => [...o, g.id]);
     if (g.parentId && !openGroups.includes(g.parentId)) setOpenGroups((o) => [...o, g.parentId]);
     setGroupModal(null);
   };
   const doDelete = () => {
     if (!confirm) return;
-    if (confirm.kind === 'word') window.lwDeleteDoc(window.LW_COLLECTIONS.words, confirm.id);
+    let deletedWordIds = [];
+    if (confirm.kind === 'word') {
+      window.lwDeleteDoc(window.LW_COLLECTIONS.words, confirm.id);
+      deletedWordIds = [confirm.id];
+    }
     if (confirm.kind === 'group') {
       const ids = [confirm.id, ...subGroupsOf(confirm.id).map((sg) => sg.id)];
       ids.forEach((id) => {
         window.lwDeleteDoc(window.LW_COLLECTIONS.groups, id);
         window.lwDeleteWordsByGroup(id, isAdmin ? null : userId);
       });
+      deletedWordIds = words.filter((w) => ids.includes(w.groupId)).map((w) => w.id);
+    }
+    /* drop this user's progress for the deleted words (others' progress on a
+       deleted shared word is left as orphans that the app ignores) */
+    const withProgress = deletedWordIds.filter((id) => progress[id]);
+    if (withProgress.length) {
+      window.lwDeleteProgressForWords(userId, withProgress)
+        .catch((e) => console.error('delete progress failed', e));
     }
     setConfirm(null);
   };
@@ -1690,6 +1939,10 @@ function LibraryView({ groups, words, userId, username, isAdmin, goImport }) {
 
   return (
     <div className="library">
+      <div className="lib-intro">
+        <h1 className="lib-title">Library</h1>
+        <p className="lib-sub">{words.length} words in {topGroups.length} {topGroups.length === 1 ? 'group' : 'groups'}</p>
+      </div>
       <div className="lib-head">
         <div className="lib-search">
           <Ic.Search className="lib-search-icon" />
@@ -1803,7 +2056,7 @@ function LibraryView({ groups, words, userId, username, isAdmin, goImport }) {
 }
 
 /* ---------------- Group form ---------------- */
-const LW_PALETTE = ['#E8552F', '#2F9E8F', '#5B6CE8', '#C9913B', '#B7409B', '#3E8ED0', '#5BA02E', '#D6453E'];
+const LW_PALETTE = ['#005da7', '#2F9E8F', '#5B6CE8', '#C9913B', '#B7409B', '#3E8ED0', '#5BA02E', '#D6453E'];
 function GroupForm({ initial, parentGroup, onSave, onCancel }) {
   const [name, setName] = useState(initial ? initial.name : '');
   const [color, setColor] = useState(initial ? initial.color : (parentGroup ? parentGroup.color : LW_PALETTE[0]));
@@ -1822,7 +2075,7 @@ function GroupForm({ initial, parentGroup, onSave, onCancel }) {
     <div className="form">
       {parentGroup && (
         <p className="field-hint">
-          Подгруппа группы <strong>{parentGroup.name}</strong>
+          Subgroup of <strong>{parentGroup.name}</strong>
         </p>
       )}
       <label className="field">
@@ -1854,8 +2107,8 @@ function LanguageSelectView({ onSelect }) {
   return (
     <div className="lang-select">
       <div className="lang-select-card">
-        <p className="lang-select-title">Какой язык вы изучаете?</p>
-        <p className="lang-select-sub">Этот выбор можно изменить позже в меню.</p>
+        <p className="lang-select-title">Which language are you learning?</p>
+        <p className="lang-select-sub">You can change this later in Profile.</p>
         <div className="lang-select-grid">
           {LW_LANGUAGES.map((l) => (
             <button key={l.code} className="lang-opt" onClick={() => onSelect(l.code)} type="button">

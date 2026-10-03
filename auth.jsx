@@ -3,14 +3,14 @@
 function lwAuthErrorMessage(err) {
   if (err && err.code === 'lw/username-taken') return err.message;
   switch (err && err.code) {
-    case 'auth/email-already-in-use': return 'Этот email уже зарегистрирован.';
-    case 'auth/weak-password': return 'Пароль слишком короткий (минимум 6 символов).';
+    case 'auth/email-already-in-use': return 'This email is already registered.';
+    case 'auth/weak-password': return 'The password is too short (at least 6 characters).';
     case 'auth/user-not-found':
     case 'auth/wrong-password':
-    case 'auth/invalid-credential': return 'Неверное имя пользователя/email или пароль.';
-    case 'auth/invalid-email': return 'Некорректный email.';
-    case 'auth/too-many-requests': return 'Слишком много попыток. Попробуйте позже.';
-    default: return 'Что-то пошло не так. Попробуйте ещё раз.';
+    case 'auth/invalid-credential': return 'Wrong username/email or password.';
+    case 'auth/invalid-email': return 'Invalid email.';
+    case 'auth/too-many-requests': return 'Too many attempts. Try again later.';
+    default: return 'Something went wrong. Try again.';
   }
 }
 
@@ -29,19 +29,19 @@ function AuthView() {
 
   const validate = () => {
     if (mode === 'reset') {
-      if (!LW_EMAIL_RE.test(email.trim())) return 'Введите email, указанный при регистрации.';
+      if (!LW_EMAIL_RE.test(email.trim())) return 'Enter the email you registered with.';
       return '';
     }
     if (mode === 'register') {
       if (!LW_USERNAME_RE.test(username.trim())) {
-        return 'Имя пользователя: 3–20 символов, латинские буквы, цифры, "_".';
+        return 'Username: 3–20 characters, Latin letters, digits and "_".';
       }
-      if (!LW_EMAIL_RE.test(email.trim())) return 'Введите корректный email — он нужен для восстановления пароля.';
+      if (!LW_EMAIL_RE.test(email.trim())) return 'Enter a valid email — you need it to reset your password.';
     } else if (!username.trim()) {
-      return 'Введите имя пользователя или email.';
+      return 'Enter your username or email.';
     }
-    if (password.length < 6) return 'Пароль должен быть не короче 6 символов.';
-    if (mode === 'register' && password !== password2) return 'Пароли не совпадают.';
+    if (password.length < 6) return 'The password must be at least 6 characters.';
+    if (mode === 'register' && password !== password2) return "Passwords don't match.";
     return '';
   };
 
@@ -58,7 +58,7 @@ function AuthView() {
         /* onAuthStateChanged in App picks up the signed-in user from here */
       } else if (mode === 'reset') {
         await window.lwResetPassword(email);
-        setInfo('Письмо со ссылкой для сброса пароля отправлено на ' + email.trim() + '.');
+        setInfo('A password reset link has been sent to ' + email.trim() + '.');
         setBusy(false);
       } else {
         await window.lwLogin(username, password);
@@ -66,7 +66,7 @@ function AuthView() {
       }
     } catch (err) {
       if (mode === 'reset' && err && err.code === 'auth/user-not-found') {
-        setError('Аккаунт с таким email не найден.');
+        setError('No account with this email.');
       } else {
         setError(lwAuthErrorMessage(err));
       }
@@ -82,22 +82,26 @@ function AuthView() {
     setPassword2('');
   };
 
-  const title = mode === 'login' ? 'Вход' : mode === 'register' ? 'Регистрация' : 'Сброс пароля';
-  const sub = mode === 'login' ? 'Войдите, чтобы продолжить изучение слов.'
-    : mode === 'register' ? 'Создайте аккаунт, чтобы начать.'
-    : 'Укажите email — мы пришлём ссылку для смены пароля.';
+  const title = mode === 'login' ? 'Welcome back' : mode === 'register' ? 'Create account' : 'Reset password';
+  const sub = mode === 'login' ? 'Sign in to keep learning your words.'
+    : mode === 'register' ? 'Create an account to get started.'
+    : 'Enter your email and we’ll send a link to reset your password.';
 
   return (
     <div className="lang-select">
-      <div className="lang-select-card">
+      <div className="lang-select-card auth-card">
+        <div className="auth-brand">
+          <span className="drawer-logo"><Ic.Library /></span>
+          <span className="brand-name">Lexicon</span>
+        </div>
         <p className="lang-select-title">{title}</p>
         <p className="lang-select-sub">{sub}</p>
         <form className="form" onSubmit={submit}>
           {mode !== 'reset' && (
             <label className="field">
-              <span className="field-label">{mode === 'login' ? 'Имя пользователя или email' : 'Имя пользователя'}</span>
+              <span className="field-label">{mode === 'login' ? 'Username or email' : 'Username'}</span>
               <input className="input" value={username} autoFocus autoComplete="username"
-                placeholder="например, anton_92"
+                placeholder="e.g. anton_92"
                 onChange={(e) => setUsername(e.target.value)} />
             </label>
           )}
@@ -111,37 +115,37 @@ function AuthView() {
           )}
           {mode !== 'reset' && (
             <label className="field">
-              <span className="field-label">Пароль</span>
+              <span className="field-label">Password</span>
               <input className="input" type="password" value={password}
                 autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                placeholder="не короче 6 символов"
+                placeholder="at least 6 characters"
                 onChange={(e) => setPassword(e.target.value)} />
             </label>
           )}
           {mode === 'register' && (
             <label className="field">
-              <span className="field-label">Повторите пароль</span>
+              <span className="field-label">Repeat password</span>
               <input className="input" type="password" value={password2} autoComplete="new-password"
                 onChange={(e) => setPassword2(e.target.value)} />
             </label>
           )}
-          {error && <p className="field-hint" style={{ color: 'var(--danger)' }}>{error}</p>}
-          {info && <p className="field-hint" style={{ color: '#5BA02E' }}>{info}</p>}
+          {error && <p className="field-hint" style={{ color: 'var(--error)' }}>{error}</p>}
+          {info && <p className="field-hint" style={{ color: 'var(--secondary)' }}>{info}</p>}
           <button className="btn btn-primary lg" type="submit" disabled={busy}>
-            {busy ? 'Подождите…' : (mode === 'login' ? 'Войти' : mode === 'register' ? 'Зарегистрироваться' : 'Отправить письмо')}
+            {busy ? 'Please wait…' : (mode === 'login' ? 'Sign in' : mode === 'register' ? 'Sign up' : 'Send link')}
           </button>
         </form>
         {mode === 'login' && (
           <p className="lang-select-sub" style={{ marginTop: 14 }}>
             <button type="button" className="btn btn-ghost sm" onClick={() => switchMode('reset')}>
-              Забыли пароль?
+              Forgot password?
             </button>
           </p>
         )}
         <p className="lang-select-sub" style={{ marginTop: mode === 'login' ? 6 : 18 }}>
-          {mode === 'login' ? 'Нет аккаунта? ' : 'Уже есть аккаунт? '}
+          {mode === 'login' ? 'No account? ' : 'Already have an account? '}
           <button type="button" className="btn btn-ghost sm" onClick={() => switchMode(mode === 'login' ? 'register' : 'login')}>
-            {mode === 'login' ? 'Зарегистрироваться' : 'Войти'}
+            {mode === 'login' ? 'Sign up' : 'Sign in'}
           </button>
         </p>
       </div>

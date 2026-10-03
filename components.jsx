@@ -40,7 +40,7 @@ const Ic = {
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="3" y="5" width="13" height="16" rx="2" /><path d="M8 5V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-1" /></svg>
   ),
   Library: (p) => (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M4 4v15.5M6.5 2H20v15H6.5A2.5 2.5 0 0 0 4 19.5" /></svg>
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 6.5C10.3 5 7.8 4.5 3 4.5v14c4.8 0 7.3.5 9 2 1.7-1.5 4.2-2 9-2v-14c-4.8 0-7.3.5-9 2Z" /><path d="M12 6.5v14" /></svg>
   ),
   Book: (p) => (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v15H6.5A2.5 2.5 0 0 0 4 19.5V4.5Z" /><path d="M8 7h8M8 11h6" /></svg>
@@ -90,6 +90,55 @@ const Ic = {
       <path d="M4 7h6M14 7h6M4 12h4M20 12h-4M4 17h6M14 17h6" />
       <rect x="9" y="9.5" width="6" height="5" rx="1.2" strokeDasharray="2 2" />
     </svg>
+  ),
+  Repeat: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M3 12a9 9 0 0 1 15.5-6.2L21 8" /><path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-15.5 6.2L3 16" /><path d="M3 21v-5h5" />
+    </svg>
+  ),
+  Learn: (p) => (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M22 9 12 4 2 9l10 5 10-5Z" /><path d="M6 11v5c0 1.5 2.7 3 6 3s6-1.5 6-3v-5" /><path d="M22 9v6" />
+    </svg>
+  ),
+  Person: (p) => (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" />
+    </svg>
+  ),
+  Flame: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="#F07B22" {...p}>
+      <path d="M12 2c.6 3.2-1 5-2.6 6.7C7.8 10.4 6 12.2 6 15a6 6 0 0 0 12 0c0-2.4-1.2-4.2-2.3-5.5-.3 1.4-1 2.4-2.1 3 .4-3.6-.6-7.6-1.6-10.5Z" />
+    </svg>
+  ),
+  Star: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" {...p}>
+      <path d="m12 2.8 2.8 5.8 6.3.9-4.6 4.4 1.1 6.3L12 17.2l-5.6 3 1.1-6.3L2.9 9.5l6.3-.9L12 2.8Z" />
+    </svg>
+  ),
+  DoubleCheck: (p) => (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="m2 13 4.5 4.5L14 10" /><path d="m10 16.5 1 1L21 7.5" />
+    </svg>
+  ),
+  Settings: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
+    </svg>
+  ),
+  Logout: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" />
+    </svg>
+  ),
+  Key: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <circle cx="7.5" cy="15.5" r="4.5" /><path d="m10.7 12.3 9.8-9.8" /><path d="m17 6 3 3" /><path d="m14.5 8.5 2 2" />
+    </svg>
+  ),
+  ChevronRight: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="m9 6 6 6-6 6" /></svg>
   ),
 };
 
@@ -144,7 +193,7 @@ function lwSpeak(text) {
 /* ---------------- Photo placeholder ---------------- */
 function PhotoFill({ word, hue }) {
   return (
-    <div className="photo-ph" style={{ '--ph-hue': hue || '#E8552F' }}>
+    <div className="photo-ph" style={{ '--ph-hue': hue || '#005da7' }}>
       <Ic.Image className="photo-ph-icon" />
       <span className="photo-ph-label">{word}</span>
     </div>
@@ -168,14 +217,14 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupC
   }, [entry && entry.id]);
 
   if (!entry) return null;
-  const hue = group ? group.color : '#E8552F';
+  const hue = group ? group.color : '#005da7';
 
   const groupTag = group ? (
     onGroupClick ? (
       <button type="button" className="card-tag card-tag-btn"
         onClick={(e) => { e.stopPropagation(); onGroupClick(group); }}
         onPointerDown={(e) => e.stopPropagation()}
-        title="Open categories">
+        title="Choose study groups">
         <span className="dot" style={{ background: hue }} />{group.name}
       </button>
     ) : (
@@ -385,7 +434,7 @@ function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupCl
   }, [entry && entry.id]);
 
   if (!entry) return null;
-  const hue = group ? group.color : '#E8552F';
+  const hue = group ? group.color : '#005da7';
   const hasTr = !!(entry.exampleTr && entry.exampleTr.trim());
 
   const makeGroupTag = (baseClass) => {
@@ -397,7 +446,7 @@ function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupCl
       <button type="button" className={baseClass + ' ' + baseClass + '-btn'}
         onClick={(e) => { e.stopPropagation(); onGroupClick(group); }}
         onPointerDown={(e) => e.stopPropagation()}
-        title="Open categories">
+        title="Choose study groups">
         <span className="dot" style={{ background: hue }} />{group.name}
       </button>
     );
@@ -584,14 +633,15 @@ function ActionsMenu({ items }) {
 }
 
 /* ---------------- Modal shell ---------------- */
-function Modal({ title, onClose, children, footer }) {
+/* sheet: on phones the modal docks to the bottom edge (bottom sheet) */
+function Modal({ title, onClose, children, footer, sheet }) {
   React.useEffect(() => {
     const h = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [onClose]);
   return (
-    <div className="modal-scrim" onMouseDown={onClose}>
+    <div className={'modal-scrim' + (sheet ? ' modal-sheet' : '')} onMouseDown={onClose}>
       <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{title}</h3>
@@ -629,31 +679,31 @@ function GeminiKeyModal({ onClose, onSaved }) {
   };
 
   return (
-    <Modal title="Ключ Gemini для AI"
+    <Modal title="Gemini key for AI"
       onClose={onClose}
       footer={
         <React.Fragment>
-          {had && <button className="btn btn-ghost" onClick={clear}>Удалить ключ</button>}
-          <button className="btn btn-ghost" onClick={onClose}>Отмена</button>
-          <button className="btn btn-primary" disabled={!key.trim()} onClick={save}>Сохранить</button>
+          {had && <button className="btn btn-ghost" onClick={clear}>Remove key</button>}
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={!key.trim()} onClick={save}>Save</button>
         </React.Fragment>
       }>
       <div className="form">
         <p className="field-hint" style={{ marginTop: 0 }}>
-          AI-заполнение карточек использует ваш личный ключ Google Gemini. Ключ бесплатный,
-          хранится только в этом браузере и тратит только ваши лимиты.
+          AI features use your own Google Gemini key. The key is free,
+          is stored only in this browser and uses only your own quota.
         </p>
         <label className="field">
-          <span className="field-label">API-ключ Gemini</span>
+          <span className="field-label">Gemini API key</span>
           <input className="input mono" type="password" value={key} autoFocus
             placeholder="AIza…" onChange={(e) => setKey(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && key.trim()) save(); }} />
         </label>
         <p className="field-hint" style={{ marginBottom: 0 }}>
-          Где взять: откройте{' '}
+          Where to get one: open{' '}
           <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer"
-            style={{ color: 'var(--accent)' }}>aistudio.google.com/apikey</a>{' '}
-          → «Create API key». Регистрация бесплатная, карта не нужна.
+            style={{ color: 'var(--primary)' }}>aistudio.google.com/apikey</a>{' '}
+          → “Create API key”. It's free, no card needed.
         </p>
       </div>
     </Modal>
@@ -743,7 +793,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
       </div>
       <label className="field">
         <span className="field-label">Translation</span>
-        <input className="input" value={tr} placeholder="перевод"
+        <input className="input" value={tr} placeholder="translation"
           onChange={(e) => setTr(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
       </label>
       <label className="field">
@@ -753,7 +803,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
       </label>
       <label className="field">
         <span className="field-label">Example translation</span>
-        <input className="input" value={exampleTr} placeholder="перевод примера"
+        <input className="input" value={exampleTr} placeholder="example translation"
           onChange={(e) => setExampleTr(e.target.value)} />
       </label>
 
@@ -761,19 +811,19 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
         <button type="button" className="btn btn-soft sm" disabled={!word.trim() || aiState === 'loading'}
           onClick={fillWithAi}>
           {aiState === 'loading' ? <span className="spinner" aria-hidden="true" /> : <Ic.Bulb width="15" height="15" />}
-          {aiState === 'loading' ? 'Заполняю…' : 'Заполнить с AI'}
+          {aiState === 'loading' ? 'Filling in…' : 'Fill with AI'}
         </button>
-        {aiState === 'quota' && <p className="field-hint">Дневной лимит Gemini исчерпан. Попробуйте позже.</p>}
+        {aiState === 'quota' && <p className="field-hint">Daily Gemini limit reached. Try again later.</p>}
         {aiState === 'bad-key' && (
-          <p className="field-hint">Ключ Gemini недействителен.{' '}
-            <button type="button" className="btn btn-ghost sm" onClick={() => setKeyModal(true)}>Изменить ключ</button>
+          <p className="field-hint">Your Gemini key is invalid.{' '}
+            <button type="button" className="btn btn-ghost sm" onClick={() => setKeyModal(true)}>Change key</button>
           </p>
         )}
-        {aiState === 'refusal' && <p className="field-hint">Модель не смогла обработать это слово.</p>}
-        {aiState === 'overload' && <p className="field-hint">Модель Gemini сейчас перегружена. Попробуйте через минуту.</p>}
+        {aiState === 'refusal' && <p className="field-hint">The model could not process this word.</p>}
+        {aiState === 'overload' && <p className="field-hint">Gemini is overloaded right now. Try again in a minute.</p>}
         {aiState !== 'idle' && aiState !== 'loading'
           && !['quota', 'bad-key', 'refusal', 'overload'].includes(aiState)
-          && <p className="field-hint">Ошибка AI-сервиса. Попробуйте позже.</p>}
+          && <p className="field-hint">AI service error. Try again later.</p>}
       </div>
 
       {keyModal && (
@@ -811,8 +861,8 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
               </button>
             )}
           </div>
-          {autoState === 'notfound' && <p className="field-hint">Не удалось найти подходящее фото.</p>}
-          {autoState === 'error' && <p className="field-hint">Ошибка поиска фото. Попробуйте позже.</p>}
+          {autoState === 'notfound' && <p className="field-hint">No matching photo found.</p>}
+          {autoState === 'error' && <p className="field-hint">Photo search failed. Try again later.</p>}
         </div>
       </div>
 
@@ -937,7 +987,7 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
       <div className="lib-head">
         <div>
           <h1 className="lib-title">Import words</h1>
-          <p className="lib-sub">Вставьте список, выберите категорию и импортируйте.</p>
+          <p className="lib-sub">Paste a list, pick a group and import.</p>
         </div>
         <div className="lib-head-actions">
           <button className="btn btn-soft" onClick={goLibrary} disabled={loading}><Ic.Library /> Library</button>
@@ -946,16 +996,16 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
 
       <div className="form">
       <p className="field-hint">
-        Одна строка — одно слово. Формат: <code>слово | транскрипция | перевод | пример использования | перевод примера</code>
-        {' '}(пример и его перевод опциональны), или <code>слово || перевод</code> (без транскрипции), или <code>слово | перевод</code>.
+        One line per word. Format: <code>word | transcription | translation | example | example translation</code>
+        {' '}(the example and its translation are optional), or <code>word || translation</code> (no transcription), or <code>word | translation</code>.
       </p>
       <label className="field">
         <div className="field-label-row">
-          <span className="field-label">Текст для импорта</span>
+          <span className="field-label">Words to import</span>
           {showAi && (
             <button type="button" className="btn btn-soft sm" disabled={loading} onClick={fillWithAi}>
               {loading ? <span className="spinner" aria-hidden="true" /> : <Ic.Bulb width="15" height="15" />}
-              {loading ? 'AI заполняет…' : `Заполнить с AI (${rawWords.length})`}
+              {loading ? 'AI is filling in…' : `Fill with AI (${rawWords.length})`}
             </button>
           )}
           <button type="button" className="btn btn-soft sm" disabled={loading}
@@ -964,7 +1014,7 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
           </button>
           {text.trim() && (
             <button type="button" className="btn btn-ghost sm" disabled={loading} onClick={clearText}>
-              <Ic.Trash width="15" height="15" /> Очистить
+              <Ic.Trash width="15" height="15" /> Clear
             </button>
           )}
           <input ref={fileInputRef} type="file" accept=".txt,text/plain" style={{ display: 'none' }} onChange={handleFile} />
@@ -973,17 +1023,17 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
           placeholder={'journey | /ˈdʒɜː.ni/ | путешествие | We went on a long journey. | Мы отправились в долгое путешествие.\nbook || книга'}
           onChange={(e) => setText(e.target.value)} />
         {error === 'bad-key' ? (
-          <p className="field-hint">Ключ Gemini недействителен.{' '}
-            <button type="button" className="btn btn-ghost sm" onClick={() => setKeyModal(true)}>Изменить ключ</button>
+          <p className="field-hint">Your Gemini key is invalid.{' '}
+            <button type="button" className="btn btn-ghost sm" onClick={() => setKeyModal(true)}>Change key</button>
           </p>
         ) : error === 'quota' ? (
-          <p className="field-hint">Дневной лимит Gemini исчерпан. Попробуйте позже.</p>
+          <p className="field-hint">Daily Gemini limit reached. Try again later.</p>
         ) : error === 'overload' ? (
-          <p className="field-hint">Модель Gemini сейчас перегружена. Попробуйте через минуту.</p>
+          <p className="field-hint">Gemini is overloaded right now. Try again in a minute.</p>
         ) : error === 'refusal' ? (
-          <p className="field-hint">Модель не смогла обработать список. Попробуйте меньше слов.</p>
+          <p className="field-hint">The model could not process the list. Try fewer words.</p>
         ) : error ? (
-          <p className="field-hint">Ошибка AI-сервиса. Попробуйте позже.</p>
+          <p className="field-hint">AI service error. Try again later.</p>
         ) : null}
       </label>
 
@@ -1000,13 +1050,13 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
           ))}
         </div>
         {leafGroups.length === 0 && (
-          <p className="field-hint">Сначала создайте категорию в разделе Library.</p>
+          <p className="field-hint">Create a group in the Library first.</p>
         )}
       </div>
 
       {rows.length > 0 && (
         <p className="field-hint">
-          Готово к импорту: {validCount}{invalidCount > 0 ? `, пропущено строк: ${invalidCount}` : ''}
+          Ready to import: {validCount}{invalidCount > 0 ? `, skipped lines: ${invalidCount}` : ''}
         </p>
       )}
 

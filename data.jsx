@@ -6,6 +6,7 @@ const LW_KEYS = {
   direction: 'lw_study_direction_v1',
   studySession: 'lw_study_session_v1',
   geminiKey: 'lw_gemini_key_v1', // личный API-ключ Gemini пользователя (только его устройство)
+  nav: 'lw_nav_v1', // {tab, learnMode} — last screen and Learn sub-mode
   reading: 'lw_reading_cards_v1', // последняя пачка сгенерированных текстов-карточек
 };
 
@@ -145,10 +146,10 @@ function lwHasGeminiKey() {
    .code = 'no-key' | 'bad-key' | 'quota' | 'refusal' | 'network' для UI. */
 async function lwAiFillWord(word) {
   const term = (word || '').trim().slice(0, 100);
-  if (!term) { const e = new Error('Пустое слово.'); e.code = 'empty'; throw e; }
+  if (!term) { const e = new Error('Empty word.'); e.code = 'empty'; throw e; }
 
   const key = lwGetGeminiKey();
-  if (!key) { const e = new Error('Не задан ключ Gemini.'); e.code = 'no-key'; throw e; }
+  if (!key) { const e = new Error('No Gemini key set.'); e.code = 'no-key'; throw e; }
 
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
     + LW_GEMINI_MODEL + ':generateContent?key=' + encodeURIComponent(key);
@@ -189,34 +190,34 @@ async function lwAiFillWord(word) {
       body: JSON.stringify(body),
     });
   } catch (e) {
-    const err = new Error('Нет связи с сервисом Gemini.'); err.code = 'network'; throw err;
+    const err = new Error('Cannot reach Gemini.'); err.code = 'network'; throw err;
   }
 
   if (!res.ok) {
     // 400 при неверном ключе, 429 при исчерпании бесплатного лимита.
     if (res.status === 400 || res.status === 403) {
-      const e = new Error('Ключ Gemini недействителен.'); e.code = 'bad-key'; throw e;
+      const e = new Error('Invalid Gemini key.'); e.code = 'bad-key'; throw e;
     }
     if (res.status === 429) {
-      const e = new Error('Дневной лимит Gemini исчерпан. Попробуйте позже.'); e.code = 'quota'; throw e;
+      const e = new Error('Daily Gemini limit reached. Try again later.'); e.code = 'quota'; throw e;
     }
     if (res.status === 503 || res.status === 500) {
-      const e = new Error('Модель Gemini сейчас перегружена. Попробуйте через минуту.'); e.code = 'overload'; throw e;
+      const e = new Error('Gemini is overloaded. Try again in a minute.'); e.code = 'overload'; throw e;
     }
-    const e = new Error('Ошибка AI-сервиса (' + res.status + ').'); e.code = 'network'; throw e;
+    const e = new Error('AI service error (' + res.status + ').'); e.code = 'network'; throw e;
   }
 
   const data = await res.json();
   const cand = data && data.candidates && data.candidates[0];
   if (!cand || cand.finishReason === 'SAFETY' || cand.finishReason === 'PROHIBITED_CONTENT') {
-    const e = new Error('Модель отклонила запрос.'); e.code = 'refusal'; throw e;
+    const e = new Error('The model refused the request.'); e.code = 'refusal'; throw e;
   }
   const text = cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
-  if (!text) { const e = new Error('Пустой ответ AI.'); e.code = 'refusal'; throw e; }
+  if (!text) { const e = new Error('Empty AI response.'); e.code = 'refusal'; throw e; }
 
   let parsed;
   try { parsed = JSON.parse(text); }
-  catch (e) { const err = new Error('AI вернул некорректный ответ.'); err.code = 'refusal'; throw err; }
+  catch (e) { const err = new Error('AI returned an invalid response.'); err.code = 'refusal'; throw err; }
 
   return {
     ipa: String(parsed.ipa || '').trim(),
@@ -235,10 +236,10 @@ async function lwAiFillWords(words) {
     .map((w) => String(w || '').trim().slice(0, 100))
     .filter(Boolean)
     .slice(0, 100); // разумный потолок на один запрос
-  if (!list.length) { const e = new Error('Нет слов для обработки.'); e.code = 'empty'; throw e; }
+  if (!list.length) { const e = new Error('No words to process.'); e.code = 'empty'; throw e; }
 
   const key = lwGetGeminiKey();
-  if (!key) { const e = new Error('Не задан ключ Gemini.'); e.code = 'no-key'; throw e; }
+  if (!key) { const e = new Error('No Gemini key set.'); e.code = 'no-key'; throw e; }
 
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
     + LW_GEMINI_MODEL + ':generateContent?key=' + encodeURIComponent(key);
@@ -287,34 +288,34 @@ async function lwAiFillWords(words) {
       body: JSON.stringify(body),
     });
   } catch (e) {
-    const err = new Error('Нет связи с сервисом Gemini.'); err.code = 'network'; throw err;
+    const err = new Error('Cannot reach Gemini.'); err.code = 'network'; throw err;
   }
 
   if (!res.ok) {
     if (res.status === 400 || res.status === 403) {
-      const e = new Error('Ключ Gemini недействителен.'); e.code = 'bad-key'; throw e;
+      const e = new Error('Invalid Gemini key.'); e.code = 'bad-key'; throw e;
     }
     if (res.status === 429) {
-      const e = new Error('Дневной лимит Gemini исчерпан. Попробуйте позже.'); e.code = 'quota'; throw e;
+      const e = new Error('Daily Gemini limit reached. Try again later.'); e.code = 'quota'; throw e;
     }
     if (res.status === 503 || res.status === 500) {
-      const e = new Error('Модель Gemini сейчас перегружена. Попробуйте через минуту.'); e.code = 'overload'; throw e;
+      const e = new Error('Gemini is overloaded. Try again in a minute.'); e.code = 'overload'; throw e;
     }
-    const e = new Error('Ошибка AI-сервиса (' + res.status + ').'); e.code = 'network'; throw e;
+    const e = new Error('AI service error (' + res.status + ').'); e.code = 'network'; throw e;
   }
 
   const data = await res.json();
   const cand = data && data.candidates && data.candidates[0];
   if (!cand || cand.finishReason === 'SAFETY' || cand.finishReason === 'PROHIBITED_CONTENT') {
-    const e = new Error('Модель отклонила запрос.'); e.code = 'refusal'; throw e;
+    const e = new Error('The model refused the request.'); e.code = 'refusal'; throw e;
   }
   const text = cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
-  if (!text) { const e = new Error('Пустой ответ AI.'); e.code = 'refusal'; throw e; }
+  if (!text) { const e = new Error('Empty AI response.'); e.code = 'refusal'; throw e; }
 
   let parsed;
   try { parsed = JSON.parse(text); }
-  catch (e) { const err = new Error('AI вернул некорректный ответ.'); err.code = 'refusal'; throw err; }
-  if (!Array.isArray(parsed)) { const e = new Error('AI вернул некорректный ответ.'); e.code = 'refusal'; throw e; }
+  catch (e) { const err = new Error('AI returned an invalid response.'); err.code = 'refusal'; throw err; }
+  if (!Array.isArray(parsed)) { const e = new Error('AI returned an invalid response.'); e.code = 'refusal'; throw e; }
 
   // Множество входных слов, которые пользователь ввёл строчными, — они точно не
   // имена собственные, и капитализировать их ответ модели нельзя.
@@ -353,20 +354,20 @@ const LW_CEFR_LEVELS = ['A2', 'B1', 'B2', 'C1', 'C2'];
 /* Темы для генерируемого текста. id — стабильный ключ, prompt — как описать
    тему модели. Первая тема считается темой по умолчанию. */
 const LW_TEXT_TOPICS = [
-  { id: 'daily-life', name: 'Повседневная жизнь', prompt: 'an everyday slice-of-life situation' },
-  { id: 'business', name: 'Деловая переписка / работа', prompt: 'a workplace / business setting (emails, meetings, projects)' },
-  { id: 'travel', name: 'Путешествия', prompt: 'a travel story (airports, hotels, sightseeing)' },
-  { id: 'sci-fi', name: 'Фантастика', prompt: 'a short science-fiction scene' },
-  { id: 'detective', name: 'Детектив', prompt: 'a short detective mystery scene (a crime, clues and an investigator)' },
-  { id: 'cooking', name: 'Кулинария', prompt: 'a cooking / food scene (recipes, kitchen, a restaurant)' },
-  { id: 'sport', name: 'Спорт', prompt: 'a sports scene (a match, training or a competition)' },
+  { id: 'daily-life', name: 'Everyday life', prompt: 'an everyday slice-of-life situation' },
+  { id: 'business', name: 'Business & work', prompt: 'a workplace / business setting (emails, meetings, projects)' },
+  { id: 'travel', name: 'Travel', prompt: 'a travel story (airports, hotels, sightseeing)' },
+  { id: 'sci-fi', name: 'Sci-fi', prompt: 'a short science-fiction scene' },
+  { id: 'detective', name: 'Detective', prompt: 'a short detective mystery scene (a crime, clues and an investigator)' },
+  { id: 'cooking', name: 'Cooking', prompt: 'a cooking / food scene (recipes, kitchen, a restaurant)' },
+  { id: 'sport', name: 'Sport', prompt: 'a sports scene (a match, training or a competition)' },
 ];
 
 /* Желаемая длина текста: id для UI + примерное число слов для модели. */
 const LW_TEXT_LENGTHS = [
-  { id: 'short', name: 'Короткий', words: 80 },
-  { id: 'medium', name: 'Средний', words: 150 },
-  { id: 'long', name: 'Длинный', words: 250 },
+  { id: 'short', name: 'Short', words: 80 },
+  { id: 'medium', name: 'Medium', words: 150 },
+  { id: 'long', name: 'Long', words: 250 },
 ];
 
 /* Сгенерировать текст. Аргументы:
@@ -381,10 +382,10 @@ async function lwAiGenerateText(words, level, topic, length, count) {
     .map((w) => String(w || '').trim().slice(0, 100))
     .filter(Boolean)
     .slice(0, 60); // разумный потолок слов на один текст
-  if (!list.length) { const e = new Error('Нет слов для текста.'); e.code = 'empty'; throw e; }
+  if (!list.length) { const e = new Error('No words for the text.'); e.code = 'empty'; throw e; }
 
   const key = lwGetGeminiKey();
-  if (!key) { const e = new Error('Не задан ключ Gemini.'); e.code = 'no-key'; throw e; }
+  if (!key) { const e = new Error('No Gemini key set.'); e.code = 'no-key'; throw e; }
 
   const lvl = LW_CEFR_LEVELS.includes(level) ? level : 'B1';
   const topicText = (topic || '').trim() || LW_TEXT_TOPICS[0].prompt;
@@ -475,33 +476,33 @@ async function lwAiGenerateText(words, level, topic, length, count) {
       body: JSON.stringify(body),
     });
   } catch (e) {
-    const err = new Error('Нет связи с сервисом Gemini.'); err.code = 'network'; throw err;
+    const err = new Error('Cannot reach Gemini.'); err.code = 'network'; throw err;
   }
 
   if (!res.ok) {
     if (res.status === 400 || res.status === 403) {
-      const e = new Error('Ключ Gemini недействителен.'); e.code = 'bad-key'; throw e;
+      const e = new Error('Invalid Gemini key.'); e.code = 'bad-key'; throw e;
     }
     if (res.status === 429) {
-      const e = new Error('Дневной лимит Gemini исчерпан. Попробуйте позже.'); e.code = 'quota'; throw e;
+      const e = new Error('Daily Gemini limit reached. Try again later.'); e.code = 'quota'; throw e;
     }
     if (res.status === 503 || res.status === 500) {
-      const e = new Error('Модель Gemini сейчас перегружена. Попробуйте через минуту.'); e.code = 'overload'; throw e;
+      const e = new Error('Gemini is overloaded. Try again in a minute.'); e.code = 'overload'; throw e;
     }
-    const e = new Error('Ошибка AI-сервиса (' + res.status + ').'); e.code = 'network'; throw e;
+    const e = new Error('AI service error (' + res.status + ').'); e.code = 'network'; throw e;
   }
 
   const data = await res.json();
   const cand = data && data.candidates && data.candidates[0];
   if (!cand || cand.finishReason === 'SAFETY' || cand.finishReason === 'PROHIBITED_CONTENT') {
-    const e = new Error('Модель отклонила запрос.'); e.code = 'refusal'; throw e;
+    const e = new Error('The model refused the request.'); e.code = 'refusal'; throw e;
   }
   const text = cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
-  if (!text) { const e = new Error('Пустой ответ AI.'); e.code = 'refusal'; throw e; }
+  if (!text) { const e = new Error('Empty AI response.'); e.code = 'refusal'; throw e; }
 
   let parsed;
   try { parsed = JSON.parse(text); }
-  catch (e) { const err = new Error('AI вернул некорректный ответ.'); err.code = 'refusal'; throw err; }
+  catch (e) { const err = new Error('AI returned an invalid response.'); err.code = 'refusal'; throw err; }
 
   /* Собираем одну карточку из объекта { title, sentences, used }. Возвращает null,
      если у текста нет ни одного валидного предложения. */
@@ -525,7 +526,7 @@ async function lwAiGenerateText(words, level, topic, length, count) {
   const cards = (Array.isArray(parsed && parsed.texts) ? parsed.texts : [])
     .map(buildCard)
     .filter(Boolean);
-  if (!cards.length) { const e = new Error('AI вернул пустой текст.'); e.code = 'refusal'; throw e; }
+  if (!cards.length) { const e = new Error('AI returned an empty text.'); e.code = 'refusal'; throw e; }
 
   return cards; // всегда массив (длиной 1..nTexts)
 }
@@ -552,8 +553,8 @@ function lwShuffle(arr) {
    пробрасывает наверх, чтобы UI показал причину. */
 async function lwAiGenerateBatch(words, levels, topicPrompts, length, count) {
   const pool = (words || []).map((w) => String(w || '').trim()).filter(Boolean);
-  if (!pool.length) { const e = new Error('Нет слов для текста.'); e.code = 'empty'; throw e; }
-  if (!lwGetGeminiKey()) { const e = new Error('Не задан ключ Gemini.'); e.code = 'no-key'; throw e; }
+  if (!pool.length) { const e = new Error('No words for the text.'); e.code = 'empty'; throw e; }
+  if (!lwGetGeminiKey()) { const e = new Error('No Gemini key set.'); e.code = 'no-key'; throw e; }
 
   const lvls = (levels && levels.length) ? levels : ['B1'];
   const topics = (topicPrompts && topicPrompts.length) ? topicPrompts : [LW_TEXT_TOPICS[0].prompt];
