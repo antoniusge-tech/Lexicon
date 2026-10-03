@@ -163,6 +163,12 @@ const Ic = {
       <path d="M3 3l18 18" /><path d="M8.5 6.3A6 6 0 0 1 17.7 10h.3a4 4 0 0 1 2.6 7" /><path d="M17 19H7a5 5 0 0 1-1.6-9.7" />
     </svg>
   ),
+  Sparkle: (p) => (
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" {...p}>
+      <path d="M12 2c.4 4.6 2.4 6.6 7 7-4.6.4-6.6 2.4-7 7-.4-4.6-2.4-6.6-7-7 4.6-.4 6.6-2.4 7-7Z" />
+      <path d="M19 14c.2 2.2 1.1 3.1 3.3 3.3-2.2.2-3.1 1.1-3.3 3.3-.2-2.2-1.1-3.1-3.3-3.3 2.2-.2 3.1-1.1 3.3-3.3Z" />
+    </svg>
+  ),
   Flag: (p) => (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
       <path d="M5 21V4" /><path d="M5 4h11l-2 4 2 4H5" />
@@ -746,6 +752,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
   const [example, setExample] = React.useState(initial ? (initial.example || '') : '');
   const [exampleTr, setExampleTr] = React.useState(initial ? (initial.exampleTr || '') : '');
   const [photo, setPhoto] = React.useState(initial ? (initial.photo || '') : '');
+  const [pos, setPos] = React.useState(initial ? (initial.pos || '') : '');
   const [autoState, setAutoState] = React.useState('idle'); // 'idle' | 'loading' | 'notfound' | 'error'
   const [aiState, setAiState] = React.useState('idle'); // 'idle' | 'loading' | error-code string
   const [keyModal, setKeyModal] = React.useState(false);
@@ -756,7 +763,10 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
   const canSave = word.trim() && tr.trim();
   const submit = () => {
     if (!canSave) return;
+    /* start from the stored doc: lwSetDoc replaces the whole document, so
+       fields this form doesn't edit (createdAt, …) must be carried over */
     onSave({
+      ...(initial || {}),
       id: initial ? initial.id : window.lwUid(),
       groupId,
       word: word.trim(),
@@ -764,7 +774,9 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
       tr: tr.trim(),
       example: example.trim(),
       exampleTr: exampleTr.trim(),
+      pos,
       photo,
+      createdAt: (initial && initial.createdAt) || Date.now(),
     });
   };
 
@@ -795,6 +807,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
         if (r.tr && !tr.trim()) setTr(r.tr);
         if (r.example && !example.trim()) setExample(r.example);
         if (r.exampleTr && !exampleTr.trim()) setExampleTr(r.exampleTr);
+        if (r.pos && !pos) setPos(r.pos);
         setAiState('idle');
       })
       .catch((e) => setAiState((e && e.code) || 'error'));
@@ -820,11 +833,20 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
             onChange={(e) => setIpa(e.target.value)} />
         </label>
       </div>
-      <label className="field">
-        <span className="field-label">Translation</span>
-        <input className="input" value={tr} placeholder="translation"
-          onChange={(e) => setTr(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
-      </label>
+      <div className="form-grid form-grid-tr">
+        <label className="field">
+          <span className="field-label">Translation</span>
+          <input className="input" value={tr} placeholder="translation"
+            onChange={(e) => setTr(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
+        </label>
+        <label className="field">
+          <span className="field-label">Part of speech</span>
+          <select className="input" value={pos} onChange={(e) => setPos(e.target.value)}>
+            <option value="">—</option>
+            {window.LW_POS.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </label>
+      </div>
       <label className="field">
         <span className="field-label">Example sentence</span>
         <input className="input" value={example} placeholder="e.g. We went on a long journey."
@@ -923,7 +945,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
 function lwParseImportLine(line) {
   const parts = line.split('|').map((p) => p.trim());
   if (parts.length >= 5) {
-    return { word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3], exampleTr: parts[4] };
+    return { word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3], exampleTr: parts[4], pos: window.lwNormPos(parts[5]) };
   }
   if (parts.length === 4) {
     return { word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3], exampleTr: '' };
@@ -995,7 +1017,8 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
 
   const submit = () => {
     if (!canImport) return;
-    const items = rows.filter(Boolean).map((r) => ({
+    const t = Date.now();
+    const items = rows.filter(Boolean).map((r, i) => ({
       id: window.lwUid(),
       groupId,
       word: r.word,
@@ -1003,6 +1026,8 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
       tr: r.tr,
       example: r.example || '',
       exampleTr: r.exampleTr || '',
+      pos: r.pos || '',
+      createdAt: t + i, // keeps the list's order in Library's "Recent" sort
     }));
     // Импортируем и очищаем черновик — иначе текст «не пропадает» до импорта.
     onImport(items);
@@ -1025,8 +1050,8 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
 
       <div className="form">
       <p className="field-hint">
-        One line per word. Format: <code>word | transcription | translation | example | example translation</code>
-        {' '}(the example and its translation are optional), or <code>word || translation</code> (no transcription), or <code>word | translation</code>.
+        One line per word. Format: <code>word | transcription | translation | example | example translation | part of speech</code>
+        {' '}(the example, its translation and the part of speech are optional), or <code>word || translation</code> (no transcription), or <code>word | translation</code>.
       </p>
       <label className="field">
         <div className="field-label-row">

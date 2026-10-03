@@ -7,6 +7,8 @@ const LW_KEYS = {
   studySession: 'lw_study_session_v1',
   geminiKey: 'lw_gemini_key_v1', // личный API-ключ Gemini пользователя (только его устройство)
   nav: 'lw_nav_v1', // {tab, learnMode} — last screen and Learn sub-mode
+  library: 'lw_library_v1', // {view, status, groupId, sort} — Library filters
+  wotd: 'lw_word_of_day_v1', // {date, wordId} — keeps the word of the day stable all day
   reading: 'lw_reading_cards_v1', // последняя пачка сгенерированных текстов-карточек
 };
 
@@ -24,6 +26,13 @@ const LW_LANGUAGES = [
 ];
 
 const lwUid = () => Math.random().toString(36).slice(2, 9);
+
+/* Parts of speech a word can be tagged with (words[].pos). */
+const LW_POS = ['noun', 'verb', 'adjective', 'adverb', 'phrasal verb', 'phrase', 'idiom', 'other'];
+function lwNormPos(v) {
+  const p = String(v || '').trim().toLowerCase();
+  return LW_POS.includes(p) ? p : '';
+}
 
 function lwLoad(key, fallback) {
   try {
@@ -172,7 +181,8 @@ async function lwAiFillWord(word) {
           + 'ipa — транскрипцию IPA (без косых черт); '
           + 'tr — краткий перевод на русский (1–3 варианта через запятую, как в Cambridge Dictionary); '
           + 'example — запоминающееся простое предложение-пример с этим словом; '
-          + 'exampleTr — перевод примера на русский.',
+          + 'exampleTr — перевод примера на русский; '
+          + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '.',
       }],
     },
     contents: [{ role: 'user', parts: [{ text: 'Слово: ' + term }] }],
@@ -186,8 +196,9 @@ async function lwAiFillWord(word) {
           tr: { type: 'STRING' },
           example: { type: 'STRING' },
           exampleTr: { type: 'STRING' },
+          pos: { type: 'STRING', enum: LW_POS },
         },
-        required: ['ipa', 'tr', 'example', 'exampleTr'],
+        required: ['ipa', 'tr', 'example', 'exampleTr', 'pos'],
       },
     },
   };
@@ -234,6 +245,7 @@ async function lwAiFillWord(word) {
     tr: String(parsed.tr || '').trim(),
     example: String(parsed.example || '').trim(),
     exampleTr: String(parsed.exampleTr || '').trim(),
+    pos: lwNormPos(parsed.pos),
   };
 }
 
@@ -266,7 +278,8 @@ async function lwAiFillWords(words) {
           + 'ipa — транскрипцию IPA (без косых черт); '
           + 'tr — краткий перевод на русский (1–3 варианта через запятую, как в Cambridge Dictionary); '
           + 'example — запоминающееся простое предложение-пример с этим словом; '
-          + 'exampleTr — перевод примера на русский. '
+          + 'exampleTr — перевод примера на русский; '
+          + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '. '
           + 'Верни объекты в том же порядке и количестве, что и входной список.',
       }],
     },
@@ -283,8 +296,9 @@ async function lwAiFillWords(words) {
             tr: { type: 'STRING' },
             example: { type: 'STRING' },
             exampleTr: { type: 'STRING' },
+            pos: { type: 'STRING', enum: LW_POS },
           },
-          required: ['word', 'ipa', 'tr', 'example', 'exampleTr'],
+          required: ['word', 'ipa', 'tr', 'example', 'exampleTr', 'pos'],
         },
       },
     },
@@ -349,8 +363,83 @@ async function lwAiFillWords(words) {
       tr: String((p && p.tr) || '').trim(),
       example: String((p && p.example) || '').trim(),
       exampleTr: String((p && p.exampleTr) || '').trim(),
+      pos: lwNormPos(p && p.pos),
     };
   }).filter((r) => r.word);
+}
+
+/* Tag existing words with a part of speech only (cheaper than a full fill).
+   words: up to 50 English words; returns [{ word, pos }] in the same order.
+   Same error .codes as lwAiFillWord. */
+async function lwAiTagPos(words) {
+  const list = (words || []).map((w) => String(w || '').trim().slice(0, 100)).filter(Boolean).slice(0, 50);
+  if (!list.length) { const e = new Error('No words to process.'); e.code = 'empty'; throw e; }
+  const key = lwGetGeminiKey();
+  if (!key) { const e = new Error('No Gemini key set.'); e.code = 'no-key'; throw e; }
+
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
+    + LW_GEMINI_MODEL + ':generateContent?key=' + encodeURIComponent(key);
+  const body = {
+    systemInstruction: {
+      parts: [{
+        text: 'You tag English vocabulary with its most common part of speech. '
+          + 'For EVERY input word or phrase return { word, pos }, where word is the input as given and pos is one of: '
+          + LW_POS.join(', ') + '. Keep the input order and count.',
+      }],
+    },
+    contents: [{ role: 'user', parts: [{ text: list.join('\n') }] }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: { word: { type: 'STRING' }, pos: { type: 'STRING', enum: LW_POS } },
+          required: ['word', 'pos'],
+        },
+      },
+    },
+  };
+
+  let res;
+  try {
+    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  } catch (e) {
+    const err = new Error('Cannot reach Gemini.'); err.code = 'network'; throw err;
+  }
+  if (!res.ok) {
+    if (res.status === 400 || res.status === 403) { const e = new Error('Invalid Gemini key.'); e.code = 'bad-key'; throw e; }
+    if (res.status === 429) { const e = new Error('Daily Gemini limit reached. Try again later.'); e.code = 'quota'; throw e; }
+    if (res.status === 503 || res.status === 500) { const e = new Error('Gemini is overloaded. Try again in a minute.'); e.code = 'overload'; throw e; }
+    const e = new Error('AI service error (' + res.status + ').'); e.code = 'network'; throw e;
+  }
+  const data = await res.json();
+  const cand = data && data.candidates && data.candidates[0];
+  const text = cand && cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
+  if (!text) { const e = new Error('Empty AI response.'); e.code = 'refusal'; throw e; }
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch (e) { const err = new Error('AI returned an invalid response.'); err.code = 'refusal'; throw err; }
+  if (!Array.isArray(parsed)) { const e = new Error('AI returned an invalid response.'); e.code = 'refusal'; throw e; }
+  return parsed.map((p, i) => ({ word: String((p && p.word) || list[i] || '').trim(), pos: lwNormPos(p && p.pos) }))
+    .filter((r) => r.word && r.pos);
+}
+
+/* Word of the day: the same word all day, a different one tomorrow. Picks from
+   the most useful pool that has words — due/learning first, then new, then
+   mastered — using a hash of the date, so it needs no storage. */
+function lwWordOfTheDay(words, progress, date, now) {
+  if (!words.length) return null;
+  const status = (w) => window.lwWordStatus(progress[w.id], now);
+  const pools = [
+    words.filter((w) => ['review', 'learning'].includes(status(w))),
+    words.filter((w) => status(w) === 'new'),
+    words,
+  ];
+  const pool = pools.find((p) => p.length).slice().sort((a, b) => (a.id < b.id ? -1 : 1));
+  let h = 0;
+  for (const ch of date) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return pool[h % pool.length];
 }
 
 /* ---------------- AI: генерация обучающего текста через Gemini ----------------
@@ -592,6 +681,10 @@ Object.assign(window, {
   LW_TEXT_TOPICS,
   LW_TEXT_LENGTHS,
   lwUid,
+  LW_POS,
+  lwNormPos,
+  lwAiTagPos,
+  lwWordOfTheDay,
   lwLoad,
   lwSave,
   lwFileToPhoto,

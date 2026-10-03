@@ -163,7 +163,7 @@ function App() {
             const w = (p && p.word) || (l.indexOf('|') === -1 ? l : '');
             const r = w && byWord[w.toLowerCase()];
             if (!r) return line; // leave lines AI didn't touch untouched
-            return [r.word, r.ipa, r.tr, r.example, r.exampleTr].join(' | ');
+            return [r.word, r.ipa, r.tr, r.example, r.exampleTr, r.pos].join(' | ');
           });
           return { ...s, text: out.join('\n'), status: 'idle', error: null };
         });
@@ -412,7 +412,7 @@ function App() {
               goLibrary={() => goTo('library')} />
           ) : tab === 'library' ? (
             <LibraryView groups={scopedGroups} words={scopedWords} userId={authUser.uid} username={userDoc.username} isAdmin={isAdmin}
-              progress={progress}
+              progress={progress} now={now} direction={direction} recordAnswer={recordAnswer}
               goImport={() => goTo('import')} />
           ) : tab === 'import' ? (
             <ImportView groups={scopedGroups} importState={importState} setImportState={setImportState}
@@ -2060,13 +2060,118 @@ function AdminAllDataView({ data, onChanged }) {
   );
 }
 
+/* ---------------- Library: Words view pieces ---------------- */
+const LW_STATUS_LABEL = { new: 'New', learning: 'Learning', review: 'To review', mastered: 'Mastered' };
+const LW_LIB_STATUSES = ['all', 'new', 'learning', 'review', 'mastered'];
+const LW_LIB_SORTS = [
+  { id: 'recent', label: 'Recent' },
+  { id: 'az', label: 'A–Z' },
+  { id: 'due', label: 'Next review' },
+];
+
+function StatusBadge({ status }) {
+  return <span className={'st-badge st-badge-' + status}><span className={'status-swatch status-' + status} />{LW_STATUS_LABEL[status]}</span>;
+}
+
+/* Mastery = how far up the Leitner boxes the word is (box / 5); new words are 0%. */
+function WordCard({ word, group, prog, now, canEdit, onEdit, onDelete }) {
+  const status = window.lwWordStatus(prog, now);
+  const pct = prog ? Math.round(((prog.box || 0) / window.LW_MASTERED_BOX) * 100) : 0;
+  return (
+    <article className="wcard">
+      <div className="wcard-top">
+        <StatusBadge status={status} />
+        {group && <span className="wcard-group"><span className="grp-dot" style={{ background: group.color }} />{group.name}</span>}
+        <SpeakButton word={word.word} />
+      </div>
+      <div className="wcard-head">
+        <span className="wcard-word">{word.word}</span>
+        {word.ipa && <span className="wcard-ipa">{word.ipa}</span>}
+        {word.pos && <span className="wcard-pos">{word.pos}</span>}
+      </div>
+      <div className="wcard-tr">{word.tr}</div>
+      <div className="wcard-foot">
+        <span className="wcard-mastery-label">Mastery</span>
+        <span className="mastery-track"><span className={'mastery-fill status-' + status} style={{ width: pct + '%' }} /></span>
+        <span className="wcard-pct">{pct}%</span>
+        {canEdit && (
+          <span className="wrow-tools">
+            <button className="icon-btn sm" onClick={onEdit} aria-label="Edit"><Ic.Edit /></button>
+            <button className="icon-btn sm danger" onClick={onDelete} aria-label="Delete"><Ic.Trash /></button>
+          </span>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function WordOfTheDay({ word, onPractice }) {
+  return (
+    <section className="wotd">
+      <span className="wotd-kicker">Word of the day</span>
+      <div className="wotd-head">
+        <h2 className="wotd-word">{word.word}</h2>
+        <SpeakButton word={word.word} />
+      </div>
+      {(word.ipa || word.pos) && <p className="wotd-ipa">{word.ipa}{word.ipa && word.pos ? ' · ' : ''}{word.pos}</p>}
+      <p className="wotd-tr">{word.tr}</p>
+      {word.example && <p className="wotd-ex">“{word.example}”</p>}
+      <button type="button" className="btn btn-primary" onClick={onPractice}><Ic.Learn width="16" height="16" /> Practice now</button>
+      <Ic.Sparkle className="wotd-art" aria-hidden="true" />
+    </section>
+  );
+}
+
+/* one word as a flashcard with Again / Know — answers count like in Learn */
+function PracticeCardModal({ word, group, prog, direction, recordAnswer, onClose }) {
+  const [flipped, setFlipped] = useState(false);
+  const [answered, setAnswered] = useState(null); // 'known' | 'unknown'
+  const answer = (status) => {
+    if (status === 'skip') { onClose(); return; }
+    if (status !== 'known' && status !== 'unknown') return;
+    recordAnswer(word.id, status === 'known', 'study');
+    setAnswered(status);
+  };
+  return (
+    <Modal title="Practice" onClose={onClose}>
+      <div className="practice">
+        {answered ? (
+          <div className="practice-done">
+            <Ic.Check width="28" height="28" />
+            <p className="empty-title">{answered === 'known' ? 'Nice!' : 'It will come back soon'}</p>
+            <p className="empty-sub">{answered === 'known' ? 'Answer saved to your progress.' : 'You\'ll see it again in Review in 10 minutes.'}</p>
+            <button className="btn btn-primary" onClick={onClose}>Done</button>
+          </div>
+        ) : (
+          <>
+            <div className="stage practice-stage">
+              <Flashcard entry={word} group={group} flipped={flipped} direction={direction}
+                onFlip={() => setFlipped((f) => !f)} onSwipe={answer} onShuffle={() => {}} />
+            </div>
+            <LeitnerButtons prog={prog} wordId={word.id} onAnswer={answer} />
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 /* ---------------- Library view ---------------- */
-function LibraryView({ groups, words, userId, username, isAdmin, progress, goImport }) {
+const LW_LIB_PAGE = 50; // word cards shown per "Show more"
+function LibraryView({ groups, words, userId, username, isAdmin, progress, now, direction, recordAnswer, goImport }) {
   const [wordModal, setWordModal] = useState(null); // {mode, initial?, groupId?}
   const [groupModal, setGroupModal] = useState(null); // {mode, initial?, parentGroup?}
   const [confirm, setConfirm] = useState(null); // {kind, id, label}
   const [openGroups, setOpenGroups] = useState([]);
   const [query, setQuery] = useState('');
+  /* Words view filters; remembered on this device */
+  const [lib, setLib] = useState(() => ({ view: 'words', status: 'all', groupId: '', sort: 'recent', ...(window.lwLoad(LW_KEYS.library, null) || {}) }));
+  const setLibField = (k, v) => { setLib((l) => ({ ...l, [k]: v })); setLimit(LW_LIB_PAGE); };
+  useEffect(() => { window.lwSave(LW_KEYS.library, lib); }, [lib]);
+  const [limit, setLimit] = useState(LW_LIB_PAGE);
+  const [practice, setPractice] = useState(null); // word being practised from the word of the day
+  const [tagState, setTagState] = useState({ busy: false, done: 0, error: null });
+  const [keyModal, setKeyModal] = useState(false);
 
   const toggleOpen = (id) => setOpenGroups((o) => o.includes(id) ? o.filter((x) => x !== id) : [...o, id]);
 
@@ -2080,6 +2185,60 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, goImp
     : null;
 
   const canEdit = (item) => item.userId === userId || isAdmin;
+
+  /* ---- Words view: group + search + status filters, sort, paging ---- */
+  const statusOf = (w) => window.lwWordStatus(progress[w.id], now);
+  const groupScope = lib.groupId ? [lib.groupId, ...subGroupsOf(lib.groupId).map((g) => g.id)] : null;
+  const scoped = words.filter((w) => (!groupScope || groupScope.includes(w.groupId))
+    && (!q || w.word.toLowerCase().includes(q) || (w.tr && w.tr.toLowerCase().includes(q)) || (w.pos && w.pos.includes(q))));
+  const statusCounts = { all: scoped.length, new: 0, learning: 0, review: 0, mastered: 0 };
+  scoped.forEach((w) => { statusCounts[statusOf(w)]++; });
+  const dueKey = (w) => {
+    const p = progress[w.id];
+    if (!p) return now + 1e12; // new: after everything scheduled
+    if (p.box >= window.LW_MASTERED_BOX && p.due > now) return now + 2e12; // mastered and not due: last
+    return p.due;
+  };
+  const filtered = scoped.filter((w) => lib.status === 'all' || statusOf(w) === lib.status).sort(
+    lib.sort === 'az' ? (a, b) => a.word.localeCompare(b.word)
+      : lib.sort === 'due' ? (a, b) => dueKey(a) - dueKey(b)
+      : (a, b) => (b.createdAt || 0) - (a.createdAt || 0) || a.word.localeCompare(b.word));
+  const mastered = words.filter((w) => statusOf(w) === 'mastered').length;
+  const filtersOn = lib.status !== 'all' || !!lib.groupId || !!q;
+
+  /* word of the day: chosen once per day and remembered, so it doesn't change while you study */
+  const today = window.lwLocalDate(now);
+  const wotd = useMemo(() => {
+    const saved = window.lwLoad(LW_KEYS.wotd, null);
+    const keep = saved && saved.date === today && words.find((w) => w.id === saved.wordId);
+    if (keep) return keep;
+    const w = window.lwWordOfTheDay(words, progress, today, now);
+    if (w) window.lwSave(LW_KEYS.wotd, { date: today, wordId: w.id });
+    return w;
+    // eslint-disable-next-line
+  }, [words, today]);
+
+  /* tag parts of speech for words without one (only words this user may edit) */
+  const untagged = words.filter((w) => !w.pos && canEdit(w));
+  const tagPos = async () => {
+    if (!window.lwHasGeminiKey()) { setKeyModal(true); return; }
+    const todo = untagged.slice();
+    setTagState({ busy: true, done: 0, error: null });
+    try {
+      for (let i = 0; i < todo.length; i += 50) {
+        const batch = todo.slice(i, i + 50);
+        const tags = await window.lwAiTagPos(batch.map((w) => w.word));
+        const byWord = {};
+        tags.forEach((t) => { byWord[t.word.toLowerCase()] = t.pos; });
+        await Promise.all(batch.filter((w) => byWord[w.word.toLowerCase()])
+          .map((w) => window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, pos: byWord[w.word.toLowerCase()] })));
+        setTagState({ busy: true, done: Math.min(i + 50, todo.length), error: null });
+      }
+      setTagState({ busy: false, done: todo.length, error: null });
+    } catch (e) {
+      setTagState((t) => ({ ...t, busy: false, error: (e && e.code) || 'error' }));
+    }
+  };
 
   const saveWord = (w) => {
     // Существующее слово определяем по наличию в списке, а не по w.id — форма
@@ -2126,6 +2285,13 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, goImp
     setConfirm(null);
   };
 
+  const groupLabel = (g) => {
+    const parent = g.parentId ? groupById(g.parentId) : null;
+    return parent ? parent.name + ' / ' + g.name : g.name;
+  };
+  const orderedGroups = topGroups.flatMap((g) => [g, ...subGroupsOf(g.id)]);
+  const hasLeafGroup = window.lwLeafGroups(groups).length > 0;
+
   const renderWords = (items, hue, showEmptyHint = true, showGroup = false) => (
     <div className="word-rows">
       {items.length === 0 && showEmptyHint && <div className="row-empty">No words yet — add the first one.</div>}
@@ -2154,22 +2320,96 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, goImp
   return (
     <div className="library">
       <div className="lib-intro">
-        <h1 className="lib-title">Library</h1>
-        <p className="lib-sub">{words.length} words in {topGroups.length} {topGroups.length === 1 ? 'group' : 'groups'}</p>
+        <div>
+          <h1 className="lib-title">Library</h1>
+          <p className="lib-sub">{words.length} words · {mastered} mastered · {topGroups.length} {topGroups.length === 1 ? 'group' : 'groups'}</p>
+        </div>
+        <div className="seg lib-views">
+          <button type="button" className={'seg-btn' + (lib.view === 'words' ? ' on' : '')} onClick={() => setLibField('view', 'words')}>Words</button>
+          <button type="button" className={'seg-btn' + (lib.view === 'groups' ? ' on' : '')} onClick={() => setLibField('view', 'groups')}>Groups</button>
+        </div>
       </div>
       <div className="lib-head">
         <div className="lib-search">
           <Ic.Search className="lib-search-icon" />
           <input className="input" type="text" placeholder="Search words or translations…"
-            value={query} onChange={(e) => setQuery(e.target.value)} />
+            value={query} onChange={(e) => { setQuery(e.target.value); setLimit(LW_LIB_PAGE); }} />
         </div>
         <div className="lib-head-actions">
           <button className="btn btn-soft" onClick={goImport}><Ic.Plus /> Import</button>
-          <button className="btn btn-primary" onClick={() => setGroupModal({ mode: 'new' })}><Ic.Plus /> New group</button>
+          {lib.view === 'groups' ? (
+            <button className="btn btn-primary" onClick={() => setGroupModal({ mode: 'new' })}><Ic.Plus /> New group</button>
+          ) : hasLeafGroup && (
+            <button className="btn btn-primary lib-add-word" onClick={() => setWordModal({ mode: 'new' })}><Ic.Plus /> Add word</button>
+          )}
         </div>
       </div>
 
-      {searchResults ? (
+      {lib.view === 'words' ? (
+        <div className="words-pane">
+          {wotd && !filtersOn && <WordOfTheDay word={wotd} onPractice={() => setPractice(wotd)} />}
+
+          <div className="lib-filters">
+            <div className="status-chips">
+              {LW_LIB_STATUSES.map((st) => (
+                <button key={st} type="button" className={'chip' + (lib.status === st ? ' chip-on' : '')}
+                  onClick={() => setLibField('status', st)}>
+                  {st === 'all' ? 'All' : LW_STATUS_LABEL[st]} <span className="chip-count">{statusCounts[st]}</span>
+                </button>
+              ))}
+            </div>
+            <div className="lib-selects">
+              <select className="input input-sm" value={lib.groupId} onChange={(e) => setLibField('groupId', e.target.value)} aria-label="Group">
+                <option value="">All groups</option>
+                {orderedGroups.map((g) => <option key={g.id} value={g.id}>{groupLabel(g)}</option>)}
+              </select>
+              <select className="input input-sm" value={lib.sort} onChange={(e) => setLibField('sort', e.target.value)} aria-label="Sort">
+                {LW_LIB_SORTS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {untagged.length > 0 && (
+            <div className="tag-pos">
+              <span>{tagState.busy ? 'Tagging parts of speech… ' + tagState.done + ' / ' + untagged.length
+                : untagged.length + (untagged.length === 1 ? ' word has' : ' words have') + ' no part of speech.'}</span>
+              <button type="button" className="btn btn-soft sm" disabled={tagState.busy} onClick={tagPos}>
+                {tagState.busy ? <span className="spinner" /> : <Ic.Bulb width="15" height="15" />} Tag with AI
+              </button>
+              {tagState.error && <span className="tag-pos-error">{LW_IMPORT_ERROR_MSG[tagState.error] || LW_IMPORT_ERROR_MSG.error}</span>}
+            </div>
+          )}
+
+          {filtered.length === 0 ? (
+            <div className="empty-card lib-empty">
+              <Ic.Search width="26" height="26" />
+              <p className="empty-title">{words.length === 0 ? 'No words yet' : 'No words match'}</p>
+              <p className="empty-sub">{words.length === 0 ? 'Add your first word or import a list.' : 'Try another filter or search.'}</p>
+              {words.length === 0 ? (
+                <button className="btn btn-primary" onClick={goImport}><Ic.Plus /> Import words</button>
+              ) : (
+                <button className="btn btn-soft" onClick={() => { setQuery(''); setLib((l) => ({ ...l, status: 'all', groupId: '' })); }}>Clear filters</button>
+              )}
+            </div>
+          ) : (
+            <div className="wcards">
+              {filtered.slice(0, limit).map((w) => (
+                <WordCard key={w.id} word={w} group={groupById(w.groupId)} prog={progress[w.id]} now={now}
+                  canEdit={canEdit(w)} onEdit={() => setWordModal({ mode: 'edit', initial: w })}
+                  onDelete={() => setConfirm({ kind: 'word', id: w.id, label: w.word })} />
+              ))}
+            </div>
+          )}
+          {filtered.length > limit && (
+            <button type="button" className="btn btn-soft lib-more" onClick={() => setLimit((n) => n + LW_LIB_PAGE)}>
+              Show more ({filtered.length - limit})
+            </button>
+          )}
+          {hasLeafGroup && (
+            <button type="button" className="fab" onClick={() => setWordModal({ mode: 'new' })} aria-label="Add word"><Ic.Plus width="24" height="24" /></button>
+          )}
+        </div>
+      ) : searchResults ? (
         <div className="search-results">
           {searchResults.length === 0
             ? <div className="row-empty">No words match "{query.trim()}".</div>
@@ -2243,6 +2483,11 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, goImp
       </div>
       )}
 
+      {practice && (
+        <PracticeCardModal word={practice} group={groupById(practice.groupId)} prog={progress[practice.id]}
+          direction={direction} recordAnswer={recordAnswer} onClose={() => setPractice(null)} />
+      )}
+      {keyModal && <GeminiKeyModal onClose={() => setKeyModal(false)} onSaved={(ok) => { if (ok) tagPos(); }} />}
       {wordModal && (
         <Modal title={wordModal.mode === 'edit' ? 'Edit word' : 'New word'} onClose={() => setWordModal(null)}>
           <WordForm initial={wordModal.initial} groups={groups} defaultGroupId={wordModal.groupId}
