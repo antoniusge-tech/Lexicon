@@ -55,6 +55,25 @@ service cloud.firestore {
         && (request.resource.data.shared == false || (request.resource.data.shared == true && isAdmin()));
     }
 
+    // Leitner progress per user+word. Doc id is `${uid}_${wordId}`, so a user can
+    // only ever touch their own progress; list queries must filter userId == uid.
+    match /progress/{progressId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      // by id prefix, so deleting progress for a never-studied word (no doc) doesn't fail the batch
+      allow delete: if isSignedIn() && progressId.matches(request.auth.uid + '_.+');
+      allow create, update: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && progressId == request.auth.uid + '_' + request.resource.data.wordId;
+    }
+
+    // Daily activity (answers, XP) per user. Doc id is `${uid}_${YYYY-MM-DD}`.
+    match /activity/{activityId} {
+      allow read, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create, update: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && activityId == request.auth.uid + '_' + request.resource.data.date;
+    }
+
     // AI-квоты: пишет ТОЛЬКО Cloud Function через Admin SDK (обходит правила).
     // Клиент может прочитать свой счётчик (док с id `${uid}_${day}`), но не менять его.
     match /ai_usage/{usageId} {

@@ -19,6 +19,8 @@ const LW_COLLECTIONS = {
   words: 'words',
   users: 'users',
   usernames: 'usernames',
+  progress: 'progress',
+  activity: 'activity',
 };
 
 /* Legacy accounts (registered before real emails) authenticate via a synthetic
@@ -32,7 +34,7 @@ async function lwRegister(username, email, password) {
   const nameLower = name.toLowerCase();
   const existing = await lwDb.collection(LW_COLLECTIONS.usernames).doc(nameLower).get();
   if (existing.exists) {
-    const err = new Error('Это имя уже занято.');
+    const err = new Error('This username is taken.');
     err.code = 'lw/username-taken';
     throw err;
   }
@@ -74,7 +76,7 @@ async function lwDeleteAccount(password) {
   await user.reauthenticateWithCredential(cred);
 
   const uid = user.uid;
-  for (const coll of [LW_COLLECTIONS.words, LW_COLLECTIONS.groups]) {
+  for (const coll of [LW_COLLECTIONS.words, LW_COLLECTIONS.groups, LW_COLLECTIONS.progress, LW_COLLECTIONS.activity]) {
     const snap = await lwDb.collection(coll).where('userId', '==', uid).get();
     for (let i = 0; i < snap.docs.length; i += 400) {
       const batch = lwDb.batch();
@@ -165,6 +167,30 @@ async function lwDeleteWordsByGroup(groupId, userId) {
   return batch.commit();
 }
 
+/* ---------------- Progress (Leitner) & daily activity ---------------- */
+
+/* Record one answer in a single batch: the word's new progress doc plus the
+   day's activity counters. Uses merge + increment (no transaction), so it also
+   works offline. `progress` is the full doc from lwNextProgress. */
+function lwRecordAnswer({ uid, progress, date, correct, xp, goalBonus }) {
+  const inc = firebase.firestore.FieldValue.increment;
+  const batch = lwDb.batch();
+  batch.set(lwDb.collection(LW_COLLECTIONS.progress).doc(uid + '_' + progress.wordId), { ...progress, userId: uid });
+  const day = { userId: uid, date, answers: inc(1), correct: inc(correct ? 1 : 0), xp: inc(xp + (goalBonus || 0)) };
+  if (goalBonus) day.goalMet = true;
+  batch.set(lwDb.collection(LW_COLLECTIONS.activity).doc(uid + '_' + date), day, { merge: true });
+  return batch.commit();
+}
+
+/* Delete this user's progress docs for the given words (e.g. after the words were deleted). */
+async function lwDeleteProgressForWords(uid, wordIds) {
+  for (let i = 0; i < wordIds.length; i += 400) {
+    const batch = lwDb.batch();
+    wordIds.slice(i, i + 400).forEach((id) => batch.delete(lwDb.collection(LW_COLLECTIONS.progress).doc(uid + '_' + id)));
+    await batch.commit();
+  }
+}
+
 /* ---------------- Admin ---------------- */
 
 /* Fetch all users, plus a words/groups count per user, for the Admin screen. */
@@ -216,6 +242,8 @@ Object.assign(window, {
   lwSetDoc,
   lwDeleteDoc,
   lwDeleteWordsByGroup,
+  lwRecordAnswer,
+  lwDeleteProgressForWords,
   lwRegister,
   lwLogin,
   lwLogout,
