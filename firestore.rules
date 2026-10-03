@@ -80,6 +80,32 @@ service cloud.firestore {
         && activityId == request.auth.uid + '_' + request.resource.data.date;
     }
 
+    // Reading texts: same access model as words (own + shared; only admins share).
+    // Chapters repeat userId/shared so their rules need no get() of the parent.
+    match /texts/{textId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.shared == true || isAdmin());
+      allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin())
+        && (request.resource.data.shared == resource.data.shared || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid
+        && (request.resource.data.shared == false || (request.resource.data.shared == true && isAdmin()));
+
+      match /chapters/{chapterId} {
+        allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.shared == true || isAdmin());
+        allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+        allow create, update: if isSignedIn() && request.resource.data.userId == request.auth.uid
+          && (request.resource.data.shared == false || (request.resource.data.shared == true && isAdmin()));
+      }
+    }
+
+    // Where the user is in each text. Doc id is `${uid}_${textId}`.
+    match /reading_progress/{progressId} {
+      allow read, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create, update: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && progressId == request.auth.uid + '_' + request.resource.data.textId;
+    }
+
     // AI-квоты: пишет ТОЛЬКО Cloud Function через Admin SDK (обходит правила).
     // Клиент может прочитать свой счётчик (док с id `${uid}_${day}`), но не менять его.
     match /ai_usage/{usageId} {

@@ -169,6 +169,22 @@ const Ic = {
       <path d="M19 14c.2 2.2 1.1 3.1 3.3 3.3-2.2.2-3.1 1.1-3.3 3.3-.2-2.2-1.1-3.1-3.3-3.3 2.2-.2 3.1-1.1 3.3-3.3Z" />
     </svg>
   ),
+  Play: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" {...p}><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5Z" /></svg>
+  ),
+  Pause: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" {...p}><rect x="6" y="5" width="4" height="14" rx="1.2" /><rect x="14" y="5" width="4" height="14" rx="1.2" /></svg>
+  ),
+  Translate: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M4 5h8M8 3v2M10.5 5c-.8 3.5-3 6.3-6.5 8" /><path d="M6 9c1 1.8 2.6 3.2 4.6 4" /><path d="m12 21 4-9 4 9M13.5 18h5" />
+    </svg>
+  ),
+  Mic: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+    </svg>
+  ),
   Flag: (p) => (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
       <path d="M5 21V4" /><path d="M5 4h11l-2 4 2 4H5" />
@@ -1167,4 +1183,118 @@ function WeekChart({ days, goal }) {
   );
 }
 
-Object.assign(window, { Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart });
+/* ---------------- Pronunciation check (Web Speech API) ----------------
+   The user says a word or reads a passage; the browser's speech recognition
+   transcribes it and we mark which target words were heard (longest common
+   subsequence, so one slip doesn't shift everything after it). Hidden where
+   SpeechRecognition is missing (Firefox). Chrome sends the audio to Google. */
+const lwRecognitionClass = () => window.SpeechRecognition || window.webkitSpeechRecognition || null;
+const lwCanRecognize = () => !!lwRecognitionClass();
+const lwSpeechTokens = (t) => (String(t).toLowerCase().replace(/[’]/g, "'").match(/[a-z0-9']+/g) || []);
+
+/* which target tokens appear, in order, in what was heard */
+function lwMatchSpoken(target, heard) {
+  const a = lwSpeechTokens(target);
+  let b = lwSpeechTokens(heard);
+  /* recognisers sometimes split one word ("under stand"): glue it back for single words */
+  if (a.length === 1 && b.length > 1 && b.join('') === a[0]) b = [a[0]];
+  const eq = (x, y) => x === y || (window.readingTokensMatch && window.readingTokensMatch(x, y));
+  const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      dp[i][j] = eq(a[i], b[j]) ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const ok = new Array(a.length).fill(false);
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    if (eq(a[i], b[j])) { ok[i] = true; i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++;
+  }
+  return { tokens: a, ok, score: a.length ? Math.round((ok.filter(Boolean).length / a.length) * 100) : 0 };
+}
+
+function PronunciationCheck({ target, label = 'Say it', passage = false }) {
+  const [state, setState] = React.useState('idle'); // idle | listening | done | error
+  const [heard, setHeard] = React.useState('');
+  const [error, setError] = React.useState('');
+  const recRef = React.useRef(null);
+  const textRef = React.useRef('');
+
+  React.useEffect(() => () => { if (recRef.current) recRef.current.abort(); }, []);
+  if (!lwCanRecognize()) return null;
+
+  const start = () => {
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    const Recognition = lwRecognitionClass();
+    const rec = new Recognition();
+    rec.lang = 'en-US';
+    rec.interimResults = false;
+    rec.maxAlternatives = passage ? 1 : 3;
+    rec.continuous = passage; // a passage can take several breaths; a word is one shot
+    textRef.current = '';
+    rec.onresult = (e) => {
+      const parts = [];
+      for (let i = 0; i < e.results.length; i++) {
+        const alts = [];
+        for (let k = 0; k < e.results[i].length; k++) alts.push(e.results[i][k].transcript);
+        /* for a single word, prefer the alternative that matches the target */
+        parts.push(passage ? alts[0] : (alts.find((t) => lwMatchSpoken(target, t).score === 100) || alts[0]));
+      }
+      textRef.current = parts.join(' ');
+    };
+    rec.onerror = (e) => {
+      setError(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? 'Allow microphone access to check your pronunciation.'
+        : e.error === 'no-speech' ? "Didn't hear anything — try again a bit louder."
+        : e.error === 'network' ? 'Speech recognition needs an internet connection.'
+        : 'Speech recognition failed (' + e.error + ').');
+      setState('error');
+    };
+    rec.onend = () => {
+      recRef.current = null;
+      setState((s) => {
+        if (s === 'error') return s;
+        if (!textRef.current) { setError("Didn't hear anything — try again a bit louder."); return 'error'; }
+        setHeard(textRef.current);
+        return 'done';
+      });
+    };
+    recRef.current = rec;
+    setError('');
+    setHeard('');
+    setState('listening');
+    rec.start();
+  };
+  const stop = () => { if (recRef.current) recRef.current.stop(); };
+
+  const result = state === 'done' ? lwMatchSpoken(target, heard) : null;
+  const words = String(target).split(/(\s+)/);
+  let k = -1;
+  return (
+    <div className={'pron' + (passage ? ' pron-passage' : '')}>
+      <button type="button" className={'pron-btn' + (state === 'listening' ? ' on' : '')}
+        onClick={state === 'listening' ? stop : start}>
+        <Ic.Mic width="16" height="16" /> {state === 'listening' ? (passage ? 'Stop' : 'Listening…') : state === 'done' || state === 'error' ? 'Try again' : label}
+      </button>
+      {result && (
+        <div className="pron-result">
+          <span className={'pron-score' + (result.score >= 85 ? ' good' : result.score >= 50 ? ' ok' : ' low')}>{result.score}%</span>
+          {passage ? (
+            <p className="pron-text">
+              {words.map((w, i) => {
+                if (/^\s+$/.test(w) || !lwSpeechTokens(w).length) return w;
+                k += lwSpeechTokens(w).length;
+                return <span key={i} className={result.ok[k] ? 'pron-ok' : 'pron-miss'}>{w}</span>;
+              })}
+            </p>
+          ) : (
+            <span className="pron-heard">{result.score === 100 ? 'Sounds right!' : 'Heard: “' + heard + '”'}</span>
+          )}
+        </div>
+      )}
+      {state === 'error' && <span className="pron-error">{error}</span>}
+    </div>
+  );
+}
+
+Object.assign(window, { Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck, lwCanRecognize, lwMatchSpoken });

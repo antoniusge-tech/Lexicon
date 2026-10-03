@@ -9,6 +9,8 @@ const LW_KEYS = {
   nav: 'lw_nav_v1', // {tab, learnMode} — last screen and Learn sub-mode
   library: 'lw_library_v1', // {view, status, groupId, sort} — Library filters
   wotd: 'lw_word_of_day_v1', // {date, wordId} — keeps the word of the day stable all day
+  readerGroup: 'lw_reader_group_v1', // group that "+ Add to cards" in the reader puts words into
+  trCache: 'lw_reader_tr_v1', // {key: [ru sentences]} — paragraph translations, newest last
   reading: 'lw_reading_cards_v1', // последняя пачка сгенерированных текстов-карточек
 };
 
@@ -368,39 +370,19 @@ async function lwAiFillWords(words) {
   }).filter((r) => r.word);
 }
 
-/* Tag existing words with a part of speech only (cheaper than a full fill).
-   words: up to 50 English words; returns [{ word, pos }] in the same order.
-   Same error .codes as lwAiFillWord. */
-async function lwAiTagPos(words) {
-  const list = (words || []).map((w) => String(w || '').trim().slice(0, 100)).filter(Boolean).slice(0, 50);
-  if (!list.length) { const e = new Error('No words to process.'); e.code = 'empty'; throw e; }
+/* One structured-output Gemini call: system prompt + user text -> parsed JSON
+   matching `schema`. Throws Error with .code 'no-key' | 'bad-key' | 'quota' |
+   'overload' | 'refusal' | 'network', like lwAiFillWord. */
+async function lwGeminiJson(systemText, userText, schema) {
   const key = lwGetGeminiKey();
   if (!key) { const e = new Error('No Gemini key set.'); e.code = 'no-key'; throw e; }
-
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
     + LW_GEMINI_MODEL + ':generateContent?key=' + encodeURIComponent(key);
   const body = {
-    systemInstruction: {
-      parts: [{
-        text: 'You tag English vocabulary with its most common part of speech. '
-          + 'For EVERY input word or phrase return { word, pos }, where word is the input as given and pos is one of: '
-          + LW_POS.join(', ') + '. Keep the input order and count.',
-      }],
-    },
-    contents: [{ role: 'user', parts: [{ text: list.join('\n') }] }],
-    generationConfig: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: 'ARRAY',
-        items: {
-          type: 'OBJECT',
-          properties: { word: { type: 'STRING' }, pos: { type: 'STRING', enum: LW_POS } },
-          required: ['word', 'pos'],
-        },
-      },
-    },
+    systemInstruction: { parts: [{ text: systemText }] },
+    contents: [{ role: 'user', parts: [{ text: userText }] }],
+    generationConfig: { responseMimeType: 'application/json', responseSchema: schema },
   };
-
   let res;
   try {
     res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -415,14 +397,82 @@ async function lwAiTagPos(words) {
   }
   const data = await res.json();
   const cand = data && data.candidates && data.candidates[0];
-  const text = cand && cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
+  if (!cand || cand.finishReason === 'SAFETY' || cand.finishReason === 'PROHIBITED_CONTENT') {
+    const e = new Error('The model refused the request.'); e.code = 'refusal'; throw e;
+  }
+  const text = cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
   if (!text) { const e = new Error('Empty AI response.'); e.code = 'refusal'; throw e; }
-  let parsed;
-  try { parsed = JSON.parse(text); }
+  try { return JSON.parse(text); }
   catch (e) { const err = new Error('AI returned an invalid response.'); err.code = 'refusal'; throw err; }
+}
+
+/* Tag existing words with a part of speech only (cheaper than a full fill).
+   words: up to 50 English words; returns [{ word, pos }] in the same order. */
+async function lwAiTagPos(words) {
+  const list = (words || []).map((w) => String(w || '').trim().slice(0, 100)).filter(Boolean).slice(0, 50);
+  if (!list.length) { const e = new Error('No words to process.'); e.code = 'empty'; throw e; }
+  const parsed = await lwGeminiJson(
+    'You tag English vocabulary with its most common part of speech. '
+      + 'For EVERY input word or phrase return { word, pos }, where word is the input as given and pos is one of: '
+      + LW_POS.join(', ') + '. Keep the input order and count.',
+    list.join('\n'),
+    {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: { word: { type: 'STRING' }, pos: { type: 'STRING', enum: LW_POS } },
+        required: ['word', 'pos'],
+      },
+    }
+  );
   if (!Array.isArray(parsed)) { const e = new Error('AI returned an invalid response.'); e.code = 'refusal'; throw e; }
   return parsed.map((p, i) => ({ word: String((p && p.word) || list[i] || '').trim(), pos: lwNormPos(p && p.pos) }))
     .filter((r) => r.word && r.pos);
+}
+
+/* A word tapped while reading: its dictionary form and the meaning it has in
+   this sentence, plus the sentence's translation (it becomes the card's example). */
+async function lwAiLookupWord(word, sentence) {
+  const term = String(word || '').trim().slice(0, 60);
+  if (!term) { const e = new Error('Empty word.'); e.code = 'empty'; throw e; }
+  const p = await lwGeminiJson(
+    'Ты — словарь для читателя английских книг. Тебе дают слово и предложение, где оно встретилось. Верни: '
+      + 'lemma — словарную форму слова (was → be, children → child; фразовый глагол, если он есть в предложении, например "give up"); '
+      + 'ipa — транскрипцию IPA словарной формы без косых черт; '
+      + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '; '
+      + 'tr — перевод на русский именно в ЭТОМ значении (1–3 варианта через запятую); '
+      + 'sentenceTr — перевод всего предложения на русский.',
+    'Слово: ' + term + '\nПредложение: ' + String(sentence || '').slice(0, 600),
+    {
+      type: 'OBJECT',
+      properties: {
+        lemma: { type: 'STRING' }, ipa: { type: 'STRING' }, pos: { type: 'STRING', enum: LW_POS },
+        tr: { type: 'STRING' }, sentenceTr: { type: 'STRING' },
+      },
+      required: ['lemma', 'ipa', 'pos', 'tr', 'sentenceTr'],
+    }
+  );
+  return {
+    lemma: String(p.lemma || term).trim(),
+    ipa: String(p.ipa || '').trim(),
+    pos: lwNormPos(p.pos),
+    tr: String(p.tr || '').trim(),
+    sentenceTr: String(p.sentenceTr || '').trim(),
+  };
+}
+
+/* Translate a paragraph sentence by sentence: returns one Russian line per input sentence. */
+async function lwAiTranslateSentences(sentences) {
+  const list = (sentences || []).map((x) => String(x || '').trim()).filter(Boolean).slice(0, 60);
+  if (!list.length) return [];
+  const p = await lwGeminiJson(
+    'Переведи каждое английское предложение на русский — литературно, но близко к тексту. '
+      + 'Верни массив переводов той же длины и в том же порядке, по одному на предложение.',
+    list.map((x, i) => (i + 1) + '. ' + x).join('\n'),
+    { type: 'ARRAY', items: { type: 'STRING' } }
+  );
+  if (!Array.isArray(p)) { const e = new Error('AI returned an invalid response.'); e.code = 'refusal'; throw e; }
+  return list.map((_, i) => String(p[i] || '').trim());
 }
 
 /* Word of the day: the same word all day, a different one tomorrow. Picks from
@@ -684,6 +734,8 @@ Object.assign(window, {
   LW_POS,
   lwNormPos,
   lwAiTagPos,
+  lwAiLookupWord,
+  lwAiTranslateSentences,
   lwWordOfTheDay,
   lwLoad,
   lwSave,

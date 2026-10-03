@@ -26,6 +26,8 @@ const LW_COLLECTIONS = {
   usernames: 'usernames',
   progress: 'progress',
   activity: 'activity',
+  texts: 'texts',
+  readingProgress: 'reading_progress',
 };
 
 /* Legacy accounts (registered before real emails) authenticate via a synthetic
@@ -87,7 +89,10 @@ async function lwDeleteAccount(password) {
   }
 
   const uid = user.uid;
-  for (const coll of [LW_COLLECTIONS.words, LW_COLLECTIONS.groups, LW_COLLECTIONS.progress, LW_COLLECTIONS.activity]) {
+  /* own reading texts: chapters live in a subcollection and must go first */
+  const ownTexts = await lwDb.collection(LW_COLLECTIONS.texts).where('userId', '==', uid).get();
+  for (const t of ownTexts.docs) await lwDeleteText(t.id, (t.data().chapters || []).length);
+  for (const coll of [LW_COLLECTIONS.words, LW_COLLECTIONS.groups, LW_COLLECTIONS.progress, LW_COLLECTIONS.activity, LW_COLLECTIONS.readingProgress]) {
     const snap = await lwDb.collection(coll).where('userId', '==', uid).get();
     for (let i = 0; i < snap.docs.length; i += 400) {
       const batch = lwDb.batch();
@@ -268,6 +273,12 @@ function lwRecordAnswer({ uid, progress, date, correct, xp, goalBonus, ms }) {
   return batch.commit();
 }
 
+/* Add practice time without an answer (reading): bumps activity.ms only. */
+function lwAddPracticeTime(uid, date, ms) {
+  return lwDb.collection(LW_COLLECTIONS.activity).doc(uid + '_' + date)
+    .set({ userId: uid, date, ms: firebase.firestore.FieldValue.increment(ms) }, { merge: true });
+}
+
 /* Delete this user's progress docs for the given words (e.g. after the words were deleted). */
 async function lwDeleteProgressForWords(uid, wordIds) {
   for (let i = 0; i < wordIds.length; i += 400) {
@@ -275,6 +286,49 @@ async function lwDeleteProgressForWords(uid, wordIds) {
     wordIds.slice(i, i + 400).forEach((id) => batch.delete(lwDb.collection(LW_COLLECTIONS.progress).doc(uid + '_' + id)));
     await batch.commit();
   }
+}
+
+/* ---------------- Reading texts ---------------- */
+
+/* Save a text: meta doc texts/{id} (no body, so lists stay light) plus one doc
+   per chapter in texts/{id}/chapters/{n}. Chapters repeat userId/shared for the rules. */
+async function lwSaveText(meta, chapters) {
+  const ref = lwDb.collection(LW_COLLECTIONS.texts).doc(meta.id);
+  const { id, ...data } = meta;
+  for (let i = 0; i < chapters.length; i += 400) {
+    const batch = lwDb.batch();
+    chapters.slice(i, i + 400).forEach((c, k) => {
+      batch.set(ref.collection('chapters').doc(String(i + k)), {
+        userId: meta.userId, shared: meta.shared, title: c.title || '', paragraphs: c.paragraphs,
+      });
+    });
+    await batch.commit();
+  }
+  await ref.set(data); // meta last: the text shows up only once its chapters exist
+}
+
+async function lwDeleteText(id, chapterCount) {
+  const ref = lwDb.collection(LW_COLLECTIONS.texts).doc(id);
+  for (let i = 0; i < chapterCount; i += 400) {
+    const batch = lwDb.batch();
+    for (let n = i; n < Math.min(i + 400, chapterCount); n++) batch.delete(ref.collection('chapters').doc(String(n)));
+    await batch.commit();
+  }
+  await ref.delete();
+}
+
+async function lwGetChapter(textId, n) {
+  const doc = await lwDb.collection(LW_COLLECTIONS.texts).doc(textId).collection('chapters').doc(String(n)).get();
+  return doc.exists ? doc.data() : null;
+}
+
+function lwSaveReadingProgress(uid, textId, fields) {
+  return lwDb.collection(LW_COLLECTIONS.readingProgress).doc(uid + '_' + textId)
+    .set({ ...fields, userId: uid, textId, updatedAt: Date.now() }, { merge: true });
+}
+
+function lwDeleteReadingProgress(uid, textId) {
+  return lwDb.collection(LW_COLLECTIONS.readingProgress).doc(uid + '_' + textId).delete();
 }
 
 /* ---------------- Admin ---------------- */
@@ -329,6 +383,12 @@ Object.assign(window, {
   lwDeleteDoc,
   lwDeleteWordsByGroup,
   lwRecordAnswer,
+  lwAddPracticeTime,
+  lwSaveText,
+  lwDeleteText,
+  lwGetChapter,
+  lwSaveReadingProgress,
+  lwDeleteReadingProgress,
   lwDeleteProgressForWords,
   lwRegister,
   lwLogin,
