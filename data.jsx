@@ -12,6 +12,7 @@ const LW_KEYS = {
   readerGroup: 'lw_reader_group_v1', // group that "+ Add to cards" in the reader puts words into
   trCache: 'lw_reader_tr_v1', // {key: [ru sentences]} — paragraph translations, newest last
   grammar: 'lw_grammar_v1', // {level, saved} — Grammar list filters
+  videoMode: 'lw_video_mode_v1', // 'flip' | 'type' — how Learn → Video asks
   voice: 'lw_voice_v1', // {voiceURI, rate} — speech voice for this device ('' = auto)
   reading: 'lw_reading_cards_v1', // последняя пачка сгенерированных текстов-карточек
 };

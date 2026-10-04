@@ -32,6 +32,7 @@ const LW_COLLECTIONS = {
   lessons: 'lessons',
   lessonProgress: 'lesson_progress',
   levelQuestions: 'level_questions',
+  clips: 'clips',
 };
 
 /* Legacy accounts (registered before real emails) authenticate via a synthetic
@@ -325,6 +326,12 @@ function lwWatchLevelQuestions(lang, onChange) {
     .onSnapshot((snap) => onChange(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
 }
 
+/* video clips of one language (shared content, admins write them) */
+function lwWatchClips(lang, onChange) {
+  return lwDb.collection(LW_COLLECTIONS.clips).where('lang', '==', lang || 'en')
+    .onSnapshot((snap) => onChange(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+}
+
 /* merge fields into this user's progress for a lesson */
 function lwSaveLessonProgress(uid, lessonId, fields) {
   return lwDb.collection(LW_COLLECTIONS.lessonProgress).doc(uid + '_' + lessonId)
@@ -442,6 +449,7 @@ Object.assign(window, {
   lwDeleteProgressForWords,
   lwWatchLessons,
   lwWatchLevelQuestions,
+  lwWatchClips,
   lwSaveLessonProgress,
   lwAddBonusXp,
   lwRegister,

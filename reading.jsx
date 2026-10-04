@@ -252,7 +252,28 @@ function lwCollocPartner(phrase, word) {
   return (rest.length ? rest : parts).join(' ');
 }
 
+/* ---------------- Video clips ---------------- */
+
+/* the user's card for a clip's word or phrase: same text (ignoring case and
+   punctuation), or for a single word any form of it (got → get is not found) */
+function lwFindCardForClip(clip, words) {
+  const norm = (s) => lwNormLetters(String(s || '').toLowerCase()).replace(/[^\p{L}\p{N}' ]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const key = norm(clip.word);
+  if (!key) return null;
+  const exact = words.find((w) => norm(w.word) === key);
+  if (exact || /\s/.test(key)) return exact || null;
+  return words.find((w) => !/\s/.test(norm(w.word)) && readingTokensMatch(norm(w.word), key)) || null;
+}
+
+/* quote "Once you [[get the hang of it]], …" → parts for rendering */
+function lwSplitQuote(quote) {
+  const m = String(quote || '').match(/^(.*?)\[\[(.+?)\]\](.*)$/s);
+  return m ? { before: m[1], target: m[2], after: m[3] } : { before: String(quote || ''), target: '', after: '' };
+}
+
 Object.assign(window, {
+  lwFindCardForClip,
+  lwSplitQuote,
   LW_LETTERS,
   lwNormLetters,
   lwCollocKey,

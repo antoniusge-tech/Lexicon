@@ -309,7 +309,25 @@ function lwLevelTestResult(answers) {
   return { level: LW_CEFR_ALL[idx], correct: answers.filter((a) => a.ok).length, total: answers.length, byLevel };
 }
 
+/* ---------------- Video clips: session order ----------------
+   Clips whose card is due first, then the ones that are new to the user (no
+   card, or a card never studied), then the rest; random within each group.
+   `cardOf(clip)` → the user's card or null. `exclude`: ids just played go last. */
+function lwClipPick(clips, cardOf, progress, now, n, exclude = []) {
+  const rank = (c) => {
+    if (exclude.includes(c.id)) return 9;
+    const card = cardOf(c);
+    const p = card && progress[card.id];
+    if (p && p.due <= now) return 0;
+    if (!p) return 1;
+    return 2;
+  };
+  return clips.map((c) => ({ c, r: rank(c), k: Math.random() }))
+    .sort((a, b) => a.r - b.r || a.k - b.k).slice(0, n).map((x) => x.c);
+}
+
 Object.assign(window, {
+  lwClipPick,
   LW_LEVEL_TEST_LEN,
   LW_LEVEL_TEST_MIN_BANK,
   LW_CEFR_NAMES,

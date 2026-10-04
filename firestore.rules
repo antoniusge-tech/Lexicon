@@ -152,6 +152,21 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // Video clips: a YouTube fragment (≤ 60 s) with the quote that contains a
+    // word or phrase. Shared content, one language each, written only by admins.
+    match /clips/{clipId} {
+      allow read: if isSignedIn();
+      allow create, update: if isAdmin()
+        && request.resource.data.lang is string
+        && request.resource.data.videoId is string && request.resource.data.videoId.size() == 11
+        && request.resource.data.start is number && request.resource.data.end is number
+        && request.resource.data.start >= 0 && request.resource.data.end > request.resource.data.start
+        && request.resource.data.end - request.resource.data.start <= 60
+        && request.resource.data.quote is string && request.resource.data.quote.size() > 0
+        && request.resource.data.word is string && request.resource.data.word.size() > 0;
+      allow delete: if isAdmin();
+    }
+
     // Lesson progress per user. Doc id is `${uid}_${lessonId}`.
     match /lesson_progress/{progressId} {
       allow read, delete: if isSignedIn() && resource.data.userId == request.auth.uid;

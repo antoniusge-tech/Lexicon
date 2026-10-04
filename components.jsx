@@ -1959,4 +1959,158 @@ function LessonForm({ initial, topics, onSave, onDelete, onCancel }) {
   );
 }
 
-Object.assign(window, { VoicePicker, Marked, LessonBody, LessonForm, lwUnmark, CollocForm, Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck, lwCanRecognize, lwMatchSpoken });
+/* ---------------- YouTube clips ---------------- */
+
+/* "https://youtu.be/ID?t=42", "watch?v=ID&t=1m2s", "shorts/ID", "embed/ID" or
+   a bare 11-character id → { videoId, t } (t in seconds or null) */
+function lwParseYouTube(input) {
+  const s = String(input || '').trim();
+  if (/^[\w-]{11}$/.test(s)) return { videoId: s, t: null };
+  const m = s.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/embed\/|\/live\/)([\w-]{11})/);
+  if (!m) return null;
+  const tm = s.match(/[?&#](?:t|start)=([\dhms.]+)/);
+  let t = null;
+  if (tm) {
+    const v = tm[1];
+    if (/^\d+(\.\d+)?$/.test(v)) t = Number(v);
+    else {
+      const p = v.match(/(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/);
+      t = (Number(p[1] || 0) * 3600) + (Number(p[2] || 0) * 60) + Number(p[3] || 0);
+    }
+  }
+  return { videoId: m[1], t };
+}
+/* "1:04.5" / "64.5" / "1:02:03" → seconds (null if not a time) */
+function lwParseTime(str) {
+  const s = String(str == null ? '' : str).trim();
+  if (!/^\d+(:\d{1,2}){0,2}(\.\d+)?$/.test(s)) return null;
+  return s.split(':').reduce((acc, part) => acc * 60 + Number(part), 0);
+}
+/* 64.5 → "1:04.5", 4 → "0:04" */
+function lwFormatTime(sec) {
+  const v = Math.max(0, Number(sec) || 0);
+  const m = Math.floor(v / 60);
+  const rest = v - m * 60;
+  const whole = Math.floor(rest);
+  const tenth = Math.round((rest - whole) * 10);
+  return m + ':' + String(whole).padStart(2, '0') + (tenth ? '.' + (tenth === 10 ? 9 : tenth) : '');
+}
+
+/* the IFrame API script, loaded once */
+let lwYtLoading = null;
+function lwLoadYouTube() {
+  if (window.YT && window.YT.Player) return Promise.resolve(window.YT);
+  if (!lwYtLoading) {
+    lwYtLoading = new Promise((resolve) => {
+      const prev = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => { if (prev) prev(); resolve(window.YT); };
+      const tag = document.createElement('script');
+      tag.src = 'https://www.youtube.com/iframe_api';
+      tag.onerror = () => { lwYtLoading = null; resolve(null); };
+      document.head.appendChild(tag);
+    });
+  }
+  return lwYtLoading;
+}
+
+/* A YouTube fragment with our own controls. Plays from `start` to `end`, then
+   stops and rewinds (onEnd). `free`: the whole video with YouTube's controls
+   (for picking times in the admin form). `apiRef.current` gets
+   { play, replay, pause, time } — time is the absolute position in seconds.
+   `overlay` is drawn over the video (subtitles). onError(code): the video is
+   gone, private or can't be embedded. */
+function YouTubeClip({ videoId, start = 0, end, rate = 1, free = false, apiRef, overlay, onEnd, onError }) {
+  const holder = React.useRef(null);
+  const player = React.useRef(null);
+  const [state, setState] = React.useState('loading'); // loading | ready | playing | paused | error
+  const [pos, setPos] = React.useState(0); // seconds into the fragment
+  const endRef = React.useRef(end);
+  endRef.current = end;
+  const len = Math.max(0.1, (end || 0) - start);
+
+  React.useEffect(() => {
+    let dead = false;
+    let timer = null;
+    lwLoadYouTube().then((YT) => {
+      if (dead || !holder.current) return;
+      if (!YT) { setState('error'); if (onError) onError('api'); return; }
+      const el = document.createElement('div');
+      holder.current.appendChild(el);
+      player.current = new YT.Player(el, {
+        host: 'https://www.youtube-nocookie.com',
+        videoId,
+        width: '100%', height: '100%',
+        playerVars: {
+          start: Math.floor(start), playsinline: 1, rel: 0, modestbranding: 1, iv_load_policy: 3,
+          cc_load_policy: 0, controls: free ? 1 : 0, disablekb: free ? 0 : 1, fs: free ? 1 : 0,
+        },
+        events: {
+          onReady: () => { if (!dead) setState('ready'); },
+          onError: (e) => { if (!dead) { setState('error'); if (onError) onError(e.data); } },
+          onStateChange: (e) => {
+            if (dead) return;
+            if (e.data === YT.PlayerState.PLAYING) setState('playing');
+            else if (e.data === YT.PlayerState.PAUSED) setState((s) => (s === 'error' ? s : 'paused'));
+            else if (e.data === YT.PlayerState.ENDED) { setState('paused'); if (onEnd) onEnd(); }
+          },
+        },
+      });
+      /* keep the fragment inside [start, end] */
+      timer = setInterval(() => {
+        const p = player.current;
+        if (!p || !p.getCurrentTime || free) return;
+        const t = p.getCurrentTime();
+        setPos(Math.max(0, t - start));
+        if (endRef.current && t >= endRef.current && p.getPlayerState() === YT.PlayerState.PLAYING) {
+          p.pauseVideo();
+          p.seekTo(start, true);
+          setPos(0);
+          if (onEnd) onEnd();
+        }
+      }, 120);
+    });
+    return () => {
+      dead = true;
+      clearInterval(timer);
+      try { if (player.current && player.current.destroy) player.current.destroy(); } catch (e) { /* already gone */ }
+      player.current = null;
+      if (holder.current) holder.current.innerHTML = '';
+    };
+    // eslint-disable-next-line
+  }, [videoId, free]);
+
+  React.useEffect(() => {
+    const p = player.current;
+    if (p && p.setPlaybackRate && state !== 'loading') p.setPlaybackRate(rate);
+  }, [rate, state]);
+
+  const api = {
+    play: () => { const p = player.current; if (p && p.playVideo) { if (!free && p.getCurrentTime() >= (end || Infinity)) p.seekTo(start, true); p.setPlaybackRate(rate); p.playVideo(); } },
+    replay: () => { const p = player.current; if (p && p.seekTo) { p.seekTo(start, true); p.setPlaybackRate(rate); p.playVideo(); } },
+    pause: () => { const p = player.current; if (p && p.pauseVideo) p.pauseVideo(); },
+    time: () => { const p = player.current; return p && p.getCurrentTime ? p.getCurrentTime() : 0; },
+  };
+  if (apiRef) apiRef.current = api;
+
+  return (
+    <div className={'yt' + (free ? ' yt-free' : '') + ' yt-' + state}>
+      <div className="yt-frame" ref={holder} />
+      {!free && state !== 'error' && (
+        <button type="button" className="yt-cover" aria-label={state === 'playing' ? 'Pause' : 'Play'}
+          onClick={() => (state === 'playing' ? api.pause() : api.play())}>
+          {state !== 'playing' && <span className="yt-play">{state === 'loading' ? <span className="spinner" /> : <Ic.Play width="26" height="26" />}</span>}
+        </button>
+      )}
+      {!free && state !== 'error' && (
+        <div className="yt-bar">
+          <span className="yt-time">{lwFormatTime(Math.min(pos, len)).replace(/\.\d$/, '')} / {lwFormatTime(len).replace(/\.\d$/, '')}</span>
+          <span className="yt-track"><span className="yt-fill" style={{ width: Math.min(100, (pos / len) * 100) + '%' }} /></span>
+        </div>
+      )}
+      {overlay && state !== 'error' && <div className="yt-overlay">{overlay}</div>}
+      {state === 'error' && <div className="yt-error"><Ic.CloudOff width="22" height="22" /><span>This clip is unavailable.</span></div>}
+    </div>
+  );
+}
+
+Object.assign(window, { lwParseYouTube, lwParseTime, lwFormatTime, YouTubeClip, VoicePicker, Marked, LessonBody, LessonForm, lwUnmark, CollocForm, Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck, lwCanRecognize, lwMatchSpoken });
