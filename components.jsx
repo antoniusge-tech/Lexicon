@@ -225,7 +225,7 @@ const Ic = {
    word forms that Reading highlights with. Returns the sentence split around the
    blank ({ before, after, matched }) or null if no form was found. */
 function lwWordForms(word) {
-  const w = String(word || '').toLowerCase().trim();
+  const w = window.lwNormLetters(String(word || '').toLowerCase().trim());
   if (!w) return [];
   const forms = new Set([w]);
   forms.add(w + 's');
@@ -245,10 +245,12 @@ function lwBlankSentence(sentence, word) {
   const forms = new Set(lwWordForms(word));
   if (!forms.size) return null;
   /* split keeping delimiters (non-letters) so we can re-join verbatim */
-  const parts = text.split(/([A-Za-z’']+)/);
+  const parts = text.split(new RegExp('([' + window.LW_LETTERS + '’\']+)'));
+  /* Romanian words change their ending a lot (casa, casei, casele): match by stem */
+  const ro = window.lwCurrentLang() === 'ro' && !/\s/.test(String(word).trim());
   let idx = -1;
   for (let i = 1; i < parts.length; i += 2) {
-    if (forms.has(parts[i].toLowerCase())) { idx = i; break; }
+    if (forms.has(window.lwNormLetters(parts[i].toLowerCase())) || (ro && window.readingTokensMatch(parts[i], word))) { idx = i; break; }
   }
   if (idx === -1) return null;
   return {
@@ -262,9 +264,43 @@ function lwBlankSentence(sentence, word) {
 function lwSpeak(text) {
   if (!text || !('speechSynthesis' in window)) return;
   window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = 'en-US';
-  window.speechSynthesis.speak(u);
+  window.speechSynthesis.speak(window.lwUtterance(text)); // the voice and speed chosen in Profile
+}
+
+/* ---------------- Voice picker (Profile) ---------------- */
+/* voices of the language being studied; Profile remounts it (key) when that changes */
+function VoicePicker() {
+  const [voices, setVoices] = React.useState(() => window.lwLangVoices());
+  const [cfg, setCfg] = React.useState(() => window.lwVoiceSettings());
+  React.useEffect(() => window.lwOnVoicesChanged(() => setVoices(window.lwLangVoices())), []);
+  const langInfo = window.lwLangInfo();
+  const set = (fields) => { window.lwSaveVoiceSettings(fields); setCfg(window.lwVoiceSettings()); };
+  const best = voices[0];
+  const label = (v) => v.name + (window.lwVoiceAccent(v) ? ' · ' + window.lwVoiceAccent(v) : '') + (window.lwVoiceScore(v) >= 30 ? ' ★' : '');
+  const chosen = cfg.voiceURI && voices.some((v) => v.voiceURI === cfg.voiceURI) ? cfg.voiceURI : '';
+  return (
+    <>
+      <div className="setting-row setting-row-wrap">
+        <span className="setting-label"><Ic.Speaker /> Voice</span>
+        <div className="voice-pick">
+          <select className="input input-sm" value={chosen} aria-label="Voice" onChange={(e) => set({ voiceURI: e.target.value })}>
+            <option value="">{best ? 'Auto (' + best.name + ')' : 'Auto'}</option>
+            {voices.map((v) => <option key={v.voiceURI} value={v.voiceURI}>{label(v)}</option>)}
+          </select>
+          <button type="button" className="btn btn-soft sm" onClick={() => lwSpeak(langInfo.sample)}><Ic.Play width="14" height="14" /> Test</button>
+        </div>
+      </div>
+      <div className="setting-row">
+        <span className="setting-label"><Ic.Clock /> Speech speed</span>
+        <div className="seg">
+          <button type="button" className={'seg-btn' + (cfg.rate === 0.8 ? ' on' : '')} onClick={() => set({ rate: 0.8 })}>Slow</button>
+          <button type="button" className={'seg-btn' + (cfg.rate !== 0.8 ? ' on' : '')} onClick={() => set({ rate: 1 })}>Normal</button>
+        </div>
+      </div>
+      <p className="voice-hint">★ — the best voices on this device. For more natural voices, download “Enhanced” or “Premium” {langInfo.name} voices in your phone or computer speech settings.</p>
+      {!voices.length && <p className="voice-hint">No {langInfo.name} voice found on this device — install one in your system speech settings.</p>}
+    </>
+  );
 }
 
 /* ---------------- Photo placeholder ---------------- */
@@ -865,8 +901,8 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
     <div className="form">
       <div className="form-grid">
         <label className="field">
-          <span className="field-label">English word</span>
-          <input className="input" value={word} autoFocus placeholder="e.g. journey"
+          <span className="field-label">{window.lwLangInfo().name} word</span>
+          <input className="input" value={word} autoFocus placeholder={'e.g. ' + window.lwLangInfo().ex.word}
             onChange={(e) => setWord(e.target.value)} />
         </label>
         <label className="field">
@@ -891,7 +927,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
       </div>
       <label className="field">
         <span className="field-label">Example sentence</span>
-        <input className="input" value={example} placeholder="e.g. We went on a long journey."
+        <input className="input" value={example} placeholder={'e.g. ' + window.lwLangInfo().ex.example}
           onChange={(e) => setExample(e.target.value)} />
       </label>
       <label className="field">
@@ -1013,9 +1049,10 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
   const setText = (t) => setImportState((s) => ({ ...s, text: t }));
   const setGroupId = (id) => setImportState((s) => ({ ...s, groupId: id }));
 
-  /* default to the first available category once groups load */
+  /* default to the first available category once groups load (and again after
+     a language switch, when the chosen group belongs to the other language) */
   React.useEffect(() => {
-    if (!groupId && leafGroups.length) setGroupId(leafGroups[0].id);
+    if ((!groupId || !leafGroups.some((g) => g.id === groupId)) && leafGroups.length) setGroupId(leafGroups[0].id);
     // eslint-disable-next-line
   }, [leafGroups, groupId]);
 
@@ -1116,7 +1153,7 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
           <input ref={fileInputRef} type="file" accept=".txt,text/plain" style={{ display: 'none' }} onChange={handleFile} />
         </div>
         <textarea className="input mono" rows={10} value={text} autoFocus disabled={loading}
-          placeholder={'journey | /ˈdʒɜː.ni/ | путешествие | We went on a long journey. | Мы отправились в долгое путешествие.\nbook || книга'}
+          placeholder={window.lwLangInfo().ex.import}
           onChange={(e) => setText(e.target.value)} />
         {error === 'bad-key' ? (
           <p className="field-hint">Your Gemini key is invalid.{' '}
@@ -1216,7 +1253,7 @@ function WeekChart({ days, goal }) {
    SpeechRecognition is missing (Firefox). Chrome sends the audio to Google. */
 const lwRecognitionClass = () => window.SpeechRecognition || window.webkitSpeechRecognition || null;
 const lwCanRecognize = () => !!lwRecognitionClass();
-const lwSpeechTokens = (t) => (String(t).toLowerCase().replace(/[’]/g, "'").match(/[a-z0-9']+/g) || []);
+const lwSpeechTokens = (t) => (window.lwNormLetters(String(t).toLowerCase()).replace(/[’]/g, "'").match(new RegExp('[' + window.LW_LETTERS + "0-9']+", 'g')) || []);
 
 /* which target tokens appear, in order, in what was heard */
 function lwMatchSpoken(target, heard) {
@@ -1254,7 +1291,7 @@ function PronunciationCheck({ target, label = 'Say it', passage = false }) {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     const Recognition = lwRecognitionClass();
     const rec = new Recognition();
-    rec.lang = 'en-US';
+    rec.lang = window.lwLangInfo().speech;
     rec.interimResults = false;
     rec.maxAlternatives = passage ? 1 : 3;
     rec.continuous = passage; // a passage can take several breaths; a word is one shot
@@ -1922,4 +1959,4 @@ function LessonForm({ initial, topics, onSave, onDelete, onCancel }) {
   );
 }
 
-Object.assign(window, { Marked, LessonBody, LessonForm, lwUnmark, CollocForm, Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck, lwCanRecognize, lwMatchSpoken });
+Object.assign(window, { VoicePicker, Marked, LessonBody, LessonForm, lwUnmark, CollocForm, Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck, lwCanRecognize, lwMatchSpoken });

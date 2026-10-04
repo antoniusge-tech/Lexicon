@@ -50,6 +50,15 @@ const LW_IMPORT_ERROR_MSG = {
   error: 'AI service error. Try again later.',
 };
 
+/* AI reading cards are kept per language (English keeps the original key) */
+const lwReadingKey = (lang) => (lang === 'en' ? LW_KEYS.reading : LW_KEYS.reading + '_' + lang);
+function lwLoadReading(lang) {
+  const saved = window.lwLoad(lwReadingKey(lang), null);
+  const cards = saved && Array.isArray(saved.cards) ? saved.cards : [];
+  const index = saved && Number.isInteger(saved.index) ? saved.index : 0;
+  return { lang, cards, index: cards.length ? Math.min(index, cards.length - 1) : 0, status: 'idle', error: null };
+}
+
 function App() {
   const [theme, setTheme] = useState(() => window.lwLoad(LW_KEYS.theme, 'light'));
   const [authUser, setAuthUser] = useState(undefined); // undefined = loading, null = signed out
@@ -82,7 +91,13 @@ function App() {
   const [groupsOpen, setGroupsOpen] = useState(false); // group picker sheet on Learn
   const [addTextOpen, setAddTextOpen] = useState(false);
   const [deleteText, setDeleteText] = useState(null); // text awaiting delete confirmation
-  const [selected, setSelected] = useState(() => window.lwLoad(LW_KEYS.selected, null) || []);
+  /* study groups picked on Learn, per language: { en: [groupId…], ro: […] }
+     (older devices saved a plain array — that was English) */
+  const [selectedByLang, setSelectedByLang] = useState(() => {
+    const saved = window.lwLoad(LW_KEYS.selected, null);
+    if (Array.isArray(saved)) return { en: saved };
+    return saved && typeof saved === 'object' ? saved : {};
+  });
   const [direction, setDirection] = useState(() => window.lwLoad(LW_KEYS.direction, 'en-ru'));
   const [studyStats, setStudyStats] = useState({ knownCount: 0, poolCount: 0, groupCount: 0 });
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
@@ -95,17 +110,7 @@ function App() {
      localStorage (см. эффект ниже), status/error — эфемерны. Какая сторона
      показана (тексты или настройки) определяется в ReadingView наличием
      карточек, отдельного флага нет. */
-  const [reading, setReading] = useState(() => {
-    const saved = window.lwLoad(window.LW_KEYS.reading, null);
-    const cards = saved && Array.isArray(saved.cards) ? saved.cards : [];
-    const index = saved && Number.isInteger(saved.index) ? saved.index : 0;
-    return {
-      cards,
-      index: cards.length ? Math.min(index, cards.length - 1) : 0,
-      status: 'idle',
-      error: null,
-    };
-  });
+  const [reading, setReading] = useState(() => lwLoadReading('en'));
   /* Import draft lives here so the generated/typed text survives leaving the
      import tab. status/error drive the AI-fill button + toasts, same as reading.
      groupId is chosen lazily once groups load (see effect below). */
@@ -130,11 +135,16 @@ function App() {
   const startReadingGeneration = useCallback((params) => {
     const { pool, levels, topicPrompts, lengthWords } = params;
     const myGen = ++genIdRef.current;
+    const genLang = window.lwCurrentLang();
     setReading((r) => ({ ...r, cards: [], index: 0, status: 'loading', error: null }));
     window.lwAiGenerateBatch(pool, levels, topicPrompts, lengthWords, window.LW_READING_BATCH)
       .then((cards) => {
         if (genIdRef.current !== myGen) return; // superseded by a newer request
-        setReading((r) => ({ ...r, cards, index: 0, status: 'idle', error: null }));
+        /* the user switched language meanwhile: keep the texts for that language */
+        setReading((r) => {
+          if (r.lang !== genLang) { window.lwSave(lwReadingKey(genLang), { cards, index: 0 }); return r; }
+          return { ...r, cards, index: 0, status: 'idle', error: null };
+        });
         pushToast({
           kind: 'success',
           title: 'Texts ready (' + cards.length + ')',
@@ -219,7 +229,12 @@ function App() {
     return window.lwWatchUserDoc(authUser.uid, setUserDoc);
   }, [authUser]);
 
-  const lang = userDoc ? userDoc.lang : null;
+  /* languages this user learns and the one studied now. Everything below —
+     groups, words, texts, collocations, lessons — is scoped to `lang`. Set before
+     any child renders, so AI prompts, speech and new docs follow it too. */
+  const langs = window.lwUserLangs(userDoc);
+  const lang = userDoc && langs.includes(userDoc.lang) ? userDoc.lang : (langs[0] || null);
+  window.lwSetCurrentLang(lang || 'en');
   /* write some of the user's own profile fields (lang, dailyGoal, cefr, avatar) */
   const updateProfile = useCallback((fields) => {
     if (!authUser) return Promise.resolve();
@@ -228,7 +243,34 @@ function App() {
       pushToast({ kind: 'error', title: 'Could not save your profile', msg: (e && e.message) || String(e) });
     });
   }, [authUser, pushToast]);
-  const setLang = useCallback((l) => { updateProfile({ lang: l }); }, [updateProfile]);
+  /* switch to another language (adding it to the user's list if it is new). The
+     open book, lesson and Library group filter belong to the old language. */
+  const setLang = useCallback((l) => {
+    if (l === lang) return;
+    setNav((n) => ({ ...n, reading: { view: 'home' }, grammar: { view: 'home' } }));
+    window.lwSave(LW_KEYS.library, { ...(window.lwLoad(LW_KEYS.library, null) || {}), groupId: '' });
+    updateProfile({ lang: l, langs: langs.includes(l) ? langs : [...langs, l] });
+  }, [lang, langs, updateProfile]);
+  /* first launch: the languages picked; the first one is studied first */
+  const chooseLangs = useCallback((list) => { updateProfile({ langs: list, lang: list[0] }); }, [updateProfile]);
+  /* stop learning a language: its words stay in Firestore and come back if it is added again */
+  const removeLang = useCallback((l) => {
+    const rest = langs.filter((x) => x !== l);
+    if (!rest.length) return;
+    if (l === lang) setNav((n) => ({ ...n, reading: { view: 'home' }, grammar: { view: 'home' } }));
+    updateProfile({ langs: rest, lang: l === lang ? rest[0] : lang });
+  }, [lang, langs, updateProfile]);
+
+  /* the AI reading cards of the language studied now */
+  useEffect(() => {
+    if (lang && reading.lang !== lang) setReading(lwLoadReading(lang));
+  }, [lang, reading.lang]);
+
+  const selected = (lang && selectedByLang[lang]) || [];
+  const setSelected = useCallback((v) => setSelectedByLang((m) => {
+    const cur = m[lang] || [];
+    return { ...m, [lang]: typeof v === 'function' ? v(cur) : v };
+  }), [lang]);
 
   /* online/offline banner; Firestore keeps working from its cache meanwhile */
   useEffect(() => {
@@ -328,44 +370,57 @@ function App() {
 
   /* persistence (local-only settings) */
   useEffect(() => { document.documentElement.dataset.theme = theme; window.lwSave(LW_KEYS.theme, theme); }, [theme]);
-  useEffect(() => { window.lwSave(LW_KEYS.selected, selected); }, [selected]);
+  useEffect(() => { window.lwSave(LW_KEYS.selected, selectedByLang); }, [selectedByLang]);
   useEffect(() => { window.lwSave(LW_KEYS.direction, direction); }, [direction]);
   useEffect(() => { window.lwSave(LW_KEYS.nav, nav); }, [nav]);
   /* персистим пачку карточек чтения (без эфемерных status/error) */
   useEffect(() => {
-    window.lwSave(LW_KEYS.reading, { cards: reading.cards, index: reading.index });
-  }, [reading.cards, reading.index]);
+    window.lwSave(lwReadingKey(reading.lang), { cards: reading.cards, index: reading.index });
+  }, [reading.lang, reading.cards, reading.index]);
 
-  /* default selection: everything, once groups load (only if user never picked) */
-  const hasSavedSelection = useRef(window.lwLoad(LW_KEYS.selected, null) != null);
+  /* content of the language studied now (docs without `lang` are English) */
+  const inLang = useCallback((d) => window.lwDocLang(d) === lang, [lang]);
+  const scopedGroups = useMemo(() => groups.filter(inLang), [groups, inLang]);
+  const scopedWords = useMemo(() => words.filter(inLang), [words, inLang]);
+  const scopedTexts = useMemo(() => texts.filter(inLang), [texts, inLang]);
+  const scopedCollocations = useMemo(() => collocations.filter(inLang), [collocations, inLang]);
+  const scopedLessons = useMemo(() => lessons.filter(inLang), [lessons, inLang]);
+
+  /* default selection: every top-level group of this language, once its groups
+     load (only if the user never picked for this language) */
   useEffect(() => {
-    if (!hasSavedSelection.current && groups.length) {
-      setSelected(groups.filter((g) => !g.parentId).map((g) => g.id));
+    if (lang && selectedByLang[lang] == null && scopedGroups.length) {
+      setSelected(scopedGroups.filter((g) => !g.parentId).map((g) => g.id));
     }
-  }, [groups]);
+  }, [lang, selectedByLang, scopedGroups, setSelected]);
 
-  /* keep selection valid if a group is deleted (skip until groups have loaded) */
+  /* keep selections valid if a group is deleted (skip until groups have loaded) */
   useEffect(() => {
     if (!groups.length) return;
-    setSelected((sel) => sel.filter((id) => groups.some((g) => g.id === id)));
+    setSelectedByLang((m) => {
+      const out = {};
+      Object.keys(m).forEach((l) => { out[l] = (m[l] || []).filter((id) => groups.some((g) => g.id === id)); });
+      return out;
+    });
   }, [groups]);
 
   const groupById = useMemo(() => Object.fromEntries(groups.map((g) => [g.id, g])), [groups]);
   const countByGroup = useMemo(() => {
     const m = {};
-    groups.forEach((g) => { m[g.id] = 0; });
-    words.forEach((w) => { if (m[w.groupId] != null) m[w.groupId]++; });
+    scopedGroups.forEach((g) => { m[g.id] = 0; });
+    scopedWords.forEach((w) => { if (m[w.groupId] != null) m[w.groupId]++; });
     return m;
-  }, [groups, words]);
+  }, [scopedGroups, scopedWords]);
 
   /* streak / goal / XP / review queue size for the footer (dashboard comes in stage 3).
+     Streak, goal and XP count every language; due and status counts only this one's words.
      Progress for words that no longer exist (e.g. a shared word an admin deleted) is ignored. */
   const stats = useMemo(() => {
     const today = activity[window.lwLocalDate(now)] || {};
     const xp = window.lwTotalXp(activity);
-    const wordIds = new Set(words.map((w) => w.id));
+    const wordIds = new Set(scopedWords.map((w) => w.id));
     const dueCount = Object.values(progress).filter((p) => wordIds.has(p.wordId) && p.due <= now).length;
-    const statusCounts = window.lwStatusCounts(progress, words, now);
+    const statusCounts = window.lwStatusCounts(progress, scopedWords, now);
     return {
       streak: window.lwStreak(activity, now),
       todayAnswers: today.answers || 0,
@@ -377,10 +432,8 @@ function App() {
       totalMs: window.lwTotalMs(activity),
       week: window.lwLastDays(activity, now, 7),
     };
-  }, [activity, progress, words, now, dailyGoal]);
+  }, [activity, progress, scopedWords, now, dailyGoal]);
 
-  const scopedGroups = groups;
-  const scopedWords = words;
   const scopedSelected = selected;
   const scopedCountByGroup = countByGroup;
 
@@ -410,13 +463,13 @@ function App() {
      found by name among their own leaf groups with the same `shared`, created
      on first use. Resolves to the group id. */
   const ensureAutoGroup = useCallback(async (name, color, shared) => {
-    const existing = window.lwLeafGroups(groups).find((g) => g.name === name && g.userId === authUser.uid && !!g.shared === shared);
+    const existing = window.lwLeafGroups(scopedGroups).find((g) => g.name === name && g.userId === authUser.uid && !!g.shared === shared);
     if (existing) return existing.id;
     const id = window.lwUid() + window.lwUid();
     await window.lwSetDoc(window.LW_COLLECTIONS.groups,
       { id, name, color, userId: authUser.uid, username: userDoc && userDoc.username, shared });
     return id;
-  }, [authUser, userDoc, groups]);
+  }, [authUser, userDoc, scopedGroups]);
 
   /* "+ Add to cards" from the reader. groupId may be LW_READING_GROUP: then the
      user's "From reading" group is used, created on first use. Reader words stay
@@ -462,7 +515,7 @@ function App() {
     return doc;
   }, [authUser, userDoc, ensureAutoGroup]);
 
-  const wordIndex = useMemo(() => window.lwWordsIndex(words), [words]);
+  const wordIndex = useMemo(() => window.lwWordsIndex(scopedWords), [scopedWords]);
 
   /* Reading time counts as practice time (activity.ms, no answers/XP): every
      30 s while a text is open, the page is visible and the user did something
@@ -495,10 +548,10 @@ function App() {
   }, [pushToast]);
   /* admin: save a lesson; a new one (or one moved to another topic) goes last in its topic */
   const saveLesson = useCallback((lesson, publish) => {
-    const prev = lessons.find((l) => l.id === lesson.id);
+    const prev = scopedLessons.find((l) => l.id === lesson.id);
     const sameTopic = (l) => (l.topic || '').trim().toLowerCase() === lesson.topic.toLowerCase() && l.id !== lesson.id;
     const moved = !prev || (prev.topic || '').trim().toLowerCase() !== lesson.topic.toLowerCase();
-    const order = moved ? Math.max(0, ...lessons.filter(sameTopic).map((l) => l.order || 0)) + 10 : (prev.order || 0);
+    const order = moved ? Math.max(0, ...scopedLessons.filter(sameTopic).map((l) => l.order || 0)) + 10 : (prev.order || 0);
     const doc = {
       ...lesson, id: lesson.id || window.lwUid() + window.lwUid(), order, published: !!publish,
       userId: (prev && prev.userId) || authUser.uid, username: (prev && prev.username) || userDoc.username, shared: true,
@@ -508,7 +561,7 @@ function App() {
     window.lwSetDoc(window.LW_COLLECTIONS.lessons, doc)
       .then(() => pushToast({ kind: 'success', title: publish ? 'Lesson published' : 'Draft saved', msg: doc.title }))
       .catch(lessonError('Could not save the lesson'));
-  }, [lessons, authUser, userDoc, setGrammar, pushToast, lessonError]);
+  }, [scopedLessons, authUser, userDoc, setGrammar, pushToast, lessonError]);
   /* admin: move a lesson up/down within its topic (orders are rewritten as 10, 20, …) */
   const moveLesson = useCallback((topicLessons, index, dir) => {
     const j = index + dir;
@@ -562,7 +615,7 @@ function App() {
     return <ChooseUsernameView email={authUser.email} />;
   }
   if (!lang) {
-    return <LanguageSelectView onSelect={setLang} />;
+    return <LanguageSelectView onSelect={chooseLangs} />;
   }
 
   const { tab, learnMode } = nav;
@@ -577,7 +630,7 @@ function App() {
     <div className="app">
       <NavDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}
         tab={tab} learnMode={learnMode} goTo={goTo} stats={stats}
-        user={userDoc} isAdmin={isAdmin} wordCount={scopedWords.length}
+        user={userDoc} isAdmin={isAdmin} wordCount={scopedWords.length} lang={lang} langs={langs} setLang={setLang}
         theme={theme} onToggleTheme={toggleTheme}
         onGeminiKey={() => { setDrawerOpen(false); setGeminiKeyOpen(true); }} />
       <div className="app-main">
@@ -587,7 +640,8 @@ function App() {
             <Ic.CloudOff width="16" height="16" /> Offline — answers will sync when you're back.
           </div>
         )}
-        <main className={'content content-' + tab}>
+        {/* keyed by language: every view starts fresh (filters, decks, open sheets) after a switch */}
+        <main key={lang} className={'content content-' + tab}>
           {tab === 'learn' ? (
             <LearnView mode={learnMode} setMode={(m) => goTo(m)} stats={stats} studyStats={studyStats}
               selectedCount={scopedSelected.length} onPickGroups={() => setGroupsOpen(true)}>
@@ -598,14 +652,14 @@ function App() {
               ) : learnMode === 'fill' ? (
                 <FillView {...learnProps} selected={scopedSelected} />
               ) : learnMode === 'colloc' ? (
-                <CollocView key="colloc" entries={collocations} words={words} progress={progress} now={now}
+                <CollocView key="colloc" entries={scopedCollocations} words={scopedWords} progress={progress} now={now}
                   recordAnswer={recordAnswer} goCatalog={() => goTo('collocations')} goStudy={() => goTo('cards')} />
               ) : (
                 <StudyView {...learnProps} groups={scopedGroups} selected={scopedSelected} onStatsChange={setStudyStats} />
               )}
             </LearnView>
-          ) : tab === 'reading' && nav.reading.view === 'reader' && texts.some((t) => t.id === nav.reading.textId) ? (
-            <ReaderView key={nav.reading.textId} text={texts.find((t) => t.id === nav.reading.textId)}
+          ) : tab === 'reading' && nav.reading.view === 'reader' && scopedTexts.some((t) => t.id === nav.reading.textId) ? (
+            <ReaderView key={nav.reading.textId} text={scopedTexts.find((t) => t.id === nav.reading.textId)}
               prog={readingProgress[nav.reading.textId]} uid={authUser.uid}
               wordIndex={wordIndex} progress={progress} now={now} groups={scopedGroups} addWord={addWordFromReading}
               onBack={() => goTo('reading-home')} />
@@ -613,26 +667,26 @@ function App() {
             <ReadingView groups={scopedGroups} words={scopedWords} countByGroup={scopedCountByGroup}
               reading={reading} setReading={setReading}
               startGenerate={startReadingGeneration}
-              defaultLevel={userDoc.cefr}
+              defaultLevel={userDoc[window.lwCefrField(lang)]}
               wordIndex={wordIndex} progress={progress} now={now} addWord={addWordFromReading}
               onBack={() => goTo('reading-home')}
               goLibrary={() => goTo('library')} />
           ) : tab === 'reading' ? (
-            <ReadingHome texts={texts} progressByText={readingProgress} userId={authUser.uid} isAdmin={isAdmin}
+            <ReadingHome texts={scopedTexts} progressByText={readingProgress} userId={authUser.uid} isAdmin={isAdmin}
               aiReady={(reading.cards || []).length}
               onOpen={(id) => setNav((n) => ({ ...n, reading: { view: 'reader', textId: id } }))}
               onOpenAi={() => goTo('ai-texts')}
               onAdd={() => setAddTextOpen(true)}
               onDelete={(t) => setDeleteText(t)} />
           ) : tab === 'grammar' ? (
-            <GrammarScreen nav={nav.grammar} setGrammar={setGrammar} lessons={lessons} progressBy={lessonProgress}
-              isAdmin={isAdmin} userLevel={userDoc.cefr} recordAnswer={recordAnswer}
+            <GrammarScreen nav={nav.grammar} setGrammar={setGrammar} lessons={scopedLessons} progressBy={lessonProgress}
+              isAdmin={isAdmin} userLevel={userDoc[window.lwCefrField(lang)]} recordAnswer={recordAnswer}
               saveLesson={saveLesson} moveLesson={moveLesson} saveProgress={saveLessonProgress} finishTest={finishLessonTest}
               deleteLesson={(l) => { setGrammar({ view: 'home' }); window.lwDeleteDoc(window.LW_COLLECTIONS.lessons, l.id).catch(lessonError('Could not delete the lesson')); }} />
           ) : tab === 'library' ? (
             <LibraryView groups={scopedGroups} words={scopedWords} userId={authUser.uid} username={userDoc.username} isAdmin={isAdmin}
               progress={progress} now={now} direction={direction} recordAnswer={recordAnswer}
-              collocations={collocations} saveCollocation={saveCollocation} pushToast={pushToast}
+              collocations={scopedCollocations} saveCollocation={saveCollocation} pushToast={pushToast}
               goImport={() => goTo('import')} />
           ) : tab === 'import' ? (
             <ImportView groups={scopedGroups} importState={importState} setImportState={setImportState}
@@ -646,7 +700,7 @@ function App() {
               pushToast={pushToast} goLearn={() => goTo('cards')}
               theme={theme} onToggleTheme={toggleTheme}
               direction={direction} setDirection={setDirection}
-              lang={lang} setLang={setLang}
+              lang={lang} langs={langs} setLang={setLang} removeLang={removeLang}
               onGeminiKey={() => setGeminiKeyOpen(true)}
               onLogout={() => window.lwLogout()}
               onDeleteAccount={() => setDeleteAccountOpen(true)} />
@@ -810,7 +864,7 @@ function Avatar({ user, className = '' }) {
   return <span className={'avatar ' + className}>{((user && user.username) || '?').slice(0, 1).toUpperCase()}</span>;
 }
 
-function NavDrawer({ open, onClose, tab, learnMode, goTo, stats, user, isAdmin, wordCount, theme, onToggleTheme, onGeminiKey }) {
+function NavDrawer({ open, onClose, tab, learnMode, goTo, stats, user, isAdmin, wordCount, lang, langs, setLang, theme, onToggleTheme, onGeminiKey }) {
   useEffect(() => {
     if (!open) return;
     const h = (e) => { if (e.key === 'Escape') onClose(); };
@@ -834,7 +888,7 @@ function NavDrawer({ open, onClose, tab, learnMode, goTo, stats, user, isAdmin, 
           <div className="drawer-logo"><Ic.Library /></div>
           <div className="drawer-brand">
             <span className="brand-name">Lexicon</span>
-            <span className="drawer-sub">English lab</span>
+            <span className="drawer-sub">{window.lwLangInfo(lang).name} lab</span>
           </div>
           <button className="icon-btn drawer-close" onClick={onClose} aria-label="Close menu"><Ic.Close /></button>
         </div>
@@ -853,6 +907,18 @@ function NavDrawer({ open, onClose, tab, learnMode, goTo, stats, user, isAdmin, 
             <span className={'streak-badge' + (activeToday ? ' on' : '')}>{activeToday ? 'Active' : 'Study today'}</span>
           </span>
         </button>
+
+        {langs.length > 1 && (
+          <div className="seg drawer-langs" role="group" aria-label="Language you learn">
+            {langs.map((code) => {
+              const l = window.lwLangInfo(code);
+              return (
+                <button key={code} type="button" className={'seg-btn' + (lang === code ? ' on' : '')}
+                  aria-pressed={lang === code} onClick={() => setLang(code)}>{l.flag} {l.name}</button>
+              );
+            })}
+          </div>
+        )}
 
         <nav className="drawer-nav">
           {item('cards', Ic.Learn, 'Learn', learnOn)}
@@ -963,7 +1029,7 @@ const LW_STATUS_META = [
 ];
 
 function ProfileView({ user, stats, updateProfile, authInfo, refreshAuthInfo, pushToast, goLearn,
-  theme, onToggleTheme, direction, setDirection, lang, setLang, onGeminiKey, onLogout, onDeleteAccount }) {
+  theme, onToggleTheme, direction, setDirection, lang, langs, setLang, removeLang, onGeminiKey, onLogout, onDeleteAccount }) {
   const fileRef = useRef(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
@@ -972,7 +1038,10 @@ function ProfileView({ user, stats, updateProfile, authInfo, refreshAuthInfo, pu
   const levelStart = 50 * (stats.level - 1) ** 2;
   const levelEnd = 50 * stats.level ** 2;
   const levelPct = Math.round(((stats.xp - levelStart) / (levelEnd - levelStart)) * 100);
-  const langInfo = LW_LANGUAGES.find((l) => l.code === lang);
+  const langInfo = window.lwLangInfo(lang);
+  const cefrKey = window.lwCefrField(lang);
+  const cefrTargetKey = window.lwCefrField(lang, true);
+  const otherLangs = LW_LANGUAGES.filter((l) => !langs.includes(l.code));
   const since = user.createdAt && user.createdAt.toDate
     ? user.createdAt.toDate().toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : null;
   const left = Math.max(0, stats.goal - stats.todayAnswers);
@@ -1028,8 +1097,8 @@ function ProfileView({ user, stats, updateProfile, authInfo, refreshAuthInfo, pu
         <h1 className="profile-name">{user.username}</h1>
         <p className="profile-handle">@{user.username.toLowerCase()}{since ? ' · Member since ' + since : ''}</p>
         <span className="learning-chip">
-          {langInfo ? langInfo.flag + ' Learning ' + langInfo.name : 'Learning'}
-          {user.cefr ? ' · ' + user.cefr : ''}{user.cefrTarget ? ' → ' + user.cefrTarget : ''}
+          {langInfo.flag + ' Learning ' + langInfo.name}
+          {user[cefrKey] ? ' · ' + user[cefrKey] : ''}{user[cefrTargetKey] ? ' → ' + user[cefrTargetKey] : ''}
         </span>
         {user.avatar && (
           <button type="button" className="btn btn-ghost sm" onClick={() => updateProfile({ avatar: '' })}>Remove photo</button>
@@ -1095,14 +1164,14 @@ function ProfileView({ user, stats, updateProfile, authInfo, refreshAuthInfo, pu
 
       {/* CEFR: self-assessed level and target */}
       <section className="dash-card">
-        <h2 className="dash-title">English level</h2>
+        <h2 className="dash-title">{langInfo.name} level</h2>
         <p className="dash-sub">Your level sets the default difficulty of reading texts.</p>
         <div className="cefr-row">
           <span className="cefr-label">I'm at</span>
           <div className="cefr-pills">
             {window.LW_CEFR_ALL.map((lv) => (
-              <button key={lv} type="button" className={'cefr-pill' + (user.cefr === lv ? ' on' : '')}
-                onClick={() => updateProfile({ cefr: lv })}>{lv}</button>
+              <button key={lv} type="button" className={'cefr-pill' + (user[cefrKey] === lv ? ' on' : '')}
+                onClick={() => updateProfile({ [cefrKey]: lv })}>{lv}</button>
             ))}
           </div>
         </div>
@@ -1110,8 +1179,8 @@ function ProfileView({ user, stats, updateProfile, authInfo, refreshAuthInfo, pu
           <span className="cefr-label">Goal</span>
           <div className="cefr-pills">
             {window.LW_CEFR_ALL.map((lv) => (
-              <button key={lv} type="button" className={'cefr-pill' + (user.cefrTarget === lv ? ' on' : '')}
-                onClick={() => updateProfile({ cefrTarget: lv })}>{lv}</button>
+              <button key={lv} type="button" className={'cefr-pill' + (user[cefrTargetKey] === lv ? ' on' : '')}
+                onClick={() => updateProfile({ [cefrTargetKey]: lv })}>{lv}</button>
             ))}
           </div>
         </div>
@@ -1138,19 +1207,36 @@ function ProfileView({ user, stats, updateProfile, authInfo, refreshAuthInfo, pu
         <div className="setting-row">
           <span className="setting-label"><Ic.Swap /> Card direction</span>
           <div className="seg">
-            <button type="button" className={'seg-btn' + (direction === 'en-ru' ? ' on' : '')} onClick={() => setDirection('en-ru')}>EN → RU</button>
-            <button type="button" className={'seg-btn' + (direction === 'ru-en' ? ' on' : '')} onClick={() => setDirection('ru-en')}>RU → EN</button>
+            <button type="button" className={'seg-btn' + (direction === 'en-ru' ? ' on' : '')} onClick={() => setDirection('en-ru')}>{lang.toUpperCase()} → RU</button>
+            <button type="button" className={'seg-btn' + (direction === 'ru-en' ? ' on' : '')} onClick={() => setDirection('ru-en')}>RU → {lang.toUpperCase()}</button>
           </div>
         </div>
+        {'speechSynthesis' in window && <VoicePicker key={lang} />}
         <div className="setting-row setting-row-wrap">
           <span className="setting-label"><Ic.Book /> Language you learn</span>
           <div className="seg">
-            {LW_LANGUAGES.map((l) => (
-              <button key={l.code} type="button" className={'seg-btn' + (lang === l.code ? ' on' : '')}
-                onClick={() => setLang(l.code)} title={l.name}>{l.flag} {l.code.toUpperCase()}</button>
-            ))}
+            {langs.map((code) => {
+              const l = window.lwLangInfo(code);
+              return (
+                <button key={code} type="button" className={'seg-btn' + (lang === code ? ' on' : '')}
+                  aria-pressed={lang === code} onClick={() => setLang(code)} title={l.name}>{l.flag} {l.name}</button>
+              );
+            })}
           </div>
         </div>
+        {otherLangs.map((l) => (
+          <button key={l.code} type="button" className="setting-row" onClick={() => setLang(l.code)}>
+            <span className="setting-label"><Ic.Plus /> Also learn {l.name}</span>
+            <span className="setting-value">{l.flag} <Ic.ChevronRight width="16" height="16" /></span>
+          </button>
+        ))}
+        {langs.length > 1 && (
+          <button type="button" className="setting-row" onClick={() => {
+            if (window.confirm('Stop learning ' + langInfo.name + '? Your ' + langInfo.name + ' words and progress are kept and come back if you add it again.')) removeLang(lang);
+          }}>
+            <span className="setting-label"><Ic.Close /> Stop learning {langInfo.name}</span>
+          </button>
+        )}
       </section>
 
       <h2 className="section-label">App</h2>
@@ -1677,7 +1763,7 @@ function FillView({ words, selected, groupById, progress: wordProgress, recordAn
 
 /* split the highlight phrase into meaningful sub-words (drops filler like "on") */
 function readingPhraseTokens(highlight) {
-  return String(highlight || '').match(/[A-Za-z0-9’']+/g) || [];
+  return String(highlight || '').match(new RegExp('[' + window.LW_LETTERS + '0-9’\']+', 'g')) || [];
 }
 
 /* render a sentence, wrapping tokens that match the active highlighted word/phrase in <mark>.
@@ -1688,7 +1774,7 @@ function ReadingSentenceText({ text, highlight }) {
   if (target.length === 0) return text;
 
   /* split keeping delimiters so we can re-join verbatim */
-  const parts = String(text).split(/([A-Za-z0-9’']+)/);
+  const parts = String(text).split(new RegExp('([' + window.LW_LETTERS + '0-9’\']+)'));
   /* map word-part indices (odd positions) to their token order */
   const wordIdx = [];
   for (let i = 1; i < parts.length; i += 2) wordIdx.push(i);
@@ -2196,7 +2282,7 @@ function WordSheet({ token, sentence, sentenceTr, wordIndex, progress, now, grou
 /* cover placeholder: gradient by level + the title's initials */
 function TextCover({ text }) {
   const band = (text.level || 'B')[0];
-  const initials = (text.title || '?').split(/\s+/).filter((w) => /[A-Za-z]/.test(w)).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+  const initials = (text.title || '?').split(/\s+/).filter((w) => new RegExp('[' + window.LW_LETTERS + ']').test(w)).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
   return <span className={'tcover tcover-' + band}>{initials}</span>;
 }
 
@@ -2477,9 +2563,7 @@ function ReaderView({ text, prog, uid, wordIndex, progress, now, groups, addWord
     if (speaking && speaking.para === pi) { setSpeaking(null); return; }
     const list = sentences[pi];
     list.forEach((s, si) => {
-      const u = new SpeechSynthesisUtterance(s);
-      u.lang = 'en-US';
-      u.rate = 0.9;
+      const u = window.lwUtterance(s, 0.9); // chosen voice, a bit slower for reading along
       u.onstart = () => setSpeaking({ para: pi, sent: si });
       if (si === list.length - 1) u.onend = () => setSpeaking((cur) => (cur && cur.para === pi && cur.sent === si ? null : cur));
       window.speechSynthesis.speak(u);
@@ -2751,12 +2835,14 @@ function AdminAllDataView({ data, onChanged }) {
   const ownerLabel = (item) => item.username || item.userId || '—';
 
   const saveWord = (w) => {
-    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId: wordModal.initial.userId, username: wordModal.initial.username, shared: wordModal.initial.shared });
+    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId: wordModal.initial.userId, username: wordModal.initial.username, shared: wordModal.initial.shared,
+      lang: window.lwDocLang(groups.find((g) => g.id === w.groupId) || wordModal.initial) });
     setWordModal(null);
     onChanged();
   };
   const saveGroup = (g) => {
-    window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, userId: groupModal.initial.userId, username: groupModal.initial.username, shared: groupModal.initial.shared });
+    window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, userId: groupModal.initial.userId, username: groupModal.initial.username, shared: groupModal.initial.shared,
+      lang: window.lwDocLang(groups.find((x) => x.id === (g.parentId || g.id)) || groupModal.initial) });
     setGroupModal(null);
     onChanged();
   };
@@ -2774,18 +2860,19 @@ function AdminAllDataView({ data, onChanged }) {
     onChanged();
   };
 
+  /* admins see every language here: writes keep each doc's own (legacy docs: English) */
   const makeWordShared = (w) => {
-    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, shared: true });
+    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, shared: true, lang: window.lwDocLang(w) });
     onChanged();
   };
   const makeGroupShared = (g) => {
     const subGroupIds = groups.filter((sg) => sg.parentId === g.id).map((sg) => sg.id);
     [g, ...groups.filter((sg) => subGroupIds.includes(sg.id))].forEach((grp) => {
-      window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...grp, shared: true });
+      window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...grp, shared: true, lang: window.lwDocLang(grp) });
     });
     [g.id, ...subGroupIds].forEach((groupId) => {
       (wordsByGroup[groupId] || []).forEach((w) => {
-        window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, shared: true });
+        window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, shared: true, lang: window.lwDocLang(w) });
       });
     });
     onChanged();
@@ -4084,21 +4171,30 @@ function GroupForm({ initial, parentGroup, onSave, onCancel }) {
   );
 }
 
-/* ---------------- Language select (first launch) ---------------- */
+/* ---------------- Language select (first launch) ----------------
+   One language or several; the first picked is studied first. */
 function LanguageSelectView({ onSelect }) {
+  const [picked, setPicked] = useState([]);
+  const toggle = (code) => setPicked((p) => (p.includes(code) ? p.filter((c) => c !== code) : [...p, code]));
   return (
     <div className="lang-select">
       <div className="lang-select-card">
-        <p className="lang-select-title">Which language are you learning?</p>
-        <p className="lang-select-sub">You can change this later in Profile.</p>
+        <p className="lang-select-title">Which languages are you learning?</p>
+        <p className="lang-select-sub">Pick one or both. You can switch between them or add one later in Profile.</p>
         <div className="lang-select-grid">
           {LW_LANGUAGES.map((l) => (
-            <button key={l.code} className="lang-opt" onClick={() => onSelect(l.code)} type="button">
+            <button key={l.code} className={'lang-opt' + (picked.includes(l.code) ? ' on' : '')} type="button"
+              aria-pressed={picked.includes(l.code)} onClick={() => toggle(l.code)}>
+              {picked.includes(l.code) && <span className="lang-opt-check"><Ic.Check width="14" height="14" /></span>}
               <span className="lang-opt-flag">{l.flag}</span>
               <span className="lang-opt-name">{l.name}</span>
+              <span className="lang-opt-native">{l.native}</span>
             </button>
           ))}
         </div>
+        <button type="button" className="btn btn-primary lg lang-select-go" disabled={!picked.length} onClick={() => onSelect(picked)}>
+          Continue
+        </button>
       </div>
     </div>
   );

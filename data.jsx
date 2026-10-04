@@ -12,6 +12,7 @@ const LW_KEYS = {
   readerGroup: 'lw_reader_group_v1', // group that "+ Add to cards" in the reader puts words into
   trCache: 'lw_reader_tr_v1', // {key: [ru sentences]} — paragraph translations, newest last
   grammar: 'lw_grammar_v1', // {level, saved} — Grammar list filters
+  voice: 'lw_voice_v1', // {voiceURI, rate} — speech voice for this device ('' = auto)
   reading: 'lw_reading_cards_v1', // последняя пачка сгенерированных текстов-карточек
 };
 
@@ -21,12 +22,44 @@ const LW_KEYS = {
    запрашивает новую генерацию (автодогрузки нет). */
 const LW_READING_BATCH = 3;
 
+/* Languages a user can learn. Every content doc (group, word, collocation,
+   text, lesson) carries `lang`; docs without it predate languages and are English.
+   ru* are the Russian forms used in Gemini prompts; speech is the BCP-47 tag for
+   speech synthesis/recognition; wiki is the Wikipedia edition for photo lookup. */
 const LW_LANGUAGES = [
-  { code: 'en', name: 'English', flag: '🇬🇧' },
-  { code: 'de', name: 'Deutsch', flag: '🇩🇪' },
-  { code: 'ro', name: 'Română', flag: '🇷🇴' },
-  { code: 'es', name: 'Español', flag: '🇪🇸' },
+  { code: 'en', name: 'English', native: 'English', flag: '🇬🇧', speech: 'en-US', wiki: 'en',
+    ru: 'английский', ruGen: 'английского', ruGenPl: 'английских', ruPrep: 'английском',
+    sample: 'Hello! This is how your English words will sound.',
+    ex: { word: 'journey', example: 'We went on a long journey.',
+      import: 'journey | /ˈdʒɜː.ni/ | путешествие | We went on a long journey. | Мы отправились в долгое путешествие.\nbook || книга' } },
+  { code: 'ro', name: 'Romanian', native: 'Română', flag: '🇷🇴', speech: 'ro-RO', wiki: 'ro',
+    ru: 'румынский', ruGen: 'румынского', ruGenPl: 'румынских', ruPrep: 'румынском',
+    sample: 'Bună ziua! Așa vor suna cuvintele tale în română.',
+    ex: { word: 'călătorie', example: 'Am făcut o călătorie lungă.',
+      import: 'călătorie | /kə.lə.toˈri.e/ | путешествие | Am făcut o călătorie lungă. | Мы совершили долгое путешествие.\ncarte || книга' } },
 ];
+const LW_LANG_CODES = LW_LANGUAGES.map((l) => l.code);
+
+/* the language of a content doc (legacy docs have none: English) */
+const lwDocLang = (d) => (d && d.lang) || 'en';
+
+/* the languages a user learns, from their profile: `langs` (newer accounts) or
+   the single legacy `lang`; unsupported codes are dropped */
+function lwUserLangs(user) {
+  const list = user && Array.isArray(user.langs) ? user.langs : (user && user.lang ? [user.lang] : []);
+  return LW_LANG_CODES.filter((c) => list.includes(c));
+}
+
+/* The language currently studied. App sets it from the profile before rendering,
+   so AI prompts, speech and new docs (lwSetDoc) follow it without passing it around. */
+let lwLangCode = 'en';
+function lwSetCurrentLang(code) { lwLangCode = LW_LANG_CODES.includes(code) ? code : 'en'; }
+function lwCurrentLang() { return lwLangCode; }
+function lwLangInfo(code) { return LW_LANGUAGES.find((l) => l.code === (code || lwLangCode)) || LW_LANGUAGES[0]; }
+
+/* Self-assessed CEFR level and target are per language: English keeps the
+   original cefr/cefrTarget fields, others use cefr_<code>/cefrTarget_<code>. */
+const lwCefrField = (lang, target) => (target ? 'cefrTarget' : 'cefr') + (lang === 'en' ? '' : '_' + lang);
 
 const lwUid = () => Math.random().toString(36).slice(2, 9);
 
@@ -116,7 +149,7 @@ async function lwAutoFindPhotoOpenverse(term) {
 
 /* Fallback: Wikipedia's REST summary API (no API key, CORS-enabled) */
 async function lwAutoFindPhotoWikipedia(term) {
-  const res = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(term), {
+  const res = await fetch('https://' + lwLangInfo().wiki + '.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(term), {
     headers: { Accept: 'application/json' },
   });
   if (!res.ok) return null;
@@ -179,11 +212,11 @@ async function lwAiFillWord(word) {
   const body = {
     systemInstruction: {
       parts: [{
-        text: 'Ты — лексикограф для приложения изучения английского. '
-          + 'Для заданного английского слова верни: '
+        text: 'Ты — лексикограф для приложения изучения ' + lwLangInfo().ruGen + ' языка. '
+          + 'Для заданного ' + lwLangInfo().ruGen + ' слова верни: '
           + 'ipa — транскрипцию IPA (без косых черт); '
           + 'tr — краткий перевод на русский (1–3 варианта через запятую, как в Cambridge Dictionary); '
-          + 'example — запоминающееся простое предложение-пример с этим словом; '
+          + 'example — запоминающееся простое предложение-пример с этим словом на ' + lwLangInfo().ruPrep + '; '
           + 'exampleTr — перевод примера на русский; '
           + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '.',
       }],
@@ -272,15 +305,15 @@ async function lwAiFillWords(words) {
   const body = {
     systemInstruction: {
       parts: [{
-        text: 'Ты — лексикограф для приложения изучения английского. '
-          + 'Тебе дают список английских слов. Для КАЖДОГО слова верни объект: '
+        text: 'Ты — лексикограф для приложения изучения ' + lwLangInfo().ruGen + ' языка. '
+          + 'Тебе дают список ' + lwLangInfo().ruGenPl + ' слов. Для КАЖДОГО слова верни объект: '
           + 'word — само слово (как в запросе). '
           + 'ВАЖНО: слово пиши строчными буквами (нижний регистр), '
           + 'заглавную первую букву оставляй ТОЛЬКО у имён собственных — '
           + 'названий городов, стран, имён людей и т.п.; '
           + 'ipa — транскрипцию IPA (без косых черт); '
           + 'tr — краткий перевод на русский (1–3 варианта через запятую, как в Cambridge Dictionary); '
-          + 'example — запоминающееся простое предложение-пример с этим словом; '
+          + 'example — запоминающееся простое предложение-пример с этим словом на ' + lwLangInfo().ruPrep + '; '
           + 'exampleTr — перевод примера на русский; '
           + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '. '
           + 'Верни объекты в том же порядке и количестве, что и входной список.',
@@ -413,7 +446,7 @@ async function lwAiTagPos(words) {
   const list = (words || []).map((w) => String(w || '').trim().slice(0, 100)).filter(Boolean).slice(0, 50);
   if (!list.length) { const e = new Error('No words to process.'); e.code = 'empty'; throw e; }
   const parsed = await lwGeminiJson(
-    'You tag English vocabulary with its most common part of speech. '
+    'You tag ' + lwLangInfo().name + ' vocabulary with its most common part of speech. '
       + 'For EVERY input word or phrase return { word, pos }, where word is the input as given and pos is one of: '
       + LW_POS.join(', ') + '. Keep the input order and count.',
     list.join('\n'),
@@ -437,8 +470,10 @@ async function lwAiLookupWord(word, sentence) {
   const term = String(word || '').trim().slice(0, 60);
   if (!term) { const e = new Error('Empty word.'); e.code = 'empty'; throw e; }
   const p = await lwGeminiJson(
-    'Ты — словарь для читателя английских книг. Тебе дают слово и предложение, где оно встретилось. Верни: '
-      + 'lemma — словарную форму слова (was → be, children → child; фразовый глагол, если он есть в предложении, например "give up"); '
+    'Ты — словарь для читателя ' + lwLangInfo().ruGenPl + ' книг. Тебе дают слово и предложение, где оно встретилось. Верни: '
+      + (lwCurrentLang() === 'en'
+        ? 'lemma — словарную форму слова (was → be, children → child; фразовый глагол, если он есть в предложении, например "give up"); '
+        : 'lemma — словарную форму слова (для существительного — неопределённая форма единственного числа, для глагола — инфинитив без частицы); ')
       + 'ipa — транскрипцию IPA словарной формы без косых черт; '
       + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '; '
       + 'tr — перевод на русский именно в ЭТОМ значении (1–3 варианта через запятую); '
@@ -467,7 +502,7 @@ async function lwAiTranslateSentences(sentences) {
   const list = (sentences || []).map((x) => String(x || '').trim()).filter(Boolean).slice(0, 60);
   if (!list.length) return [];
   const p = await lwGeminiJson(
-    'Переведи каждое английское предложение на русский — литературно, но близко к тексту. '
+    'Переведи на русский каждое предложение на ' + lwLangInfo().ruPrep + ' — литературно, но близко к тексту. '
       + 'Верни массив переводов той же длины и в том же порядке, по одному на предложение.',
     list.map((x, i) => (i + 1) + '. ' + x).join('\n'),
     { type: 'ARRAY', items: { type: 'STRING' } }
@@ -484,17 +519,18 @@ async function lwAiSuggestCollocations(word, existing) {
   if (!term) { const e = new Error('Empty word.'); e.code = 'empty'; throw e; }
   const have = (existing || []).map((x) => String(x || '').trim()).filter(Boolean).slice(0, 30);
   const p = await lwGeminiJson(
-    'Ты — преподаватель английского, составляешь упражнение на коллокации (устойчивые сочетания слов). '
-      + 'Для данного английского слова верни: '
+    'Ты — преподаватель ' + lwLangInfo().ruGen + ' языка, составляешь упражнение на коллокации (устойчивые сочетания слов). '
+      + 'Все сочетания, партнёры и примеры — на ' + lwLangInfo().ruPrep + '. '
+      + 'Для данного ' + lwLangInfo().ruGen + ' слова верни: '
       + 'pos — часть речи слова, одно из: ' + LW_POS.join(', ') + '; '
-      + 'pattern — схему сочетаний по-английски, например "heavy + noun" или "make + noun"; '
+      + 'pattern — схему сочетаний, например "heavy + noun" или "make + noun" (названия частей речи — по-английски); '
       + 'phrases — 6 самых частотных нейтральных сочетаний с этим словом (кроме уже имеющихся), для каждого: '
       + 'phrase — сочетание в словарной форме ("make a decision", "heavy rain"); '
       + 'partner — часть сочетания без самого слова и без артиклей ("decision", "rain"); '
       + 'tr — перевод сочетания на русский; ipa — транскрипция IPA всего сочетания без косых черт; '
       + 'example — короткое естественное предложение с сочетанием; exampleTr — его перевод на русский; '
       + 'wrong — 3 ОДНОЗНАЧНО НЕВЕРНЫХ партнёра, с которыми ученики ошибочно сочетают это слово '
-      + '(для "make": "homework", потому что правильно "do homework"), для каждого: partner и fix — правильное сочетание. '
+      + '(например, в английском для "make": "homework", потому что правильно "do homework"), для каждого: partner и fix — правильное сочетание. '
       + 'Неверный партнёр не должен образовывать с этим словом допустимое сочетание ни в каком значении.',
     'Слово: ' + term + (have.length ? '\nУже есть: ' + have.join('; ') : ''),
     {
@@ -540,9 +576,9 @@ async function lwAiSuggestCollocations(word, existing) {
 
 /* ---------------- Grammar lessons (AI) ---------------- */
 
-const LW_LESSON_SYSTEM = 'Ты — методист, пишешь урок грамматики английского для русскоязычных учеников. '
-  + 'Объяснения, переводы и пояснения — на русском; примеры, формулы и задания теста — на английском. '
-  + 'Ключевые слова в тексте выделяй двойными квадратными скобками: "I [[have lost]] my keys". ';
+const lwLessonSystem = () => 'Ты — методист, пишешь урок грамматики ' + lwLangInfo().ruGen + ' языка для русскоязычных учеников. '
+  + 'Объяснения, переводы и пояснения — на русском; примеры, формулы и задания теста — на ' + lwLangInfo().ruPrep + '. '
+  + 'Ключевые слова в тексте выделяй двойными квадратными скобками, например по-английски: "I [[have lost]] my keys". ';
 
 const LW_TASK_SCHEMA = {
   type: 'OBJECT',
@@ -557,7 +593,7 @@ const LW_TASK_SCHEMA = {
   required: ['type', 'q', 'why'],
 };
 const LW_TASK_RULES = 'Задание теста: type "choice" — q с пропуском "___", ровно 4 варианта в options, answer — индекс верного (0–3); '
-  + 'type "fill" — q с пропуском "___" и подсказкой в скобках, например "She ___ (finish) it yet.", answers — все допустимые варианты '
+  + 'type "fill" — q с пропуском "___" и подсказкой в скобках (начальная форма слова), например по-английски "She ___ (finish) it yet.", answers — все допустимые варианты '
   + '(полная и краткая форма). why — короткое пояснение на русском, почему ответ верный. Ответ должен быть однозначным.';
 
 const lwStr = (x, n = 600) => String(x == null ? '' : x).trim().slice(0, n);
@@ -583,7 +619,7 @@ async function lwAiGenerateLesson({ title, topic, level, compare }) {
   const subject = lwStr(title, 120) || lwStr(topic, 60);
   if (!subject) { const e = new Error('Enter a title or topic.'); e.code = 'empty'; throw e; }
   const p = await lwGeminiJson(
-    LW_LESSON_SYSTEM + 'Верни урок: title — название по-английски; focus — ключевая идея в 1–2 предложениях; '
+    lwLessonSystem() + 'Верни урок: title — название по-английски; focus — ключевая идея в 1–2 предложениях; '
       + 'minutes — время на изучение; formulas — 3 строки (kind: affirmative, negative, question; pattern — схема вроде "have/has + V3"; '
       + 'example — пример с выделением; tr — перевод); '
       + 'compareTable — rows: по одной строке на эту тему и на тему сравнения (title, tag — короткая метка на русском, '
@@ -640,7 +676,7 @@ async function lwAiGenerateLesson({ title, topic, level, compare }) {
 async function lwAiRegenerateTask(lesson, type) {
   const have = (lesson.quiz || []).map((t) => t && t.q).filter(Boolean);
   const p = await lwGeminiJson(
-    LW_LESSON_SYSTEM + 'Составь ОДНО новое задание теста к уроку, не похожее на уже имеющиеся. ' + LW_TASK_RULES,
+    lwLessonSystem() + 'Составь ОДНО новое задание теста к уроку, не похожее на уже имеющиеся. ' + LW_TASK_RULES,
     'Урок: ' + lwStr(lesson.title, 120) + '\nУровень: ' + (lesson.level || 'B1') + '\nТип задания: ' + (type === 'fill' ? 'fill' : 'choice')
       + (have.length ? '\nУже есть:\n' + have.join('\n') : ''),
     LW_TASK_SCHEMA
@@ -722,9 +758,9 @@ async function lwAiGenerateText(words, level, topic, length, count) {
   const body = {
     systemInstruction: {
       parts: [{
-        text: 'Ты — преподаватель английского, который пишет короткие обучающие тексты. '
-          + 'Тебе дают: список английских слов, уровень CEFR ученика и тему. '
-          + 'Напиши связный, естественный текст на английском примерно на заданное число слов, '
+        text: 'Ты — преподаватель ' + lwLangInfo().ruGen + ' языка, который пишет короткие обучающие тексты. '
+          + 'Тебе дают: список ' + lwLangInfo().ruGenPl + ' слов, уровень CEFR ученика и тему. '
+          + 'Напиши связный, естественный текст на ' + lwLangInfo().ruPrep + ' примерно на заданное число слов, '
           + 'который по возможности РАСКРЫВАЕТ заданную тему. '
           + 'Тема — это желательный ориентир для сеттинга и настроения, а не жёсткая рамка: '
           + 'старайся выдержать её, но естественность и связность текста важнее. Если какое-то слово '
@@ -741,9 +777,9 @@ async function lwAiGenerateText(words, level, topic, length, count) {
           + 'Напиши РОВНО ' + nTexts + ' независимых текст(а/ов) по этим правилам. Тексты должны заметно '
           + 'отличаться друг от друга по сюжету/ракурсу (даже при одной теме) и не повторять друг друга. '
           + 'Верни поле texts — массив из ' + nTexts + ' объект(а/ов), где каждый объект это один текст со следующими полями: '
-          + 'title — короткий заголовок на английском; '
+          + 'title — короткий заголовок на ' + lwLangInfo().ruPrep + '; '
           + 'sentences — массив предложений текста ПО ПОРЯДКУ, где каждый элемент это объект '
-          + '{ en, ru }: en — одно предложение на английском, ru — его точный перевод на русский. '
+          + '{ en, ru }: en — одно предложение на ' + lwLangInfo().ruPrep + ' (поле называется en для любого языка), ru — его точный перевод на русский. '
           + 'Разбивай текст на естественные предложения; вместе они образуют связный текст. '
           + 'used — массив слов из списка, которые ты реально использовал в этом тексте.',
       }],
@@ -898,10 +934,90 @@ async function lwAiGenerateBatch(words, levels, topicPrompts, length, count) {
   }));
 }
 
+/* ---------------- Speech voice (device-local) ----------------
+   Browsers default to a plain voice even when far better ones are installed.
+   Voices of the current language are ranked by quality; 'Auto' takes the top one. */
+const LW_VOICE_GOOD = /natural|neural|online|premium|enhanced|siri/i;
+const LW_VOICE_KNOWN = /^(google (us|uk) english|samantha|daniel|karen|moira|tessa|serena|alex|ava|allison|susan|tom|evan|nathan|zoe|aria|jenny|guy|libby|ryan|sonia)\b/i;
+const LW_VOICE_NOVELTY = /albert|bad news|bahh|bells|boing|bubbles|cellos|deranged|good news|hysterical|jester|junior|organ|pipe organ|ralph|superstar|trinoids|whisper|wobble|zarvox|fred|kathy|grandma|grandpa|eddy|flo|reed|rocko|sandy|shelley/i;
+const LW_ACCENTS = { US: 'US', GB: 'UK', AU: 'Australia', IE: 'Ireland', IN: 'India', ZA: 'South Africa', NZ: 'New Zealand', CA: 'Canada', SG: 'Singapore', RO: 'Romania', MD: 'Moldova' };
+
+function lwVoiceScore(v) {
+  let s = 0;
+  if (LW_VOICE_GOOD.test(v.name)) s += 50;
+  if (LW_VOICE_KNOWN.test(v.name)) s += 30;
+  if (LW_VOICE_NOVELTY.test(v.name)) s -= 100;
+  const region = (v.lang || '').split(/[-_]/)[1] || '';
+  if (region.toUpperCase() === 'US') s += 8;
+  else if (region.toUpperCase() === 'GB') s += 6;
+  if (v.localService === false) s += 3; // network voices (Chrome's Google voices) usually sound better
+  return s;
+}
+const lwVoiceAccent = (v) => LW_ACCENTS[((v.lang || '').split(/[-_]/)[1] || '').toUpperCase()] || '';
+
+/* voices of this device for the current language, best first ([] until the browser loads them) */
+function lwLangVoices() {
+  if (!('speechSynthesis' in window)) return [];
+  const re = new RegExp('^' + lwLangCode + '([-_]|$)', 'i');
+  return window.speechSynthesis.getVoices()
+    .filter((v) => re.test(v.lang || ''))
+    .sort((a, b) => lwVoiceScore(b) - lwVoiceScore(a) || a.name.localeCompare(b.name));
+}
+/* The chosen voice is per language (English keeps the original voiceURI field),
+   the speed is shared. */
+function lwVoiceSettings() {
+  const s = lwLoad(LW_KEYS.voice, null) || {};
+  const key = lwLangCode === 'en' ? 'voiceURI' : 'voiceURI_' + lwLangCode;
+  return { voiceURI: s[key] || '', rate: s.rate === 0.8 ? 0.8 : 1 };
+}
+function lwSaveVoiceSettings(fields) {
+  const s = lwLoad(LW_KEYS.voice, null) || {};
+  const out = { ...s };
+  if ('rate' in fields) out.rate = fields.rate;
+  if ('voiceURI' in fields) out[lwLangCode === 'en' ? 'voiceURI' : 'voiceURI_' + lwLangCode] = fields.voiceURI;
+  lwSave(LW_KEYS.voice, out);
+}
+/* the chosen voice, or the best one when it's 'auto' or no longer installed */
+function lwPickVoice() {
+  const voices = lwLangVoices();
+  const { voiceURI } = lwVoiceSettings();
+  return (voiceURI && voices.find((v) => v.voiceURI === voiceURI)) || voices[0] || null;
+}
+/* voices load asynchronously in Chrome; returns an unsubscribe function */
+function lwOnVoicesChanged(cb) {
+  if (!('speechSynthesis' in window)) return () => {};
+  window.speechSynthesis.addEventListener('voiceschanged', cb);
+  return () => window.speechSynthesis.removeEventListener('voiceschanged', cb);
+}
+/* an utterance in the chosen voice and speed; rateMul slows it further (reader: 0.9) */
+function lwUtterance(text, rateMul = 1) {
+  const u = new SpeechSynthesisUtterance(text);
+  const v = lwPickVoice();
+  if (v) { u.voice = v; u.lang = v.lang; } else u.lang = lwLangInfo().speech;
+  u.rate = lwVoiceSettings().rate * rateMul;
+  return u;
+}
+if ('speechSynthesis' in window) window.speechSynthesis.getVoices(); // starts loading the list early
+
 Object.assign(window, {
+  lwLangVoices,
+  lwVoiceAccent,
+  lwVoiceScore,
+  lwVoiceSettings,
+  lwSaveVoiceSettings,
+  lwPickVoice,
+  lwOnVoicesChanged,
+  lwUtterance,
   LW_KEYS,
   LW_READING_BATCH,
   LW_LANGUAGES,
+  LW_LANG_CODES,
+  lwDocLang,
+  lwUserLangs,
+  lwSetCurrentLang,
+  lwCurrentLang,
+  lwLangInfo,
+  lwCefrField,
   LW_CEFR_LEVELS,
   LW_TEXT_TOPICS,
   LW_TEXT_LENGTHS,
