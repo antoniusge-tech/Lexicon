@@ -935,6 +935,70 @@ async function lwAiGenerateBatch(words, levels, topicPrompts, length, count) {
   }));
 }
 
+/* ---------------- Romanian transcription ----------------
+   Romanian spelling is regular enough to derive a broad IPA transcription by
+   rules (no stress marks): c/g before e/i → t͡ʃ/d͡ʒ, ch/gh → k/ɡ, ș → ʃ, ț → t͡s,
+   ă → ə, â/î → ɨ, diphthongs (ea → e̯a, oa → o̯a, ia → ja, ai → aj, au → aw),
+   a final i after a consonant is a palatal glide (pomi → pomʲ) except in verbs
+   (citi) and one-vowel words (zi). Used when a Romanian word has no ipa. */
+const LW_RO_IPA_WORDS = {
+  e: 'je', ea: 'ja', el: 'jel', ei: 'jej', ele: 'jele', eu: 'jew', este: 'jeste', ești: 'jeʃtʲ',
+  era: 'jera', eram: 'jeram', erau: 'jeraw', pizza: 'pit͡sa', weekend: 'wikend', mall: 'mol',
+  laptop: 'leptop', taxi: 'taksi', supermarket: 'supermarket',
+};
+const LW_RO_IPA_SIMPLE = { ă: 'ə', â: 'ɨ', î: 'ɨ', ș: 'ʃ', ț: 't͡s', j: 'ʒ', x: 'ks', y: 'j', q: 'k', c: 'k', g: 'ɡ' };
+function lwRoIpaWord(word, verb) {
+  const w = window.lwNormLetters ? window.lwNormLetters(word) : word;
+  if (LW_RO_IPA_WORDS[w]) return LW_RO_IPA_WORDS[w];
+  const isV = (ch) => !!ch && 'aeiouăâî'.includes(ch);
+  const vowels = [...w].filter(isV).length;
+  const last = w.length - 1;
+  let out = '';
+  let glide = false; // the previous i/u became a glide (j/w), so it can't carry another
+  for (let i = 0; i < w.length; i++) {
+    const ch = w[i], prev = w[i - 1], n1 = w[i + 1], n2 = w[i + 2];
+    const wasGlide = glide;
+    glide = false;
+    if ((ch === 'c' || ch === 'g') && n1 === 'h' && (n2 === 'e' || n2 === 'i')) { out += ch === 'c' ? 'k' : 'ɡ'; i++; continue; }
+    if ((ch === 'c' || ch === 'g') && (n1 === 'e' || n1 === 'i')) {
+      out += ch === 'c' ? 't͡ʃ' : 'd͡ʒ';
+      /* ce/ci/ge/gi before another vowel: the e/i only softens the consonant (ceai, ciorbă, geantă) */
+      if (isV(n2)) i++;
+      continue;
+    }
+    if (ch === 'e' && n1 === 'a') { out += 'e̯a'; i++; continue; }
+    if (ch === 'o' && n1 === 'a') { out += 'o̯a'; i++; continue; }
+    if (ch === 'i') {
+      let g;
+      if (n1 === 'u' && isV(n2)) g = 'i'; // zi-ua
+      else if (n1 === 'a' || n1 === 'e' || n1 === 'o') g = 'j'; // iarnă, piele
+      else if (n1 === 'u' && (i === 0 || isV(prev))) g = 'j'; // iubi, iunie
+      else if (isV(prev) && prev !== 'i' && !wasGlide && !isV(n1)) g = 'j'; // noi, pâine, biscuiți
+      else if (i === last && prev === 'i') g = 'j'; // copii
+      else if (i === last && i > 0 && !verb && vowels > 1) g = 'ʲ'; // pomi, ochi, frați
+      else g = 'i';
+      out += g;
+      glide = g === 'j';
+      continue;
+    }
+    if (ch === 'u') {
+      const g = isV(prev) && !wasGlide ? 'w' : 'u'; // au, eu, nou, două, cafeaua, ziua
+      out += g;
+      glide = g === 'w';
+      continue;
+    }
+    out += LW_RO_IPA_SIMPLE[ch] || ch;
+  }
+  return out;
+}
+/* a whole entry: each word separately; hyphenated clitics read as one word (scuzați-mă) */
+function lwRoIpa(text, pos) {
+  const verb = pos === 'verb';
+  return String(text || '').trim().toLowerCase().split(/\s+/)
+    .map((part) => part.replace(/[^a-zăâîșțşţ]/g, ''))
+    .filter(Boolean).map((p) => lwRoIpaWord(p, verb)).join(' ');
+}
+
 /* ---------------- Speech voice (device-local) ----------------
    Browsers default to a plain voice even when far better ones are installed.
    Voices of the current language are ranked by quality; 'Auto' takes the top one. */
@@ -995,6 +1059,11 @@ function lwUtterance(text, rateMul = 1) {
   const u = new SpeechSynthesisUtterance(text);
   const v = lwPickVoice();
   if (v) { u.voice = v; u.lang = v.lang; } else u.lang = lwLangInfo().speech;
+  /* the device has voices, but none for this language: the browser will read it
+     with its default (usually English) voice — App tells the user why */
+  if (!v && window.speechSynthesis.getVoices().length) {
+    window.dispatchEvent(new CustomEvent('lw-missing-voice', { detail: lwLangCode }));
+  }
   u.rate = lwVoiceSettings().rate * rateMul;
   return u;
 }
@@ -1002,6 +1071,7 @@ if ('speechSynthesis' in window) window.speechSynthesis.getVoices(); // starts l
 
 Object.assign(window, {
   lwLangVoices,
+  lwRoIpa,
   lwVoiceAccent,
   lwVoiceScore,
   lwVoiceSettings,

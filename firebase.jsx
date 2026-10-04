@@ -251,6 +251,8 @@ function lwSetDoc(collectionName, item) {
   // (edits start from the stored doc). Legacy docs without one are only shown in
   // English, so editing them there tags them 'en'.
   if (LW_LANG_COLLECTIONS.includes(collectionName) && !data.lang) data.lang = window.lwCurrentLang();
+  // Romanian is read as written: a word saved without a transcription gets one by rule.
+  if (collectionName === LW_COLLECTIONS.words && data.lang === 'ro' && !data.ipa && data.word) data.ipa = window.lwRoIpa(data.word, data.pos);
   return lwDb.collection(collectionName).doc(id).set(data);
 }
 

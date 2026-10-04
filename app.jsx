@@ -135,6 +135,27 @@ function App() {
     return id;
   }, []);
 
+  /* speech had no voice for the language studied (lwUtterance): say so once
+     per language and session, instead of letting it sound like English */
+  const missingVoiceWarned = useRef(new Set());
+  useEffect(() => {
+    const onMissing = (e) => {
+      const code = e.detail;
+      if (missingVoiceWarned.current.has(code)) return;
+      missingVoiceWarned.current.add(code);
+      const name = window.lwLangInfo(code).name;
+      pushToast({
+        kind: 'error',
+        title: 'No ' + name + ' voice on this device',
+        msg: 'The browser reads ' + name + ' words with another voice, so they sound wrong. Install a ' + name
+          + ' voice in your system speech settings (Mac: Accessibility → Spoken Content → System voice → Manage voices; '
+          + 'Windows: Time & language → Speech; Android: Text-to-speech → Install voice data), then reload the page.',
+      });
+    };
+    window.addEventListener('lw-missing-voice', onMissing);
+    return () => window.removeEventListener('lw-missing-voice', onMissing);
+  }, [pushToast]);
+
   /* Kick off text generation. Runs the promise at the App level so it outlives
      ReadingView unmounting; on completion it updates `reading` and raises a
      bottom-right toast so the user knows they can return to the reading tab. */
