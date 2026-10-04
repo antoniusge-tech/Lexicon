@@ -5104,5 +5104,18 @@ function LanguageSelectView({ onSelect }) {
   );
 }
 
+/* A render error used to unmount the whole tree and leave a blank page.
+   Show what broke instead, with a reload that skips the browser cache. */
+class LwErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error('App crashed:', error, info && info.componentStack); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return window.lwRenderFatal(this.state.error);
+  }
+}
+
 Object.assign(window, { App, GroupForm });
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+ReactDOM.createRoot(document.getElementById('root')).render(<LwErrorBoundary><App /></LwErrorBoundary>);
+window.lwAppStarted = true;
