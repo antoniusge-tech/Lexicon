@@ -21,7 +21,8 @@ service cloud.firestore {
       function validProfile() {
         let d = request.resource.data;
         return (!('avatar' in d) || (d.avatar is string && d.avatar.size() < 200000))
-          && (!('dailyGoal' in d) || (d.dailyGoal is int && d.dailyGoal >= 1 && d.dailyGoal <= 200));
+          && (!('dailyGoal' in d) || (d.dailyGoal is int && d.dailyGoal >= 1 && d.dailyGoal <= 200))
+          && (!('dailyGoal_ro' in d) || (d.dailyGoal_ro is int && d.dailyGoal_ro >= 1 && d.dailyGoal_ro <= 200));
       }
       allow read: if isOwner(uid) || isAdmin();
       allow list: if isAdmin();
@@ -72,12 +73,15 @@ service cloud.firestore {
         && progressId == request.auth.uid + '_' + request.resource.data.wordId;
     }
 
-    // Daily activity (answers, XP) per user. Doc id is `${uid}_${YYYY-MM-DD}`.
+    // Daily activity (answers, XP) per user and learning language. Doc id is
+    // `${uid}_${YYYY-MM-DD}` for English and `${uid}_${lang}_${YYYY-MM-DD}` for others.
     match /activity/{activityId} {
       allow read, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
       allow create, update: if isSignedIn()
         && request.resource.data.userId == request.auth.uid
-        && activityId == request.auth.uid + '_' + request.resource.data.date;
+        && (activityId == request.auth.uid + '_' + request.resource.data.date
+          || (request.resource.data.lang is string && request.resource.data.lang.matches('[a-z]{2}')
+            && activityId == request.auth.uid + '_' + request.resource.data.lang + '_' + request.resource.data.date));
     }
 
     // Reading texts: same access model as words (own + shared; only admins share).

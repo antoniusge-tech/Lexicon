@@ -11,7 +11,13 @@ function lwCleanGutenberg(raw) {
   return t.trim();
 }
 
-const lwWordCount = (s) => (String(s).match(/[A-Za-z0-9’']+/g) || []).length;
+/* Letters of the languages we teach: ASCII plus Latin-1 and Latin Extended-A/B,
+   which cover Romanian ă â î ș ț (and the older cedilla forms ş ţ). */
+const LW_LETTERS = 'A-Za-zÀ-ÖØ-öø-ɏ';
+/* Romanian has two spellings of ș/ț (comma and the legacy cedilla): compare as one */
+const lwNormLetters = (s) => String(s).replace(/ş/g, 'ș').replace(/ţ/g, 'ț').replace(/Ş/g, 'Ș').replace(/Ţ/g, 'Ț');
+
+const lwWordCount = (s) => (String(s).match(new RegExp('[' + LW_LETTERS + '0-9’\']+', 'g')) || []).length;
 
 /* blank-line separated paragraphs; hard-wrapped lines inside are joined.
    Drops illustration placeholders ("[Illustration]", "[Picture: …]") and
@@ -27,20 +33,20 @@ function lwParagraphs(text) {
    roman (case-sensitive, with a dot): "I. A SCANDAL IN BOHEMIA", "XIV.". As a
    fallback, the titles listed in the book's own table of contents
    ("The Happy Prince ....... 1") wherever they appear alone on a line. */
-const LW_NUMBERED_RE = /^(?:chapter|book|part)\s+(?:[ivxlcdm]+|\d+|[a-z]+)\b/i;
-const LW_ROMAN_RE = /^([IVXLC]+)\.(?:\s+([A-Z][A-Z0-9’' ,.:;!?-]*))?$/;
+const LW_NUMBERED_RE = /^(?:chapter|book|part|capitolul|capitol|cartea|partea)\s+(?:[ivxlcdm]+|\d+|[a-z]+)\b/i;
+const LW_ROMAN_RE = /^([IVXLC]+)\.(?:\s+([A-ZĂÂÎȘȚŞŢ][A-ZĂÂÎȘȚŞŢ0-9’' ,.:;!?-]*))?$/;
 const LW_CHUNK_WORDS = 1500;
 
 const lwShortLine = (p) => p.length <= 80 && lwWordCount(p) <= 12;
 const lwIsNumberedHeading = (p) => lwShortLine(p) && (LW_NUMBERED_RE.test(p) || LW_ROMAN_RE.test(p));
-const lwNormTitle = (t) => t.toLowerCase().replace(/[^a-z0-9’' ]/g, '').replace(/\s+/g, ' ').trim();
+const lwNormTitle = (t) => t.toLowerCase().replace(new RegExp('[^' + LW_LETTERS + '0-9’\' ]', 'g'), '').replace(/\s+/g, ' ').trim();
 
 /* titles from a table of contents: lines "Title   12" (title, gap, page number) */
 function lwTocTitles(text) {
   const titles = new Set();
   String(text).split('\n').forEach((line) => {
     const m = line.match(/^\s*(.{3,70}?)\s{2,}(?:\.+\s*)?(\d{1,4})\s*$/);
-    if (m && /[A-Za-z]/.test(m[1])) titles.add(lwNormTitle(m[1]));
+    if (m && new RegExp('[' + LW_LETTERS + ']').test(m[1])) titles.add(lwNormTitle(m[1]));
   });
   return titles;
 }
@@ -150,14 +156,27 @@ function lwPaginate(paragraphs, size = 250) {
 }
 
 /* "word" parts at odd indices, separators at even ones: ["", "Hello", ", ", "world", "!"] */
+const LW_L = LW_LETTERS;
+const LW_TOKEN_RE = new RegExp('([' + LW_L + '][' + LW_L + '’\'-]*[' + LW_L + ']|[' + LW_L + '])');
 function lwTokenize(text) {
-  return String(text).split(/([A-Za-z][A-Za-z’'-]*[A-Za-z]|[A-Za-z])/);
+  return String(text).split(LW_TOKEN_RE);
+}
+
+/* Romanian: strip definite articles, case and plural endings and common verb
+   endings (casa/casei/casele → cas, lucrează → lucr), longest first, keeping
+   at least three letters. Rough, like the English stemmer below. */
+const LW_RO_ENDINGS = ['urilor', 'ilor', 'elor', 'ului', 'urile', 'ează', 'ește', 'esc', 'uri', 'ul', 'ele', 'lor', 'lui',
+  'le', 'ii', 'ea', 'ua', 'ez', 'ăm', 'ați', 'at', 'it', 'ut', 'a', 'ă', 'e', 'i', 'u'];
+function lwRoStem(w) {
+  for (const e of LW_RO_ENDINGS) if (w.length - e.length >= 3 && w.endsWith(e)) return w.slice(0, -e.length);
+  return w;
 }
 
 /* reduce a token to a rough stem so grader↔graders, plan↔planning etc. match */
 function readingStem(token) {
-  let w = String(token || '').toLowerCase().replace(/[’']/g, '');
+  let w = lwNormLetters(String(token || '').toLowerCase()).replace(/[’']/g, '');
   if (!w) return '';
+  if (window.lwCurrentLang() === 'ro') return lwRoStem(w);
   /* strip common inflectional endings */
   if (w.length > 4 && w.endsWith('ies')) return w.slice(0, -3) + 'y';
   if (w.length > 4 && w.endsWith('ied')) return w.slice(0, -3) + 'y';
@@ -172,8 +191,8 @@ function readingStem(token) {
 
 /* two tokens match if they share a stem (either direction of inflection) */
 function readingTokensMatch(a, b) {
-  const la = String(a).toLowerCase().replace(/[’']/g, '');
-  const lb = String(b).toLowerCase().replace(/[’']/g, '');
+  const la = lwNormLetters(String(a).toLowerCase()).replace(/[’']/g, '');
+  const lb = lwNormLetters(String(b).toLowerCase()).replace(/[’']/g, '');
   if (la === lb) return true;
   const sa = readingStem(a);
   const sb = readingStem(b);
@@ -188,7 +207,7 @@ function readingTokensMatch(a, b) {
 function lwWordsIndex(words) {
   const idx = new Map();
   words.forEach((w) => {
-    const lw = String(w.word || '').trim().toLowerCase();
+    const lw = lwNormLetters(String(w.word || '').trim().toLowerCase());
     if (!lw || /\s/.test(lw)) return; // phrases are not matched token by token
     [lw, readingStem(lw), readingStem(lw).replace(/e$/, '')].forEach((k) => { if (k && !idx.has(k)) idx.set(k, w); });
   });
@@ -196,7 +215,7 @@ function lwWordsIndex(words) {
 }
 
 function lwMatchOwnWord(token, index) {
-  const lw = String(token || '').toLowerCase().replace(/[’]/g, "'");
+  const lw = lwNormLetters(String(token || '').toLowerCase()).replace(/[’]/g, "'");
   if (!lw) return null;
   const st = readingStem(lw);
   return index.get(lw) || index.get(st) || index.get(st.replace(/e$/, '')) || null;
@@ -222,18 +241,20 @@ function lwFindPhraseCards(word, words) {
 
 /* Default chip text for a phrase: the phrase without the main word and
    articles ("make a decision" + make → "decision"). */
-const LW_COLLOC_SKIP = new Set(['a', 'an', 'the']);
+const LW_COLLOC_SKIP = new Set(['a', 'an', 'the', 'un', 'o', 'niște']); // English and Romanian articles
 function lwCollocPartner(phrase, word) {
   const key = lwCollocKey(word);
   const parts = String(phrase || '').trim().split(/\s+/).filter(Boolean);
   const rest = parts.filter((p) => {
-    const t = p.toLowerCase().replace(/[^a-z’'-]/g, '');
+    const t = p.toLowerCase().replace(new RegExp('[^' + LW_LETTERS + '’\'-]', 'g'), '');
     return !LW_COLLOC_SKIP.has(t) && !readingTokensMatch(t, key);
   });
   return (rest.length ? rest : parts).join(' ');
 }
 
 Object.assign(window, {
+  LW_LETTERS,
+  lwNormLetters,
   lwCollocKey,
   lwFindPhraseCards,
   lwCollocPartner,

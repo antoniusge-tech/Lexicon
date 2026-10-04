@@ -57,9 +57,10 @@ function lwSetCurrentLang(code) { lwLangCode = LW_LANG_CODES.includes(code) ? co
 function lwCurrentLang() { return lwLangCode; }
 function lwLangInfo(code) { return LW_LANGUAGES.find((l) => l.code === (code || lwLangCode)) || LW_LANGUAGES[0]; }
 
-/* Self-assessed CEFR level and target are per language: English keeps the
-   original cefr/cefrTarget fields, others use cefr_<code>/cefrTarget_<code>. */
-const lwCefrField = (lang, target) => (target ? 'cefrTarget' : 'cefr') + (lang === 'en' ? '' : '_' + lang);
+/* Profile fields that are per language (CEFR level and target, daily goal, earned
+   badges): English keeps the original field, others use <field>_<code>. */
+const lwLangField = (base, lang) => base + (!lang || lang === 'en' ? '' : '_' + lang);
+const lwCefrField = (lang, target) => lwLangField(target ? 'cefrTarget' : 'cefr', lang);
 
 const lwUid = () => Math.random().toString(36).slice(2, 9);
 
@@ -1018,6 +1019,7 @@ Object.assign(window, {
   lwCurrentLang,
   lwLangInfo,
   lwCefrField,
+  lwLangField,
   LW_CEFR_LEVELS,
   LW_TEXT_TOPICS,
   LW_TEXT_LENGTHS,

@@ -68,7 +68,7 @@ function App() {
   const [groups, setGroups] = useState([]);
   const [words, setWords] = useState([]);
   const [progress, setProgress] = useState({}); // { [wordId]: Leitner progress doc }
-  const [activity, setActivity] = useState({}); // { 'YYYY-MM-DD': daily activity doc }
+  const [activityDocs, setActivityDocs] = useState([]); // daily activity docs of every language
   const [now, setNow] = useState(() => Date.now()); // ticks each minute so due counts stay fresh
   const [texts, setTexts] = useState([]); // reading texts: own + shared (meta only, chapters load on open)
   const [readingProgress, setReadingProgress] = useState({}); // { [textId]: reading_progress doc }
@@ -98,7 +98,13 @@ function App() {
     if (Array.isArray(saved)) return { en: saved };
     return saved && typeof saved === 'object' ? saved : {};
   });
-  const [direction, setDirection] = useState(() => window.lwLoad(LW_KEYS.direction, 'en-ru'));
+  /* card direction per language: 'en-ru' = studied language first (EN → RU,
+     RO → RU), 'ru-en' = Russian first. Older devices saved a plain string (English). */
+  const [directionByLang, setDirectionByLang] = useState(() => {
+    const saved = window.lwLoad(LW_KEYS.direction, null);
+    if (typeof saved === 'string') return { en: saved };
+    return saved && typeof saved === 'object' ? saved : {};
+  });
   const [studyStats, setStudyStats] = useState({ knownCount: 0, poolCount: 0, groupCount: 0 });
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [geminiKeyOpen, setGeminiKeyOpen] = useState(false);
@@ -291,13 +297,22 @@ function App() {
 
   /* live sync with this user's progress + daily activity */
   useEffect(() => {
-    if (!authUser) { setProgress({}); setActivity({}); return; }
+    if (!authUser) { setProgress({}); setActivityDocs([]); return; }
     const unsubProgress = window.lwWatchUserCollection(window.LW_COLLECTIONS.progress, authUser.uid,
       (items) => setProgress(Object.fromEntries(items.map((p) => [p.wordId, p]))));
-    const unsubActivity = window.lwWatchUserCollection(window.LW_COLLECTIONS.activity, authUser.uid,
-      (items) => setActivity(Object.fromEntries(items.map((a) => [a.date, a]))));
+    const unsubActivity = window.lwWatchUserCollection(window.LW_COLLECTIONS.activity, authUser.uid, setActivityDocs);
     return () => { unsubProgress(); unsubActivity(); };
   }, [authUser]);
+
+  /* Each language is its own learner: XP, level, streak, daily goal, practice
+     time and the week chart come only from this language's activity
+     ({ 'YYYY-MM-DD': doc }; docs without `lang` are English). */
+  const activity = useMemo(
+    () => Object.fromEntries(activityDocs.filter((a) => window.lwDocLang(a) === lang).map((a) => [a.date, a])),
+    [activityDocs, lang]
+  );
+  const direction = directionByLang[lang] || 'en-ru';
+  const setDirection = useCallback((d) => setDirectionByLang((m) => ({ ...m, [lang]: d })), [lang]);
 
   /* reading texts (own + shared) and where the user is in each */
   useEffect(() => {
@@ -331,7 +346,7 @@ function App() {
     return () => clearInterval(t);
   }, []);
 
-  const dailyGoal = (userDoc && userDoc.dailyGoal) || window.LW_DEFAULT_DAILY_GOAL;
+  const dailyGoal = (userDoc && userDoc[window.lwLangField('dailyGoal', lang)]) || window.LW_DEFAULT_DAILY_GOAL;
 
   /* Record one answer from Study / Choice / Fill / Review: next Leitner box for
      the word plus today's XP. A +50 bonus lands once, on the answer that reaches
@@ -349,12 +364,13 @@ function App() {
     lastAnswerAt.current = t;
     const date = window.lwLocalDate(t);
     const today = activity[date] || {};
-    const sent = sentToday.current.date === date ? sentToday.current : { date, answers: 0, goalMet: false };
+    const sent = sentToday.current.date === date && sentToday.current.lang === lang ? sentToday.current : { date, lang, answers: 0, goalMet: false };
     const answersBefore = Math.max(today.answers || 0, sent.answers);
     const goalBonus = !today.goalMet && !sent.goalMet && answersBefore + 1 >= dailyGoal ? window.LW_XP_GOAL_BONUS : 0;
-    sentToday.current = { date, answers: answersBefore + 1, goalMet: sent.goalMet || !!goalBonus || !!today.goalMet };
+    sentToday.current = { date, lang, answers: answersBefore + 1, goalMet: sent.goalMet || !!goalBonus || !!today.goalMet };
     window.lwRecordAnswer({
       uid: authUser.uid,
+      lang,
       progress: wordId ? window.lwNextProgress(progress[wordId] || null, wordId, known, mode, t) : null, // null: a grammar test answer
       date,
       correct: known,
@@ -366,12 +382,12 @@ function App() {
       pushToast({ kind: 'error', title: 'Could not save progress', msg: (e && e.message) || String(e) });
     });
     setNow(t);
-  }, [authUser, activity, progress, dailyGoal, pushToast]);
+  }, [authUser, lang, activity, progress, dailyGoal, pushToast]);
 
   /* persistence (local-only settings) */
   useEffect(() => { document.documentElement.dataset.theme = theme; window.lwSave(LW_KEYS.theme, theme); }, [theme]);
   useEffect(() => { window.lwSave(LW_KEYS.selected, selectedByLang); }, [selectedByLang]);
-  useEffect(() => { window.lwSave(LW_KEYS.direction, direction); }, [direction]);
+  useEffect(() => { window.lwSave(LW_KEYS.direction, directionByLang); }, [directionByLang]);
   useEffect(() => { window.lwSave(LW_KEYS.nav, nav); }, [nav]);
   /* персистим пачку карточек чтения (без эфемерных status/error) */
   useEffect(() => {
@@ -534,11 +550,11 @@ function App() {
     const t = setInterval(() => {
       const speaking = 'speechSynthesis' in window && window.speechSynthesis.speaking;
       if (document.hidden || (!speaking && Date.now() - lastActiveAt.current > 60 * 1000)) return;
-      window.lwAddPracticeTime(authUser.uid, window.lwLocalDate(Date.now()), TICK)
+      window.lwAddPracticeTime(authUser.uid, lang, window.lwLocalDate(Date.now()), TICK)
         .catch((e) => console.error('reading time', e));
     }, TICK);
     return () => clearInterval(t);
-  }, [authUser, readingOpen]);
+  }, [authUser, lang, readingOpen]);
 
   /* ---- grammar ---- */
   const setGrammar = useCallback((g) => setNav((n) => ({ ...n, tab: 'grammar', grammar: g })), []);
@@ -582,11 +598,11 @@ function App() {
     const fields = { attempts: (p.attempts || 0) + 1, last: score, best: Math.max(p.best || 0, score) };
     if (passed && !p.completedAt) {
       fields.completedAt = Date.now();
-      window.lwAddBonusXp(authUser.uid, window.lwLocalDate(Date.now()), window.LW_XP_LESSON_BONUS).catch(lessonError('Could not add XP'));
+      window.lwAddBonusXp(authUser.uid, lang, window.lwLocalDate(Date.now()), window.LW_XP_LESSON_BONUS).catch(lessonError('Could not add XP'));
     }
     saveLessonProgress(lessonId, fields);
     return passed && !p.completedAt;
-  }, [lessonProgress, authUser, saveLessonProgress, lessonError]);
+  }, [lessonProgress, authUser, lang, saveLessonProgress, lessonError]);
 
   /* save a new text (meta + chapters); admins may publish it for everyone */
   const saveText = useCallback((meta, chapters) => window.lwSaveText({
@@ -1200,7 +1216,7 @@ function ProfileView({ user, stats, updateProfile, authInfo, refreshAuthInfo, pu
           <div className="seg">
             {window.LW_GOAL_OPTIONS.map((g) => (
               <button key={g} type="button" className={'seg-btn' + (stats.goal === g ? ' on' : '')}
-                onClick={() => updateProfile({ dailyGoal: g })}>{g}</button>
+                onClick={() => updateProfile({ [window.lwLangField('dailyGoal', lang)]: g })}>{g}</button>
             ))}
           </div>
         </div>

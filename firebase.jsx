@@ -238,11 +238,18 @@ function lwWatchUserAndSharedCollection(name, uid, onChange) {
   return () => { unsubOwn(); unsubShared(); };
 }
 
+/* Content collections whose docs belong to one learning language (`lang`). */
+const LW_LANG_COLLECTIONS = [LW_COLLECTIONS.groups, LW_COLLECTIONS.words, LW_COLLECTIONS.collocations, LW_COLLECTIONS.lessons, LW_COLLECTIONS.texts];
+
 function lwSetDoc(collectionName, item) {
   const { id, ...data } = item;
   // Firestore rejects any field whose value is undefined. Strip such fields so
   // partially-populated items (e.g. legacy docs without userId/username) still save.
   Object.keys(data).forEach((k) => { if (data[k] === undefined) delete data[k]; });
+  // A new doc gets the language being studied now; an edited doc keeps its own
+  // (edits start from the stored doc). Legacy docs without one are only shown in
+  // English, so editing them there tags them 'en'.
+  if (LW_LANG_COLLECTIONS.includes(collectionName) && !data.lang) data.lang = window.lwCurrentLang();
   return lwDb.collection(collectionName).doc(id).set(data);
 }
 
@@ -263,24 +270,31 @@ async function lwDeleteWordsByGroup(groupId, userId) {
 
 /* ---------------- Progress (Leitner) & daily activity ---------------- */
 
+/* Daily activity is kept per learning language — XP, level, streak and practice
+   time of one language don't count for another. English keeps the original id
+   `${uid}_${date}`, other languages use `${uid}_${lang}_${date}`. */
+function lwActivityRef(uid, lang, date) {
+  return lwDb.collection(LW_COLLECTIONS.activity).doc(uid + '_' + (lang && lang !== 'en' ? lang + '_' : '') + date);
+}
+
 /* Record one answer in a single batch: the word's new progress doc plus the
    day's activity counters. Uses merge + increment (no transaction), so it also
    works offline. `progress` is the full doc from lwNextProgress, or null for an
    answer that belongs to no word (grammar tests): then only activity is written. */
-function lwRecordAnswer({ uid, progress, date, correct, xp, goalBonus, ms }) {
+function lwRecordAnswer({ uid, lang, progress, date, correct, xp, goalBonus, ms }) {
   const inc = firebase.firestore.FieldValue.increment;
   const batch = lwDb.batch();
   if (progress) batch.set(lwDb.collection(LW_COLLECTIONS.progress).doc(uid + '_' + progress.wordId), { ...progress, userId: uid });
-  const day = { userId: uid, date, answers: inc(1), correct: inc(correct ? 1 : 0), xp: inc(xp + (goalBonus || 0)), ms: inc(ms || 0) };
+  const day = { userId: uid, lang: lang || 'en', date, answers: inc(1), correct: inc(correct ? 1 : 0), xp: inc(xp + (goalBonus || 0)), ms: inc(ms || 0) };
   if (goalBonus) day.goalMet = true;
-  batch.set(lwDb.collection(LW_COLLECTIONS.activity).doc(uid + '_' + date), day, { merge: true });
+  batch.set(lwActivityRef(uid, lang, date), day, { merge: true });
   return batch.commit();
 }
 
 /* Add practice time without an answer (reading): bumps activity.ms only. */
-function lwAddPracticeTime(uid, date, ms) {
-  return lwDb.collection(LW_COLLECTIONS.activity).doc(uid + '_' + date)
-    .set({ userId: uid, date, ms: firebase.firestore.FieldValue.increment(ms) }, { merge: true });
+function lwAddPracticeTime(uid, lang, date, ms) {
+  return lwActivityRef(uid, lang, date)
+    .set({ userId: uid, lang: lang || 'en', date, ms: firebase.firestore.FieldValue.increment(ms) }, { merge: true });
 }
 
 /* Delete this user's progress docs for the given words (e.g. after the words were deleted). */
@@ -309,9 +323,9 @@ function lwSaveLessonProgress(uid, lessonId, fields) {
 }
 
 /* XP bonus for a first lesson completion: activity only, no answer counted */
-function lwAddBonusXp(uid, date, xp) {
-  return lwDb.collection(LW_COLLECTIONS.activity).doc(uid + '_' + date)
-    .set({ userId: uid, date, xp: firebase.firestore.FieldValue.increment(xp) }, { merge: true });
+function lwAddBonusXp(uid, lang, date, xp) {
+  return lwActivityRef(uid, lang, date)
+    .set({ userId: uid, lang: lang || 'en', date, xp: firebase.firestore.FieldValue.increment(xp) }, { merge: true });
 }
 
 /* ---------------- Reading texts ---------------- */
@@ -321,6 +335,7 @@ function lwAddBonusXp(uid, date, xp) {
 async function lwSaveText(meta, chapters) {
   const ref = lwDb.collection(LW_COLLECTIONS.texts).doc(meta.id);
   const { id, ...data } = meta;
+  if (!data.lang) data.lang = window.lwCurrentLang();
   for (let i = 0; i < chapters.length; i += 400) {
     const batch = lwDb.batch();
     chapters.slice(i, i + 400).forEach((c, k) => {
