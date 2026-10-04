@@ -139,6 +139,19 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // Level test question bank: shared content, one doc per question, written
+    // only by admins. Every signed-in user reads it (queries filter by lang).
+    match /level_questions/{questionId} {
+      allow read: if isSignedIn();
+      allow create, update: if isAdmin()
+        && request.resource.data.lang is string
+        && request.resource.data.level in ['A1', 'A2', 'B1', 'B2', 'C1', 'C2']
+        && request.resource.data.q is string && request.resource.data.q.size() > 0
+        && request.resource.data.options is list && request.resource.data.options.size() == 4
+        && request.resource.data.answer is int && request.resource.data.answer >= 0 && request.resource.data.answer <= 3;
+      allow delete: if isAdmin();
+    }
+
     // Lesson progress per user. Doc id is `${uid}_${lessonId}`.
     match /lesson_progress/{progressId} {
       allow read, delete: if isSignedIn() && resource.data.userId == request.auth.uid;

@@ -236,10 +236,11 @@ const LW_BADGES = [
   lwBadge('lesson-1', 'Grammar', '🎓', 'First lesson', 'Complete a grammar lesson', 'lessonsDone', 1, 'lessons'),
   lwBadge('topic-1', 'Grammar', '🧠', 'Topic master', 'Complete every lesson of a grammar topic', 'topicsDone', 1, 'topics'),
   lwBadge('colloc-1', 'Collocations', '🧩', 'Word partners', 'Create your first collocation', 'ownCollocs', 1, 'entries'),
+  lwBadge('leveltest-1', 'Level', '🧭', 'Level checked', 'Take the level test', 'levelTests', 1, 'tests'),
 ];
 
 /* metric values from the app's data */
-function lwBadgeMetrics({ uid, activity, progress, words, readingProgress, lessons, lessonProgress, collocations, now }) {
+function lwBadgeMetrics({ uid, activity, progress, words, readingProgress, lessons, lessonProgress, collocations, levelTest, now }) {
   const acts = Object.values(activity);
   const xp = lwTotalXp(activity);
   const done = (l) => (lessonProgress[l.id] || {}).completedAt;
@@ -256,6 +257,7 @@ function lwBadgeMetrics({ uid, activity, progress, words, readingProgress, lesso
     lessonsDone: lessons.filter(done).length,
     topicsDone: topics.filter((t) => t.lessons.length && t.lessons.every(done)).length,
     ownCollocs: collocations.filter((c) => c.userId === uid).length,
+    levelTests: levelTest ? 1 : 0,
   };
 }
 
@@ -268,7 +270,52 @@ function lwBadgeStates(metrics, earned) {
   });
 }
 
+/* ---------------- Level test (adaptive, any language) ----------------
+   A staircase over the CEFR levels: right → the next question is one level
+   up, wrong (or "I don't know") → one level down. Questions never repeat; when
+   a level runs out the nearest level with questions is used. */
+const LW_LEVEL_TEST_LEN = 20;
+const LW_LEVEL_TEST_MIN_BANK = 30; // fewer questions in a language → the test isn't offered
+const LW_CEFR_NAMES = { A1: 'Beginner', A2: 'Elementary', B1: 'Intermediate', B2: 'Upper-intermediate', C1: 'Advanced', C2: 'Proficient' };
+
+/* next question at `level` (index 0–5) or the nearest one, from questions not asked yet */
+function lwLevelTestPick(bank, askedIds, level) {
+  const left = bank.filter((q) => !askedIds.includes(q.id));
+  for (let d = 0; d < LW_CEFR_ALL.length; d++) {
+    for (const i of d === 0 ? [level] : [level + d, level - d]) {
+      const at = left.filter((q) => q.level === LW_CEFR_ALL[i]);
+      if (at.length) return at[Math.floor(Math.random() * at.length)];
+    }
+  }
+  return null;
+}
+const lwLevelIndex = (lv) => Math.max(0, LW_CEFR_ALL.indexOf(lv));
+
+/* answers: [{ level, target, ok }] in order — `level` of the question asked,
+   `target` the staircase step it was asked for (they differ when a level ran
+   out of questions). Result: the mean target of the last 10 answers
+   (rounded), one step lower if fewer than half of the answers at that level were
+   right. Plus the per-level tally for the result screen. */
+function lwLevelTestResult(answers) {
+  const tail = answers.slice(-10);
+  const step = (a) => (a.target != null ? a.target : lwLevelIndex(a.level));
+  let idx = tail.length ? Math.round(tail.reduce((n, a) => n + step(a), 0) / tail.length) : 0;
+  const at = answers.filter((a) => a.level === LW_CEFR_ALL[idx]);
+  if (idx > 0 && at.length && at.filter((a) => a.ok).length * 2 < at.length) idx--;
+  const byLevel = LW_CEFR_ALL.map((lv) => {
+    const list = answers.filter((a) => a.level === lv);
+    return { level: lv, asked: list.length, right: list.filter((a) => a.ok).length };
+  }).filter((x) => x.asked);
+  return { level: LW_CEFR_ALL[idx], correct: answers.filter((a) => a.ok).length, total: answers.length, byLevel };
+}
+
 Object.assign(window, {
+  LW_LEVEL_TEST_LEN,
+  LW_LEVEL_TEST_MIN_BANK,
+  LW_CEFR_NAMES,
+  lwLevelTestPick,
+  lwLevelIndex,
+  lwLevelTestResult,
   LW_BADGES,
   lwBestStreak,
   lwBadgeMetrics,

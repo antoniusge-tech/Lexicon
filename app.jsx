@@ -27,7 +27,7 @@ const LW_TABS = [
   { id: 'library', label: 'Library', icon: Ic.Library },
   { id: 'profile', label: 'Profile', icon: Ic.Person },
 ];
-const LW_SCREENS = ['learn', 'reading', 'grammar', 'library', 'profile', 'import', 'admin'];
+const LW_SCREENS = ['learn', 'reading', 'grammar', 'library', 'profile', 'import', 'admin', 'leveltest'];
 const LW_ROLE_LABEL = { admin: 'Admin', premium: 'Premium', user: 'User' };
 
 /* Human-readable reading-generation errors, keyed by the .code set in data.jsx.
@@ -463,10 +463,11 @@ function App() {
     const metrics = window.lwBadgeMetrics({
       uid: authUser.uid, activity, progress, words: scopedWords,
       readingProgress: Object.fromEntries(Object.entries(readingProgress).filter(([id]) => textIds.has(id))),
-      lessons: scopedLessons, lessonProgress, collocations: scopedCollocations, now,
+      lessons: scopedLessons, lessonProgress, collocations: scopedCollocations,
+      levelTest: userDoc && userDoc[window.lwLangField('levelTest', lang)], now,
     });
     return window.lwBadgeStates(metrics, earnedBadges);
-  }, [authUser, activity, progress, scopedWords, scopedTexts, readingProgress, scopedLessons, lessonProgress, scopedCollocations, now, earnedBadges]);
+  }, [authUser, activity, progress, scopedWords, scopedTexts, readingProgress, scopedLessons, lessonProgress, scopedCollocations, now, earnedBadges, userDoc, lang]);
   useEffect(() => {
     if (!authUser || !userDoc || !lang) return;
     const fresh = badgeStates.filter((b) => b.reached && !b.earnedAt);
@@ -745,10 +746,13 @@ function App() {
               goLibrary={() => goTo('library')} />
           ) : tab === 'admin' && isAdmin ? (
             <AdminView currentUid={authUser.uid} />
+          ) : tab === 'leveltest' ? (
+            <LevelTestScreen lang={lang} user={userDoc} uid={authUser.uid} isAdmin={isAdmin} updateProfile={updateProfile}
+              pushToast={pushToast} onClose={() => goTo('profile')} />
           ) : (
             <ProfileView user={userDoc} stats={stats} badges={badgeStates} updateProfile={updateProfile}
               authInfo={authInfo} refreshAuthInfo={() => setAuthInfo(window.lwAuthInfo())}
-              pushToast={pushToast} goLearn={() => goTo('cards')}
+              pushToast={pushToast} goLearn={() => goTo('cards')} goLevelTest={() => goTo('leveltest')}
               theme={theme} onToggleTheme={toggleTheme}
               direction={direction} setDirection={setDirection}
               lang={lang} langs={langs} setLang={setLang} removeLang={removeLang}
@@ -1071,6 +1075,289 @@ function LearnView({ mode, setMode, stats, studyStats, selectedCount, onPickGrou
   );
 }
 
+/* ---------------- Level test (any language) + question bank editor (admins) ---------------- */
+function LevelTestScreen({ lang, user, uid, isAdmin, updateProfile, pushToast, onClose }) {
+  const info = window.lwLangInfo(lang);
+  const cefrKey = window.lwCefrField(lang);
+  const testKey = window.lwLangField('levelTest', lang);
+  const [bank, setBank] = useState(null); // null while loading
+  useEffect(() => window.lwWatchLevelQuestions(lang, setBank), [lang]);
+  const [view, setView] = useState('intro'); // intro | test | result | manage
+  const [run, setRun] = useState(null); // { asked, answers, level, q, order, picked }
+  const [result, setResult] = useState(null);
+  useEffect(() => { window.scrollTo(0, 0); }, [view, run && run.q && run.q.id]);
+  const last = user[testKey];
+  const ready = bank && bank.length >= window.LW_LEVEL_TEST_MIN_BANK;
+
+  const ask = (q, asked, answers, level) => setRun({ asked, answers, level, q, order: shuffle([0, 1, 2, 3]), picked: null });
+  const start = () => {
+    const level = user[cefrKey] ? window.lwLevelIndex(user[cefrKey]) : 1; // A2 when unknown
+    const q = window.lwLevelTestPick(bank, [], level);
+    if (!q) return;
+    setResult(null);
+    ask(q, [q.id], [], level);
+    setView('test');
+  };
+  const finish = (answers) => {
+    const res = window.lwLevelTestResult(answers);
+    setResult(res);
+    setView('result');
+    updateProfile({ [testKey]: { level: res.level, correct: res.correct, total: res.total, at: Date.now() } });
+  };
+  /* slot: index of the shown option, or -1 for "I don't know" */
+  const answer = (slot) => {
+    if (!run || run.picked != null) return;
+    const ok = slot >= 0 && run.order[slot] === run.q.answer;
+    setRun((r) => ({ ...r, picked: slot }));
+    setTimeout(() => {
+      const answers = [...run.answers, { id: run.q.id, level: run.q.level, target: run.level, ok }];
+      const level = ok ? Math.min(5, run.level + 1) : Math.max(0, run.level - 1);
+      const q = answers.length < window.LW_LEVEL_TEST_LEN ? window.lwLevelTestPick(bank, run.asked, level) : null;
+      if (!q) { finish(answers); return; }
+      ask(q, [...run.asked, q.id], answers, level);
+    }, 250);
+  };
+
+  if (view === 'manage' && isAdmin) {
+    return <LevelQuestionsAdmin bank={bank || []} lang={lang} uid={uid} pushToast={pushToast} onBack={() => setView('intro')} />;
+  }
+
+  if (view === 'test' && run) {
+    const n = run.answers.length;
+    return (
+      <div className="grammar quiz lt">
+        <div className="ls-back-row">
+          <button type="button" className="btn btn-ghost sm" onClick={() => { setRun(null); setView('intro'); }}><Ic.Close width="15" height="15" /> Quit test</button>
+          <span className="ls-pos">{info.name} level test</span>
+        </div>
+        <div className="colloc-head">
+          <span className="colloc-kicker">Question {n + 1} of {window.LW_LEVEL_TEST_LEN}</span>
+        </div>
+        <div className="colloc-segs">
+          {Array.from({ length: window.LW_LEVEL_TEST_LEN }, (_, i) => <span key={i} className={'colloc-seg' + (i < n ? ' on' : i === n ? ' cur' : '')} />)}
+        </div>
+        <div className="ls-card quiz-card">
+          <p className="quiz-type">{run.q.skill === 'vocabulary' ? 'Vocabulary' : 'Grammar'}</p>
+          <p className="quiz-q quiz-q-big">{run.q.q}</p>
+          <div className="quiz-options">
+            {run.order.map((oi, slot) => (
+              <button key={slot} type="button" className={'quiz-option' + (run.picked === slot ? ' picked' : '')}
+                disabled={run.picked != null} onClick={() => answer(slot)}>
+                <span className="quiz-letter">{'ABCD'[slot]}</span>{run.q.options[oi]}
+              </button>
+            ))}
+          </div>
+          <button type="button" className={'btn btn-ghost lt-idk' + (run.picked === -1 ? ' picked' : '')} disabled={run.picked != null} onClick={() => answer(-1)}>
+            I don't know
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'result' && result) {
+    const current = user[cefrKey];
+    return (
+      <div className="grammar quiz lt">
+        <div className="quiz-result pass">
+          <span className="lt-level">{result.level}</span>
+          <h2 className="quiz-result-title">{window.LW_CEFR_NAMES[result.level]}</h2>
+          <p className="quiz-result-sub">Your {info.name} level. You answered {result.correct} of {result.total} questions correctly.</p>
+          <div className="lt-bars">
+            {result.byLevel.map((b) => (
+              <div className="lt-bar" key={b.level}>
+                <span className="lt-bar-lv">{b.level}</span>
+                <span className="badge-track lt-bar-track"><span className="badge-fill" style={{ width: Math.round((b.right / b.asked) * 100) + '%' }} /></span>
+                <span className="lt-bar-num">{b.right}/{b.asked}</span>
+              </div>
+            ))}
+          </div>
+          <div className="quiz-result-btns">
+            {current === result.level ? (
+              <button className="btn btn-primary" onClick={onClose}>Done</button>
+            ) : (
+              <>
+                <button className="btn btn-soft" onClick={onClose}>{current ? 'Keep ' + current : 'Not now'}</button>
+                <button className="btn btn-primary" onClick={() => { updateProfile({ [cefrKey]: result.level }); onClose(); }}>Set {result.level} as my level</button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grammar lt">
+      <div className="ls-back-row">
+        <button type="button" className="btn btn-ghost sm" onClick={onClose}>
+          <Ic.Chevron width="16" height="16" style={{ transform: 'rotate(90deg)' }} /> Profile
+        </button>
+      </div>
+      <section className="ls-cta lt-intro">
+        <span className="ls-cta-icon"><Ic.ListCheck width="24" height="24" /></span>
+        <h1 className="ls-cta-title">{info.name} level test</h1>
+        <p className="ls-cta-sub">{window.LW_LEVEL_TEST_LEN} questions · about 8 minutes. The questions get harder or easier as you answer.
+          No hints and no answers during the test — tap “I don't know” instead of guessing.</p>
+        {last && <p className="ls-cta-note">Last test: {last.level} ({last.correct}/{last.total}) · {new Date(last.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</p>}
+        {bank === null ? <span className="spinner" aria-hidden="true" />
+          : ready ? <button type="button" className="btn btn-primary ls-cta-btn" onClick={start}>Start the test <Ic.Arrow width="16" height="16" /></button>
+          : <p className="ls-cta-note">The test isn't ready for {info.name} yet.</p>}
+        {isAdmin && bank && (
+          <button type="button" className="btn btn-soft sm" onClick={() => setView('manage')}><Ic.Edit width="15" height="15" /> Manage questions ({bank.length})</button>
+        )}
+      </section>
+    </div>
+  );
+}
+
+const lwEmptyLevelQuestion = (level) => ({ level: level || 'B1', skill: 'grammar', q: '', options: ['', '', '', ''], answer: 0, why: '' });
+
+function LevelQuestionsAdmin({ bank, lang, uid, pushToast, onBack }) {
+  const info = window.lwLangInfo(lang);
+  const [level, setLevel] = useState('all');
+  const [form, setForm] = useState(null); // question being edited or created
+  const [confirm, setConfirm] = useState(null);
+  const counts = Object.fromEntries(window.LW_CEFR_ALL.map((lv) => [lv, bank.filter((q) => q.level === lv).length]));
+  const list = bank.filter((q) => level === 'all' || q.level === level)
+    .sort((a, b) => window.lwLevelIndex(a.level) - window.lwLevelIndex(b.level) || (a.createdAt || 0) - (b.createdAt || 0));
+  const fail = (title) => (e) => pushToast({ kind: 'error', title, msg: (e && e.message) || String(e) });
+  const save = (q) => {
+    const now = Date.now();
+    window.lwSetDoc(window.LW_COLLECTIONS.levelQuestions, {
+      ...q, id: q.id || window.lwUid() + window.lwUid(), lang, userId: q.userId || uid, shared: true,
+      createdAt: q.createdAt || now, updatedAt: now,
+    }).catch(fail('Could not save the question'));
+    setForm(null);
+  };
+  return (
+    <div className="grammar lt">
+      <div className="ls-back-row">
+        <button type="button" className="btn btn-ghost sm" onClick={onBack}>
+          <Ic.Chevron width="16" height="16" style={{ transform: 'rotate(90deg)' }} /> Level test
+        </button>
+      </div>
+      <div className="lib-intro">
+        <div>
+          <h1 className="lib-title">Test questions</h1>
+          <p className="lib-sub">{info.name} · {bank.length} questions · the test needs at least {window.LW_LEVEL_TEST_MIN_BANK}, about 10 per level is best</p>
+        </div>
+        <button className="btn btn-primary" onClick={() => setForm(lwEmptyLevelQuestion(level === 'all' ? 'B1' : level))}><Ic.Plus /> New question</button>
+      </div>
+      <div className="status-chips">
+        <button type="button" className={'chip' + (level === 'all' ? ' chip-on' : '')} onClick={() => setLevel('all')}>All <span className="chip-count">{bank.length}</span></button>
+        {window.LW_CEFR_ALL.map((lv) => (
+          <button key={lv} type="button" className={'chip' + (level === lv ? ' chip-on' : '')} onClick={() => setLevel(lv)}>
+            {lv} <span className="chip-count">{counts[lv]}</span>
+          </button>
+        ))}
+      </div>
+      {list.length === 0 ? (
+        <div className="empty-card lib-empty">
+          <p className="empty-title">No questions{level === 'all' ? '' : ' at ' + level}</p>
+          <button className="btn btn-primary" onClick={() => setForm(lwEmptyLevelQuestion(level === 'all' ? 'B1' : level))}><Ic.Plus /> New question</button>
+        </div>
+      ) : (
+        <div className="gr-list">
+          {list.map((q) => (
+            <div className="gr-item lq-item" key={q.id}>
+              <button type="button" className="gr-item-main" onClick={() => setForm(q)}>
+                <span className="gr-num lq-lv">{q.level}</span>
+                <span className="gr-item-text">
+                  <span className="gr-item-title">{q.q}</span>
+                  <span className="gr-item-meta"><span>{q.skill === 'vocabulary' ? 'Vocabulary' : 'Grammar'}</span><span>✓ {q.options[q.answer]}</span></span>
+                </span>
+              </button>
+              <div className="gr-item-tools">
+                <button type="button" className="icon-btn sm danger" aria-label="Delete" onClick={() => setConfirm(q)}><Ic.Trash /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {form && (
+        <Modal title={form.id ? 'Edit question' : 'New question'} onClose={() => setForm(null)}>
+          <LevelQuestionForm initial={form} onSave={save} onCancel={() => setForm(null)} />
+        </Modal>
+      )}
+      {confirm && (
+        <Modal title="Delete question" onClose={() => setConfirm(null)}
+          footer={<>
+            <button className="btn btn-ghost" onClick={() => setConfirm(null)}>Cancel</button>
+            <button className="btn btn-danger" onClick={() => {
+              const q = confirm;
+              setConfirm(null);
+              window.lwDeleteDoc(window.LW_COLLECTIONS.levelQuestions, q.id).catch(fail('Could not delete the question'));
+            }}>Delete</button>
+          </>}>
+          <p className="confirm-text">Delete <strong>{confirm.q}</strong>? This can't be undone.</p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function LevelQuestionForm({ initial, onSave, onCancel }) {
+  const [d, setD] = useState(() => ({ ...lwEmptyLevelQuestion(), ...initial, options: [0, 1, 2, 3].map((i) => (initial.options || [])[i] || '') }));
+  const [tried, setTried] = useState(false);
+  const set = (k, v) => setD((x) => ({ ...x, [k]: v }));
+  const opts = d.options.map((o) => o.trim());
+  const errors = [];
+  if (!d.q.trim()) errors.push('Write the question.');
+  if (opts.some((o) => !o)) errors.push('Fill in all 4 options.');
+  else if (new Set(opts.map((o) => o.toLowerCase())).size < 4) errors.push('Options must be different.');
+  const submit = () => {
+    setTried(true);
+    if (errors.length) return;
+    onSave({ ...d, q: d.q.trim(), options: opts, why: (d.why || '').trim() });
+  };
+  return (
+    <div className="form">
+      <div className="form-grid">
+        <label className="field">
+          <span className="field-label">Level</span>
+          <select className="input" value={d.level} onChange={(e) => set('level', e.target.value)}>
+            {window.LW_CEFR_ALL.map((lv) => <option key={lv} value={lv}>{lv} · {window.LW_CEFR_NAMES[lv]}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span className="field-label">Type</span>
+          <select className="input" value={d.skill} onChange={(e) => set('skill', e.target.value)}>
+            <option value="grammar">Grammar</option>
+            <option value="vocabulary">Vocabulary</option>
+          </select>
+        </label>
+      </div>
+      <label className="field">
+        <span className="field-label">Question</span>
+        <input className="input" value={d.q} autoFocus placeholder="She ___ to work every day." onChange={(e) => set('q', e.target.value)} />
+        <span className="field-hint">Mark the gap with ___ .</span>
+      </label>
+      <div className="field">
+        <span className="field-label">Options — pick the correct one</span>
+        <div className="lf-options">
+          {d.options.map((o, j) => (
+            <label className={'lf-option' + (d.answer === j ? ' on' : '')} key={j}>
+              <input type="radio" name="lq-ans" checked={d.answer === j} onChange={() => set('answer', j)} aria-label={'Correct answer ' + (j + 1)} />
+              <input className="input input-sm" value={o} placeholder={'option ' + (j + 1)}
+                onChange={(e) => set('options', d.options.map((x, k) => (k === j ? e.target.value : x)))} />
+            </label>
+          ))}
+        </div>
+      </div>
+      <label className="field">
+        <span className="field-label">Note for admins (optional)</span>
+        <input className="input" value={d.why || ''} placeholder="why this answer is right" onChange={(e) => set('why', e.target.value)} />
+      </label>
+      {tried && errors.length > 0 && <p className="colloc-error" role="alert">{errors[0]}</p>}
+      <div className="form-foot">
+        <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
+        <button className="btn btn-primary" onClick={submit}>{initial.id ? 'Save changes' : 'Add question'}</button>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Badges (Profile) ---------------- */
 const LW_BADGES_COLLAPSED = 8;
 function lwBadgeNum(v, unit) { return unit === 'h' ? (Math.floor(v * 10) / 10) : Math.floor(v); }
@@ -1126,7 +1413,7 @@ const LW_STATUS_META = [
   { id: 'mastered', label: 'Mastered' },
 ];
 
-function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuthInfo, pushToast, goLearn,
+function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuthInfo, pushToast, goLearn, goLevelTest,
   theme, onToggleTheme, direction, setDirection, lang, langs, setLang, removeLang, onGeminiKey, onLogout, onDeleteAccount }) {
   const fileRef = useRef(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
@@ -1264,6 +1551,15 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
       <section className="dash-card">
         <h2 className="dash-title">{langInfo.name} level</h2>
         <p className="dash-sub">Your level sets the default difficulty of reading texts.</p>
+        {(() => {
+          const lt = user[window.lwLangField('levelTest', lang)];
+          return (
+            <div className="lt-link">
+              <span>{lt ? 'Last test: ' + lt.level + ' · ' + new Date(lt.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : 'Not sure?'}</span>
+              <button type="button" className="btn btn-soft sm" onClick={goLevelTest}><Ic.ListCheck width="15" height="15" /> {lt ? 'Retake level test' : 'Take a level test'}</button>
+            </div>
+          );
+        })()}
         <div className="cefr-row">
           <span className="cefr-label">I'm at</span>
           <div className="cefr-pills">
