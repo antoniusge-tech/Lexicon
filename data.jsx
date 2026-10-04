@@ -11,6 +11,7 @@ const LW_KEYS = {
   wotd: 'lw_word_of_day_v1', // {date, wordId} — keeps the word of the day stable all day
   readerGroup: 'lw_reader_group_v1', // group that "+ Add to cards" in the reader puts words into
   trCache: 'lw_reader_tr_v1', // {key: [ru sentences]} — paragraph translations, newest last
+  grammar: 'lw_grammar_v1', // {level, saved} — Grammar list filters
   reading: 'lw_reading_cards_v1', // последняя пачка сгенерированных текстов-карточек
 };
 
@@ -537,6 +538,118 @@ async function lwAiSuggestCollocations(word, existing) {
   return { pos: lwNormPos(p.pos), pattern: clean(p.pattern, 60), phrases, wrong };
 }
 
+/* ---------------- Grammar lessons (AI) ---------------- */
+
+const LW_LESSON_SYSTEM = 'Ты — методист, пишешь урок грамматики английского для русскоязычных учеников. '
+  + 'Объяснения, переводы и пояснения — на русском; примеры, формулы и задания теста — на английском. '
+  + 'Ключевые слова в тексте выделяй двойными квадратными скобками: "I [[have lost]] my keys". ';
+
+const LW_TASK_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    type: { type: 'STRING', enum: ['choice', 'fill'] },
+    q: { type: 'STRING' },
+    options: { type: 'ARRAY', items: { type: 'STRING' } },
+    answer: { type: 'INTEGER' },
+    answers: { type: 'ARRAY', items: { type: 'STRING' } },
+    why: { type: 'STRING' },
+  },
+  required: ['type', 'q', 'why'],
+};
+const LW_TASK_RULES = 'Задание теста: type "choice" — q с пропуском "___", ровно 4 варианта в options, answer — индекс верного (0–3); '
+  + 'type "fill" — q с пропуском "___" и подсказкой в скобках, например "She ___ (finish) it yet.", answers — все допустимые варианты '
+  + '(полная и краткая форма). why — короткое пояснение на русском, почему ответ верный. Ответ должен быть однозначным.';
+
+const lwStr = (x, n = 600) => String(x == null ? '' : x).trim().slice(0, n);
+
+/* a valid test task or null */
+function lwNormTask(t) {
+  if (!t || !lwStr(t.q)) return null;
+  const base = { q: lwStr(t.q, 300), why: lwStr(t.why, 400) };
+  if (t.type === 'fill') {
+    const answers = (Array.isArray(t.answers) ? t.answers : []).map((x) => lwStr(x, 80)).filter(Boolean);
+    return answers.length ? { type: 'fill', ...base, answers } : null;
+  }
+  const options = (Array.isArray(t.options) ? t.options : []).map((x) => lwStr(x, 80)).filter(Boolean).slice(0, 4);
+  const answer = Number(t.answer);
+  if (options.length !== 4 || !Number.isInteger(answer) || answer < 0 || answer > 3) return null;
+  return { type: 'choice', ...base, options, answer };
+}
+
+/* A whole lesson: focus, formulas, comparison table, worked examples and a
+   10-task test. Tasks that come back malformed are dropped — the editor then
+   asks the admin to fill or regenerate the missing ones. */
+async function lwAiGenerateLesson({ title, topic, level, compare }) {
+  const subject = lwStr(title, 120) || lwStr(topic, 60);
+  if (!subject) { const e = new Error('Enter a title or topic.'); e.code = 'empty'; throw e; }
+  const p = await lwGeminiJson(
+    LW_LESSON_SYSTEM + 'Верни урок: title — название по-английски; focus — ключевая идея в 1–2 предложениях; '
+      + 'minutes — время на изучение; formulas — 3 строки (kind: affirmative, negative, question; pattern — схема вроде "have/has + V3"; '
+      + 'example — пример с выделением; tr — перевод); '
+      + 'compareTable — rows: по одной строке на эту тему и на тему сравнения (title, tag — короткая метка на русском, '
+      + 'markers — слова-маркеры, pattern, example), tip — главное правило различия; если сравнивать не с чем — сравни с самой частой ошибкой; '
+      + 'examples — 3 разобранных предложения (sentence с выделением, tr, notes — пояснения к выделенным частям: part и text); '
+      + 'quiz — ровно 10 заданий, 6 choice и 4 fill, вперемешку. ' + LW_TASK_RULES,
+    'Тема урока: ' + subject + (topic ? '\nРаздел: ' + lwStr(topic, 60) : '') + '\nУровень: ' + (level || 'B1')
+      + (compare ? '\nСравнить с: ' + lwStr(compare, 60) : ''),
+    {
+      type: 'OBJECT',
+      properties: {
+        title: { type: 'STRING' }, focus: { type: 'STRING' }, minutes: { type: 'INTEGER' },
+        formulas: { type: 'ARRAY', items: { type: 'OBJECT', properties: {
+          kind: { type: 'STRING', enum: ['affirmative', 'negative', 'question'] }, pattern: { type: 'STRING' },
+          example: { type: 'STRING' }, tr: { type: 'STRING' } }, required: ['kind', 'pattern', 'example', 'tr'] } },
+        compareTable: { type: 'OBJECT', properties: {
+          rows: { type: 'ARRAY', items: { type: 'OBJECT', properties: {
+            title: { type: 'STRING' }, tag: { type: 'STRING' }, markers: { type: 'STRING' }, pattern: { type: 'STRING' }, example: { type: 'STRING' } },
+            required: ['title', 'markers', 'pattern', 'example'] } },
+          tip: { type: 'STRING' } }, required: ['rows', 'tip'] },
+        examples: { type: 'ARRAY', items: { type: 'OBJECT', properties: {
+          sentence: { type: 'STRING' }, tr: { type: 'STRING' },
+          notes: { type: 'ARRAY', items: { type: 'OBJECT', properties: { part: { type: 'STRING' }, text: { type: 'STRING' } }, required: ['part', 'text'] } } },
+          required: ['sentence', 'tr', 'notes'] } },
+        quiz: { type: 'ARRAY', items: LW_TASK_SCHEMA },
+      },
+      required: ['title', 'focus', 'minutes', 'formulas', 'compareTable', 'examples', 'quiz'],
+    }
+  );
+  const arr = (x) => (Array.isArray(x) ? x : []);
+  return {
+    title: lwStr(p.title, 120) || subject,
+    focus: lwStr(p.focus),
+    minutes: Math.min(60, Math.max(3, Number(p.minutes) || 10)),
+    formulas: arr(p.formulas).map((f) => ({
+      kind: ['affirmative', 'negative', 'question', 'rule'].includes(f.kind) ? f.kind : 'affirmative',
+      pattern: lwStr(f.pattern, 80), example: lwStr(f.example, 200), tr: lwStr(f.tr, 300),
+    })).filter((f) => f.pattern && f.example),
+    compareTable: {
+      rows: arr(p.compareTable && p.compareTable.rows).slice(0, 3).map((r) => ({
+        title: lwStr(r.title, 60), tag: lwStr(r.tag, 40), markers: lwStr(r.markers, 200), pattern: lwStr(r.pattern, 80), example: lwStr(r.example, 200),
+      })).filter((r) => r.title),
+      tip: lwStr(p.compareTable && p.compareTable.tip, 300),
+    },
+    examples: arr(p.examples).map((x) => ({
+      sentence: lwStr(x.sentence, 200), tr: lwStr(x.tr, 300),
+      notes: arr(x.notes).map((n) => ({ part: lwStr(n.part, 60), text: lwStr(n.text, 200) })).filter((n) => n.part && n.text),
+    })).filter((x) => x.sentence),
+    quiz: arr(p.quiz).map(lwNormTask).filter(Boolean).slice(0, 10),
+  };
+}
+
+/* one new test task for a lesson, different from the tasks it already has */
+async function lwAiRegenerateTask(lesson, type) {
+  const have = (lesson.quiz || []).map((t) => t && t.q).filter(Boolean);
+  const p = await lwGeminiJson(
+    LW_LESSON_SYSTEM + 'Составь ОДНО новое задание теста к уроку, не похожее на уже имеющиеся. ' + LW_TASK_RULES,
+    'Урок: ' + lwStr(lesson.title, 120) + '\nУровень: ' + (lesson.level || 'B1') + '\nТип задания: ' + (type === 'fill' ? 'fill' : 'choice')
+      + (have.length ? '\nУже есть:\n' + have.join('\n') : ''),
+    LW_TASK_SCHEMA
+  );
+  const t = lwNormTask({ ...p, type: type === 'fill' ? 'fill' : (p.type || 'choice') });
+  if (!t) { const e = new Error('AI returned an invalid task.'); e.code = 'refusal'; throw e; }
+  return t;
+}
+
 /* Word of the day: the same word all day, a different one tomorrow. Picks from
    the most useful pool that has words — due/learning first, then new, then
    mastered — using a hash of the date, so it needs no storage. */
@@ -799,6 +912,9 @@ Object.assign(window, {
   lwAiLookupWord,
   lwAiTranslateSentences,
   lwAiSuggestCollocations,
+  lwAiGenerateLesson,
+  lwAiRegenerateTask,
+  lwNormTask,
   lwWordOfTheDay,
   lwLoad,
   lwSave,

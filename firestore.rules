@@ -125,6 +125,24 @@ service cloud.firestore {
         && (request.resource.data.shared == false || (request.resource.data.shared == true && isAdmin()));
     }
 
+    // Grammar lessons: shared content written only by admins. Users read
+    // published lessons (their list query filters published == true).
+    match /lessons/{lessonId} {
+      allow read: if isSignedIn() && (resource.data.published == true || isAdmin());
+      allow create, update: if isAdmin()
+        && request.resource.data.title is string && request.resource.data.title.size() > 0
+        && request.resource.data.quiz is list && request.resource.data.quiz.size() == 10;
+      allow delete: if isAdmin();
+    }
+
+    // Lesson progress per user. Doc id is `${uid}_${lessonId}`.
+    match /lesson_progress/{progressId} {
+      allow read, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create, update: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && progressId == request.auth.uid + '_' + request.resource.data.lessonId;
+    }
+
     // AI-квоты: пишет ТОЛЬКО Cloud Function через Admin SDK (обходит правила).
     // Клиент может прочитать свой счётчик (док с id `${uid}_${day}`), но не менять его.
     match /ai_usage/{usageId} {

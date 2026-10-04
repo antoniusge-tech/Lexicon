@@ -29,6 +29,8 @@ const LW_COLLECTIONS = {
   texts: 'texts',
   readingProgress: 'reading_progress',
   collocations: 'collocations',
+  lessons: 'lessons',
+  lessonProgress: 'lesson_progress',
 };
 
 /* Legacy accounts (registered before real emails) authenticate via a synthetic
@@ -93,7 +95,7 @@ async function lwDeleteAccount(password) {
   /* own reading texts: chapters live in a subcollection and must go first */
   const ownTexts = await lwDb.collection(LW_COLLECTIONS.texts).where('userId', '==', uid).get();
   for (const t of ownTexts.docs) await lwDeleteText(t.id, (t.data().chapters || []).length);
-  for (const coll of [LW_COLLECTIONS.words, LW_COLLECTIONS.groups, LW_COLLECTIONS.progress, LW_COLLECTIONS.activity, LW_COLLECTIONS.readingProgress, LW_COLLECTIONS.collocations]) {
+  for (const coll of [LW_COLLECTIONS.words, LW_COLLECTIONS.groups, LW_COLLECTIONS.progress, LW_COLLECTIONS.activity, LW_COLLECTIONS.readingProgress, LW_COLLECTIONS.collocations, LW_COLLECTIONS.lessonProgress]) {
     const snap = await lwDb.collection(coll).where('userId', '==', uid).get();
     for (let i = 0; i < snap.docs.length; i += 400) {
       const batch = lwDb.batch();
@@ -263,11 +265,12 @@ async function lwDeleteWordsByGroup(groupId, userId) {
 
 /* Record one answer in a single batch: the word's new progress doc plus the
    day's activity counters. Uses merge + increment (no transaction), so it also
-   works offline. `progress` is the full doc from lwNextProgress. */
+   works offline. `progress` is the full doc from lwNextProgress, or null for an
+   answer that belongs to no word (grammar tests): then only activity is written. */
 function lwRecordAnswer({ uid, progress, date, correct, xp, goalBonus, ms }) {
   const inc = firebase.firestore.FieldValue.increment;
   const batch = lwDb.batch();
-  batch.set(lwDb.collection(LW_COLLECTIONS.progress).doc(uid + '_' + progress.wordId), { ...progress, userId: uid });
+  if (progress) batch.set(lwDb.collection(LW_COLLECTIONS.progress).doc(uid + '_' + progress.wordId), { ...progress, userId: uid });
   const day = { userId: uid, date, answers: inc(1), correct: inc(correct ? 1 : 0), xp: inc(xp + (goalBonus || 0)), ms: inc(ms || 0) };
   if (goalBonus) day.goalMet = true;
   batch.set(lwDb.collection(LW_COLLECTIONS.activity).doc(uid + '_' + date), day, { merge: true });
@@ -287,6 +290,28 @@ async function lwDeleteProgressForWords(uid, wordIds) {
     wordIds.slice(i, i + 400).forEach((id) => batch.delete(lwDb.collection(LW_COLLECTIONS.progress).doc(uid + '_' + id)));
     await batch.commit();
   }
+}
+
+/* ---------------- Grammar lessons ---------------- */
+
+/* Admins see every lesson (drafts too); users only published ones — the
+   query filter is what the rules require. */
+function lwWatchLessons(isAdmin, onChange) {
+  const q = isAdmin ? lwDb.collection(LW_COLLECTIONS.lessons)
+    : lwDb.collection(LW_COLLECTIONS.lessons).where('published', '==', true);
+  return q.onSnapshot((snap) => onChange(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+}
+
+/* merge fields into this user's progress for a lesson */
+function lwSaveLessonProgress(uid, lessonId, fields) {
+  return lwDb.collection(LW_COLLECTIONS.lessonProgress).doc(uid + '_' + lessonId)
+    .set({ ...fields, userId: uid, lessonId }, { merge: true });
+}
+
+/* XP bonus for a first lesson completion: activity only, no answer counted */
+function lwAddBonusXp(uid, date, xp) {
+  return lwDb.collection(LW_COLLECTIONS.activity).doc(uid + '_' + date)
+    .set({ userId: uid, date, xp: firebase.firestore.FieldValue.increment(xp) }, { merge: true });
 }
 
 /* ---------------- Reading texts ---------------- */
@@ -391,6 +416,9 @@ Object.assign(window, {
   lwSaveReadingProgress,
   lwDeleteReadingProgress,
   lwDeleteProgressForWords,
+  lwWatchLessons,
+  lwSaveLessonProgress,
+  lwAddBonusXp,
   lwRegister,
   lwLogin,
   lwLogout,

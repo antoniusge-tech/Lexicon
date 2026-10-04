@@ -151,7 +151,53 @@ function lwCollocRoundPhrases(entry, progress, wordsById, now, max = 5) {
   return lwCollocLive(entry, wordsById).slice().sort((a, b) => isDue(b) - isDue(a)).slice(0, max);
 }
 
+/* ---------------- Grammar lessons ---------------- */
+
+const LW_LESSON_TASKS = 10; // every lesson test has exactly 10 tasks; 10/10 passes
+const LW_XP_LESSON_BONUS = 50; // first completion of a lesson
+
+/* lessons grouped by topic, each topic in `order` (then title), topics A–Z */
+function lwLessonTopics(lessons) {
+  const by = new Map();
+  lessons.forEach((l) => {
+    const t = (l.topic || 'Other').trim() || 'Other';
+    if (!by.has(t)) by.set(t, []);
+    by.get(t).push(l);
+  });
+  return [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([topic, list]) => ({
+    topic,
+    lessons: list.slice().sort((a, b) => (a.order || 0) - (b.order || 0) || String(a.title).localeCompare(String(b.title))),
+  }));
+}
+
+/* 'locked' | 'new' | 'studied' | 'completed'. A lesson opens once the previous
+   lesson of its topic is completed; one the user already studied or completed
+   stays open even if an earlier lesson is added later. Admins see all open. */
+function lwLessonStatus(lesson, topicLessons, progressByLesson, isAdmin) {
+  const p = progressByLesson[lesson.id] || {};
+  if (p.completedAt) return 'completed';
+  if (p.studiedAt) return 'studied';
+  const i = topicLessons.findIndex((l) => l.id === lesson.id);
+  const prev = i > 0 ? topicLessons[i - 1] : null;
+  if (!isAdmin && prev && !(progressByLesson[prev.id] || {}).completedAt) return 'locked';
+  return 'new';
+}
+
+/* a typed answer matches when equal ignoring case, extra spaces, apostrophe
+   style and trailing punctuation */
+const lwNormAnswer = (s) => String(s || '').toLowerCase().replace(/[’‘`´]/g, "'")
+  .replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '').trim();
+function lwCheckFill(input, answers) {
+  const v = lwNormAnswer(input);
+  return !!v && (answers || []).some((a) => lwNormAnswer(a) === v);
+}
+
 Object.assign(window, {
+  LW_LESSON_TASKS,
+  LW_XP_LESSON_BONUS,
+  lwLessonTopics,
+  lwLessonStatus,
+  lwCheckFill,
   lwCollocLive,
   lwCollocPlayable,
   lwCollocPick,
