@@ -1572,6 +1572,19 @@ html[data-theme="dark"] .cchip.ok { color: var(--on-primary); }
 .voice-pick { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 260px; justify-content: flex-end; }
 .voice-pick select { min-width: 0; flex: 1; max-width: 320px; }
 .voice-hint { margin: 0; padding: 10px 18px 14px; font-size: 12.5px; color: var(--on-surface-variant); line-height: 1.5; }
+
+/* ---------- Badges (Profile) ---------- */
+.badge-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-top: 14px; }
+.badge-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 14px 10px 12px; border-radius: var(--radius-lg); background: var(--surface-low); text-align: center; }
+.badge-card.on { background: linear-gradient(160deg, color-mix(in srgb, var(--secondary-container) 55%, var(--surface-lowest)), var(--surface-lowest)); box-shadow: var(--shadow-ambient); }
+.badge-icon { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; font-size: 24px; background: var(--surface-lowest); filter: grayscale(1); opacity: .45; }
+.badge-card.on .badge-icon { filter: none; opacity: 1; background: var(--secondary-container); }
+.badge-title { font-weight: 800; font-size: 13.5px; line-height: 1.25; }
+.badge-sub { font-size: 11.5px; color: var(--on-surface-variant); line-height: 1.35; }
+.badge-track { width: 80%; height: 5px; margin-top: 4px; border-radius: 999px; background: var(--surface-highest); overflow: hidden; }
+.badge-fill { display: block; height: 100%; border-radius: inherit; background: var(--gradient-progress); }
+.badge-num { font-size: 11px; font-weight: 700; color: var(--on-surface-variant); }
+.badges-more { margin-top: 12px; }
 </style>
 </head>
 <body>

@@ -450,6 +450,41 @@ function App() {
     };
   }, [activity, progress, scopedWords, now, dailyGoal]);
 
+  /* Badges, per language like every other stat: metrics from the current
+     language's data; earned ones are kept in users/{uid}.badges (badges_<lang>
+     for non-English, lwLangField). New ones are saved 2 s after the data
+     settles and announced with a toast; the very first time, everything
+     already earned is saved quietly with a single toast. */
+  const badgesField = window.lwLangField('badges', lang);
+  const earnedBadges = userDoc ? userDoc[badgesField] : undefined;
+  const badgeStates = useMemo(() => {
+    if (!authUser) return [];
+    const textIds = new Set(scopedTexts.map((t) => t.id));
+    const metrics = window.lwBadgeMetrics({
+      uid: authUser.uid, activity, progress, words: scopedWords,
+      readingProgress: Object.fromEntries(Object.entries(readingProgress).filter(([id]) => textIds.has(id))),
+      lessons: scopedLessons, lessonProgress, collocations: scopedCollocations, now,
+    });
+    return window.lwBadgeStates(metrics, earnedBadges);
+  }, [authUser, activity, progress, scopedWords, scopedTexts, readingProgress, scopedLessons, lessonProgress, scopedCollocations, now, earnedBadges]);
+  useEffect(() => {
+    if (!authUser || !userDoc || !lang) return;
+    const fresh = badgeStates.filter((b) => b.reached && !b.earnedAt);
+    if (!fresh.length) return;
+    const t = setTimeout(() => {
+      const ts = Date.now();
+      const fields = {};
+      fresh.forEach((b) => { fields[badgesField + '.' + b.badge.id] = ts; });
+      window.lwUpdateUser(authUser.uid, fields).catch((e) => console.error('badges', e));
+      if (!earnedBadges) {
+        pushToast({ kind: 'success', title: 'You have ' + fresh.length + (fresh.length === 1 ? ' badge' : ' badges'), msg: 'See your achievements in Profile.', action: { label: 'View', view: 'profile' } });
+      } else {
+        fresh.forEach((b) => pushToast({ kind: 'success', title: 'New badge: ' + b.badge.title, msg: b.badge.icon + ' ' + b.badge.text, action: { label: 'View', view: 'profile' } }));
+      }
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [badgeStates, authUser, userDoc, lang, badgesField, earnedBadges, pushToast]);
+
   const scopedSelected = selected;
   const scopedCountByGroup = countByGroup;
 
@@ -711,7 +746,7 @@ function App() {
           ) : tab === 'admin' && isAdmin ? (
             <AdminView currentUid={authUser.uid} />
           ) : (
-            <ProfileView user={userDoc} stats={stats} updateProfile={updateProfile}
+            <ProfileView user={userDoc} stats={stats} badges={badgeStates} updateProfile={updateProfile}
               authInfo={authInfo} refreshAuthInfo={() => setAuthInfo(window.lwAuthInfo())}
               pushToast={pushToast} goLearn={() => goTo('cards')}
               theme={theme} onToggleTheme={toggleTheme}
@@ -1036,6 +1071,53 @@ function LearnView({ mode, setMode, stats, studyStats, selectedCount, onPickGrou
   );
 }
 
+/* ---------------- Badges (Profile) ---------------- */
+const LW_BADGES_COLLAPSED = 8;
+function lwBadgeNum(v, unit) { return unit === 'h' ? (Math.floor(v * 10) / 10) : Math.floor(v); }
+function BadgesSection({ badges }) {
+  const [all, setAll] = useState(false);
+  if (!badges.length) return null;
+  const got = (b) => b.earnedAt || b.reached;
+  const sorted = badges.slice().sort((a, b) => (got(b) ? 1 : 0) - (got(a) ? 1 : 0)
+    || (got(a) ? (b.earnedAt || Date.now()) - (a.earnedAt || Date.now()) : b.value / b.target - a.value / a.target));
+  const shown = all ? sorted : sorted.slice(0, LW_BADGES_COLLAPSED);
+  const count = badges.filter(got).length;
+  return (
+    <section className="dash-card badges">
+      <div className="dash-head">
+        <h2 className="dash-title">Badges</h2>
+        <span className="dash-badge">{count} of {badges.length}</span>
+      </div>
+      <div className="badge-grid">
+        {shown.map((b) => {
+          const on = got(b);
+          const pct = Math.min(100, Math.round((b.value / b.target) * 100));
+          return (
+            <div className={'badge-card' + (on ? ' on' : '')} key={b.badge.id} title={b.badge.text}>
+              <span className="badge-icon" aria-hidden="true">{b.badge.icon}</span>
+              <span className="badge-title">{b.badge.title}</span>
+              {on ? (
+                <span className="badge-sub">{b.earnedAt ? new Date(b.earnedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Just now'}</span>
+              ) : (
+                <>
+                  <span className="badge-sub">{b.badge.text}</span>
+                  <span className="badge-track"><span className="badge-fill" style={{ width: pct + '%' }} /></span>
+                  <span className="badge-num">{lwBadgeNum(b.value, b.badge.unit)} / {b.target}{b.badge.unit === 'level' ? '' : ' ' + b.badge.unit}</span>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {badges.length > LW_BADGES_COLLAPSED && (
+        <button type="button" className="btn btn-soft sm badges-more" onClick={() => setAll((x) => !x)}>
+          {all ? 'Show less' : 'Show all ' + badges.length}
+        </button>
+      )}
+    </section>
+  );
+}
+
 /* ---------------- Profile: who you are, your progress (dashboard), settings ---------------- */
 const LW_STATUS_META = [
   { id: 'new', label: 'New' },
@@ -1044,7 +1126,7 @@ const LW_STATUS_META = [
   { id: 'mastered', label: 'Mastered' },
 ];
 
-function ProfileView({ user, stats, updateProfile, authInfo, refreshAuthInfo, pushToast, goLearn,
+function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuthInfo, pushToast, goLearn,
   theme, onToggleTheme, direction, setDirection, lang, langs, setLang, removeLang, onGeminiKey, onLogout, onDeleteAccount }) {
   const fileRef = useRef(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
@@ -1201,6 +1283,8 @@ function ProfileView({ user, stats, updateProfile, authInfo, refreshAuthInfo, pu
           </div>
         </div>
       </section>
+
+      <BadgesSection badges={badges} />
 
       {/* nudge */}
       <section className="cta-card">

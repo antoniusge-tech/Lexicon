@@ -192,7 +192,87 @@ function lwCheckFill(input, answers) {
   return !!v && (answers || []).some((a) => lwNormAnswer(a) === v);
 }
 
+/* ---------------- Badges ----------------
+   Computed on the device from data the app already has; users/{uid}.badges
+   only remembers when each one was earned, so it stays earned. */
+
+/* longest run of consecutive active days ever */
+function lwBestStreak(activityByDate) {
+  const days = Object.values(activityByDate).filter((a) => a.answers > 0).map((a) => a.date).sort();
+  let best = 0;
+  let run = 0;
+  let prev = null;
+  days.forEach((d) => {
+    const t = Date.parse(d + 'T12:00:00');
+    run = prev != null && Math.round((t - prev) / LW_DAY_MS) === 1 ? run + 1 : 1;
+    best = Math.max(best, run);
+    prev = t;
+  });
+  return best;
+}
+
+const lwBadge = (id, group, icon, title, text, metric, target, unit) => ({ id, group, icon, title, text, metric, target, unit });
+const LW_BADGES = [
+  lwBadge('streak-3', 'Streak', '🔥', '3-day streak', 'Study 3 days in a row', 'bestStreak', 3, 'days'),
+  lwBadge('streak-7', 'Streak', '🔥', 'Week streak', 'Study 7 days in a row', 'bestStreak', 7, 'days'),
+  lwBadge('streak-30', 'Streak', '🔥', 'Month streak', 'Study 30 days in a row', 'bestStreak', 30, 'days'),
+  lwBadge('streak-100', 'Streak', '☄️', '100-day streak', 'Study 100 days in a row', 'bestStreak', 100, 'days'),
+  lwBadge('goal-1', 'Daily goal', '🎯', 'Goal reached', 'Reach your daily goal', 'goalDays', 1, 'days'),
+  lwBadge('goal-7', 'Daily goal', '🎯', 'Goal ×7', 'Reach your daily goal on 7 days', 'goalDays', 7, 'days'),
+  lwBadge('goal-30', 'Daily goal', '🏅', 'Goal ×30', 'Reach your daily goal on 30 days', 'goalDays', 30, 'days'),
+  lwBadge('answers-100', 'Practice', '✅', '100 answers', 'Answer 100 cards and tasks', 'answers', 100, 'answers'),
+  lwBadge('answers-1000', 'Practice', '✅', '1,000 answers', 'Answer 1,000 cards and tasks', 'answers', 1000, 'answers'),
+  lwBadge('answers-5000', 'Practice', '💯', '5,000 answers', 'Answer 5,000 cards and tasks', 'answers', 5000, 'answers'),
+  lwBadge('words-25', 'Words', '📝', 'Collector', 'Add 25 words of your own', 'ownWords', 25, 'words'),
+  lwBadge('mastered-10', 'Words', '⭐', '10 mastered', 'Master 10 words', 'mastered', 10, 'words'),
+  lwBadge('mastered-100', 'Words', '🌟', '100 mastered', 'Master 100 words', 'mastered', 100, 'words'),
+  lwBadge('mastered-500', 'Words', '👑', '500 mastered', 'Master 500 words', 'mastered', 500, 'words'),
+  lwBadge('time-1h', 'Time', '⏱️', 'First hour', 'Practise for 1 hour in total', 'hours', 1, 'h'),
+  lwBadge('time-10h', 'Time', '⏳', '10 hours', 'Practise for 10 hours in total', 'hours', 10, 'h'),
+  lwBadge('level-5', 'Level', '🚀', 'Level 5', 'Reach level 5', 'level', 5, 'level'),
+  lwBadge('level-10', 'Level', '🏆', 'Level 10', 'Reach level 10', 'level', 10, 'level'),
+  lwBadge('book-1', 'Reading', '📖', 'Bookworm', 'Finish a book', 'booksDone', 1, 'books'),
+  lwBadge('book-3', 'Reading', '📚', 'Reader', 'Finish 3 books', 'booksDone', 3, 'books'),
+  lwBadge('lesson-1', 'Grammar', '🎓', 'First lesson', 'Complete a grammar lesson', 'lessonsDone', 1, 'lessons'),
+  lwBadge('topic-1', 'Grammar', '🧠', 'Topic master', 'Complete every lesson of a grammar topic', 'topicsDone', 1, 'topics'),
+  lwBadge('colloc-1', 'Collocations', '🧩', 'Word partners', 'Create your first collocation', 'ownCollocs', 1, 'entries'),
+];
+
+/* metric values from the app's data */
+function lwBadgeMetrics({ uid, activity, progress, words, readingProgress, lessons, lessonProgress, collocations, now }) {
+  const acts = Object.values(activity);
+  const xp = lwTotalXp(activity);
+  const done = (l) => (lessonProgress[l.id] || {}).completedAt;
+  const topics = lwLessonTopics(lessons);
+  return {
+    bestStreak: lwBestStreak(activity),
+    goalDays: acts.filter((a) => a.goalMet).length,
+    answers: acts.reduce((n, a) => n + (a.answers || 0), 0),
+    ownWords: words.filter((w) => w.userId === uid).length,
+    mastered: lwStatusCounts(progress, words, now).mastered,
+    hours: lwTotalMs(activity) / 3600000,
+    level: lwLevel(xp),
+    booksDone: Object.values(readingProgress).filter((r) => (r.pct || 0) >= 99).length,
+    lessonsDone: lessons.filter(done).length,
+    topicsDone: topics.filter((t) => t.lessons.length && t.lessons.every(done)).length,
+    ownCollocs: collocations.filter((c) => c.userId === uid).length,
+  };
+}
+
+/* every badge with its progress; earned = stored, or reached right now */
+function lwBadgeStates(metrics, earned) {
+  return LW_BADGES.map((b) => {
+    const value = metrics[b.metric] || 0;
+    const at = (earned || {})[b.id] || null;
+    return { badge: b, value, target: b.target, reached: value >= b.target, earnedAt: at };
+  });
+}
+
 Object.assign(window, {
+  LW_BADGES,
+  lwBestStreak,
+  lwBadgeMetrics,
+  lwBadgeStates,
   LW_LESSON_TASKS,
   LW_XP_LESSON_BONUS,
   lwLessonTopics,
