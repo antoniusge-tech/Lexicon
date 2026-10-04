@@ -475,6 +475,68 @@ async function lwAiTranslateSentences(sentences) {
   return list.map((_, i) => String(p[i] || '').trim());
 }
 
+/* Collocations for one word: new phrases (not in `existing`) plus wrong partners
+   that learners typically use, with the right combination. Phrases become
+   ordinary word cards once the user ticks them. */
+async function lwAiSuggestCollocations(word, existing) {
+  const term = String(word || '').trim().slice(0, 60);
+  if (!term) { const e = new Error('Empty word.'); e.code = 'empty'; throw e; }
+  const have = (existing || []).map((x) => String(x || '').trim()).filter(Boolean).slice(0, 30);
+  const p = await lwGeminiJson(
+    'Ты — преподаватель английского, составляешь упражнение на коллокации (устойчивые сочетания слов). '
+      + 'Для данного английского слова верни: '
+      + 'pos — часть речи слова, одно из: ' + LW_POS.join(', ') + '; '
+      + 'pattern — схему сочетаний по-английски, например "heavy + noun" или "make + noun"; '
+      + 'phrases — 6 самых частотных нейтральных сочетаний с этим словом (кроме уже имеющихся), для каждого: '
+      + 'phrase — сочетание в словарной форме ("make a decision", "heavy rain"); '
+      + 'partner — часть сочетания без самого слова и без артиклей ("decision", "rain"); '
+      + 'tr — перевод сочетания на русский; ipa — транскрипция IPA всего сочетания без косых черт; '
+      + 'example — короткое естественное предложение с сочетанием; exampleTr — его перевод на русский; '
+      + 'wrong — 3 ОДНОЗНАЧНО НЕВЕРНЫХ партнёра, с которыми ученики ошибочно сочетают это слово '
+      + '(для "make": "homework", потому что правильно "do homework"), для каждого: partner и fix — правильное сочетание. '
+      + 'Неверный партнёр не должен образовывать с этим словом допустимое сочетание ни в каком значении.',
+    'Слово: ' + term + (have.length ? '\nУже есть: ' + have.join('; ') : ''),
+    {
+      type: 'OBJECT',
+      properties: {
+        pos: { type: 'STRING', enum: LW_POS },
+        pattern: { type: 'STRING' },
+        phrases: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              phrase: { type: 'STRING' }, partner: { type: 'STRING' }, tr: { type: 'STRING' },
+              ipa: { type: 'STRING' }, example: { type: 'STRING' }, exampleTr: { type: 'STRING' },
+            },
+            required: ['phrase', 'partner', 'tr', 'ipa', 'example', 'exampleTr'],
+          },
+        },
+        wrong: {
+          type: 'ARRAY',
+          items: { type: 'OBJECT', properties: { partner: { type: 'STRING' }, fix: { type: 'STRING' } }, required: ['partner', 'fix'] },
+        },
+      },
+      required: ['pos', 'pattern', 'phrases', 'wrong'],
+    }
+  );
+  const clean = (x, n = 200) => String(x || '').trim().slice(0, n);
+  const haveSet = new Set(have.map((x) => x.toLowerCase()));
+  const seen = new Set();
+  const phrases = (Array.isArray(p.phrases) ? p.phrases : []).map((x) => ({
+    phrase: clean(x.phrase, 80), partner: clean(x.partner, 40), tr: clean(x.tr),
+    ipa: clean(x.ipa, 80).replace(/^\/|\/$/g, ''), example: clean(x.example, 300), exampleTr: clean(x.exampleTr, 300),
+  })).filter((x) => {
+    const k = x.phrase.toLowerCase();
+    if (!x.phrase || !x.partner || !x.tr || haveSet.has(k) || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  const wrong = (Array.isArray(p.wrong) ? p.wrong : []).map((x) => ({ partner: clean(x.partner, 40), fix: clean(x.fix, 80) }))
+    .filter((x) => x.partner && x.fix);
+  return { pos: lwNormPos(p.pos), pattern: clean(p.pattern, 60), phrases, wrong };
+}
+
 /* Word of the day: the same word all day, a different one tomorrow. Picks from
    the most useful pool that has words — due/learning first, then new, then
    mastered — using a hash of the date, so it needs no storage. */
@@ -736,6 +798,7 @@ Object.assign(window, {
   lwAiTagPos,
   lwAiLookupWord,
   lwAiTranslateSentences,
+  lwAiSuggestCollocations,
   lwWordOfTheDay,
   lwLoad,
   lwSave,

@@ -185,6 +185,11 @@ const Ic = {
       <rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
     </svg>
   ),
+  Link: (p) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <circle cx="6" cy="12" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="18" cy="18" r="3" /><path d="m8.6 10.6 6.8-3.3M8.6 13.4l6.8 3.3" />
+    </svg>
+  ),
   Flag: (p) => (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
       <path d="M5 21V4" /><path d="M5 4h11l-2 4 2 4H5" />
@@ -1297,4 +1302,238 @@ function PronunciationCheck({ target, label = 'Say it', passage = false }) {
   );
 }
 
-Object.assign(window, { Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck, lwCanRecognize, lwMatchSpoken });
+/* ---------------- Collocation form (create / edit) ----------------
+   A collocation is a word plus links to phrase cards (ordinary words) and
+   wrong partners for the game. Found cards: multi-word cards containing the
+   word. "+ Add phrase" and AI suggestions become new cards on save (the parent
+   puts them in the "Collocations" group). onSave(entry, phrases, newPhrases). */
+const LW_COLLOC_AI_MSG = {
+  'no-key': 'Add a Gemini key first.',
+  'bad-key': 'Your Gemini key is invalid.',
+  quota: 'Daily Gemini limit reached. Try again later.',
+  overload: 'Gemini is overloaded right now. Try again in a minute.',
+  refusal: 'The model could not process this word.',
+};
+let lwCollocRowSeq = 0;
+const lwNewPhraseRow = (fields = {}) => ({
+  key: 'np' + (++lwCollocRowSeq), phrase: '', partner: '', partnerTouched: false,
+  tr: '', ipa: '', example: '', exampleTr: '', on: true, ai: false, ...fields,
+});
+
+function CollocForm({ initial, words, entries, isAdmin, userId, onSave, onOpenExisting, onCancel }) {
+  const [word, setWord] = React.useState(initial ? initial.word : '');
+  const [pattern, setPattern] = React.useState(initial ? (initial.pattern || '') : '');
+  const [pos, setPos] = React.useState(initial ? (initial.pos || '') : '');
+  /* choices for linked cards, by word id: { on, partner } */
+  const [picks, setPicks] = React.useState(() => {
+    const m = {};
+    ((initial && initial.phrases) || []).forEach((p) => { m[p.wordId] = { on: true, partner: p.partner }; });
+    return m;
+  });
+  const [added, setAdded] = React.useState([]);
+  const [wrong, setWrong] = React.useState(() => ((initial && initial.wrong) || []).map((w) => ({ ...w })));
+  const [aiState, setAiState] = React.useState('idle');
+  const [keyModal, setKeyModal] = React.useState(false);
+  const [tried, setTried] = React.useState(false);
+
+  const key = window.lwCollocKey(word);
+  /* admins build shared entries, so only shared cards may be linked */
+  const pool = React.useMemo(() => (isAdmin ? words.filter((w) => w.shared) : words), [words, isAdmin]);
+  const byId = React.useMemo(() => Object.fromEntries(words.map((w) => [w.id, w])), [words]);
+  const linked = ((initial && initial.phrases) || []).map((p) => byId[p.wordId]).filter(Boolean);
+  const found = React.useMemo(() => window.lwFindPhraseCards(key, pool), [key, pool]);
+  const cards = [...linked, ...found.filter((w) => !linked.some((l) => l.id === w.id))];
+  const pick = (w) => picks[w.id] || { on: !initial, partner: window.lwCollocPartner(w.word, key) };
+  const setPick = (w, fields) => setPicks((m) => ({ ...m, [w.id]: { ...pick(w), ...fields } }));
+
+  const duplicate = !initial && key && entries.find((e) => e.key === key
+    && (isAdmin ? e.shared : e.userId === userId && !e.shared));
+
+  const setRow = (k, fields) => setAdded((rows) => rows.map((r) => {
+    if (r.key !== k) return r;
+    const next = { ...r, ...fields };
+    if ('phrase' in fields && !r.partnerTouched) next.partner = window.lwCollocPartner(fields.phrase, key);
+    if ('partner' in fields) next.partnerTouched = true;
+    return next;
+  }));
+  const setWrongRow = (i, fields) => setWrong((rows) => rows.map((r, j) => (j === i ? { ...r, ...fields } : r)));
+
+  /* what will be saved */
+  const chosen = cards.filter((w) => pick(w).on).map((w) => ({ wordId: w.id, partner: pick(w).partner.trim(), text: w.word }));
+  const fresh = added.filter((r) => r.on);
+  const wrongClean = wrong.map((w) => ({ partner: w.partner.trim(), fix: w.fix.trim() })).filter((w) => w.partner || w.fix);
+  const partners = [...chosen.map((c) => c.partner), ...fresh.map((r) => r.partner.trim()), ...wrongClean.map((w) => w.partner)]
+    .map((x) => x.toLowerCase());
+  const errors = [];
+  if (!key) errors.push('Enter a word.');
+  else if (/\s/.test(key)) errors.push('Use a single word.');
+  if (chosen.length + fresh.length < 2) errors.push('Pick at least 2 phrases.');
+  if (fresh.some((r) => !r.phrase.trim() || !r.tr.trim())) errors.push('New phrases need a phrase and a translation.');
+  if (wrongClean.length < 1) errors.push('Add at least 1 wrong partner.');
+  if (wrongClean.some((w) => !w.partner || !w.fix)) errors.push('Each wrong partner needs the correct combination.');
+  if (partners.some((x) => !x)) errors.push('Every phrase needs chip text.');
+  else if (new Set(partners).size !== partners.length) errors.push('Chip texts must be different.');
+  if (duplicate) errors.push('You already have this collocation.');
+
+  const submit = () => {
+    setTried(true);
+    if (errors.length) return;
+    onSave(
+      { ...(initial || {}), word: key, key, pattern: pattern.trim(), pos, wrong: wrongClean },
+      chosen.map(({ wordId, partner }) => ({ wordId, partner })),
+      fresh.map((r) => ({
+        word: r.phrase.trim(), partner: r.partner.trim(), tr: r.tr.trim(), ipa: r.ipa.trim(),
+        example: r.example.trim(), exampleTr: r.exampleTr.trim(),
+      })),
+    );
+  };
+
+  const runAi = () => {
+    setAiState('loading');
+    const have = [...cards.map((w) => w.word), ...added.map((r) => r.phrase)];
+    window.lwAiSuggestCollocations(key, have)
+      .then((r) => {
+        if (!pattern.trim() && r.pattern) setPattern(r.pattern);
+        if (!pos && r.pos) setPos(r.pos);
+        const haveSet = new Set(have.map((x) => x.trim().toLowerCase()));
+        setAdded((rows) => [...rows, ...r.phrases.filter((x) => !haveSet.has(x.phrase.toLowerCase()))
+          .map((x) => lwNewPhraseRow({ ...x, partnerTouched: true, on: false, ai: true }))]);
+        setWrong((rows) => {
+          const seen = new Set(rows.map((w) => w.partner.trim().toLowerCase()));
+          const more = r.wrong.filter((w) => !seen.has(w.partner.toLowerCase()));
+          return [...rows.filter((w) => w.partner.trim() || w.fix.trim()), ...more].slice(0, 5);
+        });
+        setAiState('idle');
+      })
+      .catch((e) => setAiState((e && e.code) || 'error'));
+  };
+  const suggest = () => {
+    if (!key) return;
+    if (!window.lwHasGeminiKey()) { setKeyModal(true); return; }
+    runAi();
+  };
+
+  return (
+    <div className="form colloc-form">
+      <div className="form-grid">
+        <label className="field">
+          <span className="field-label">Word</span>
+          <input className="input" value={word} autoFocus={!initial} disabled={!!initial} placeholder="e.g. heavy"
+            onChange={(e) => setWord(e.target.value)} />
+        </label>
+        <label className="field">
+          <span className="field-label">Pattern</span>
+          <input className="input" value={pattern} placeholder="heavy + noun" onChange={(e) => setPattern(e.target.value)} />
+        </label>
+      </div>
+      {duplicate && (
+        <div className="colloc-dup">
+          <span>You already have collocations for <strong>{key}</strong>.</span>
+          <button type="button" className="btn btn-soft sm" onClick={() => onOpenExisting(duplicate)}>Open</button>
+        </div>
+      )}
+
+      <div className="colloc-sec">
+        <div className="colloc-sec-head">
+          <span className="field-label">Phrases from your cards</span>
+          <span className="colloc-sec-count">{chosen.length}</span>
+        </div>
+        {cards.length === 0 ? (
+          <p className="field-hint">{key ? 'No cards with “' + key + '” yet. Add phrases below.' : 'Type a word to find phrase cards.'}</p>
+        ) : (
+          <div className="colloc-rows">
+            {cards.map((w) => {
+              const pk = pick(w);
+              return (
+                <div className={'colloc-row' + (pk.on ? '' : ' off')} key={w.id}>
+                  <input type="checkbox" className="colloc-check" checked={pk.on} aria-label={'Use ' + w.word}
+                    onChange={(e) => setPick(w, { on: e.target.checked })} />
+                  <div className="colloc-row-main">
+                    <span className="colloc-phrase">{w.word}</span>
+                    <span className="colloc-tr">{w.tr}{w.shared && !isAdmin ? ' · shared' : ''}</span>
+                  </div>
+                  <input className="input input-sm colloc-partner" value={pk.partner} disabled={!pk.on}
+                    aria-label="Chip text" title="Chip text in the game" onChange={(e) => setPick(w, { partner: e.target.value })} />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="colloc-sec">
+        <div className="colloc-sec-head">
+          <span className="field-label">New phrases</span>
+          <span className="field-hint">saved as cards in “Collocations”</span>
+        </div>
+        {added.map((r) => (
+          <div className={'colloc-new' + (r.on ? '' : ' off')} key={r.key}>
+            <div className="colloc-new-top">
+              <input type="checkbox" className="colloc-check" checked={r.on} aria-label="Use this phrase"
+                onChange={(e) => setRow(r.key, { on: e.target.checked })} />
+              <input className="input input-sm" value={r.phrase} placeholder="heavy rain" aria-label="Phrase"
+                onChange={(e) => setRow(r.key, { phrase: e.target.value })} />
+              <input className="input input-sm colloc-partner" value={r.partner} placeholder="chip" aria-label="Chip text"
+                onChange={(e) => setRow(r.key, { partner: e.target.value })} />
+              {r.ai && <span className="colloc-ai">AI</span>}
+              <button type="button" className="icon-btn sm danger" aria-label="Remove phrase"
+                onClick={() => setAdded((rows) => rows.filter((x) => x.key !== r.key))}><Ic.Trash /></button>
+            </div>
+            <div className="colloc-new-fields">
+              <input className="input input-sm" value={r.tr} placeholder="translation" aria-label="Translation"
+                onChange={(e) => setRow(r.key, { tr: e.target.value })} />
+              <input className="input input-sm" value={r.example} placeholder="example sentence" aria-label="Example"
+                onChange={(e) => setRow(r.key, { example: e.target.value })} />
+              <input className="input input-sm" value={r.exampleTr} placeholder="example translation" aria-label="Example translation"
+                onChange={(e) => setRow(r.key, { exampleTr: e.target.value })} />
+            </div>
+          </div>
+        ))}
+        <div className="colloc-actions">
+          <button type="button" className="btn btn-soft sm" onClick={() => setAdded((rows) => [...rows, lwNewPhraseRow()])}>
+            <Ic.Plus width="15" height="15" /> Add phrase
+          </button>
+          <button type="button" className="btn btn-soft sm" disabled={!key || aiState === 'loading'} onClick={suggest}>
+            {aiState === 'loading' ? <span className="spinner" aria-hidden="true" /> : <Ic.Bulb width="15" height="15" />}
+            {aiState === 'loading' ? 'Asking Gemini…' : 'Suggest with AI'}
+          </button>
+        </div>
+        {aiState !== 'idle' && aiState !== 'loading' && (
+          <p className="field-hint">{LW_COLLOC_AI_MSG[aiState] || 'AI service error. Try again later.'}</p>
+        )}
+        {added.some((r) => r.ai && !r.on) && <p className="field-hint">Tick the AI phrases you want to keep.</p>}
+      </div>
+
+      <div className="colloc-sec">
+        <div className="colloc-sec-head">
+          <span className="field-label">Common mistakes (wrong partners)</span>
+        </div>
+        {wrong.map((w, i) => (
+          <div className="colloc-wrong-row" key={i}>
+            <input className="input input-sm" value={w.partner} placeholder="homework" aria-label="Wrong partner"
+              onChange={(e) => setWrongRow(i, { partner: e.target.value })} />
+            <span className="colloc-arrow">→</span>
+            <input className="input input-sm" value={w.fix} placeholder="do homework" aria-label="Correct combination"
+              onChange={(e) => setWrongRow(i, { fix: e.target.value })} />
+            <button type="button" className="icon-btn sm danger" aria-label="Remove"
+              onClick={() => setWrong((rows) => rows.filter((_, j) => j !== i))}><Ic.Trash /></button>
+          </div>
+        ))}
+        {wrong.length < 5 && (
+          <button type="button" className="btn btn-soft sm" onClick={() => setWrong((rows) => [...rows, { partner: '', fix: '' }])}>
+            <Ic.Plus width="15" height="15" /> Add wrong partner
+          </button>
+        )}
+      </div>
+
+      {tried && errors.length > 0 && <p className="colloc-error" role="alert">{errors[0]}</p>}
+      <div className="form-foot">
+        <button type="button" className="btn btn-ghost" onClick={onCancel}>Cancel</button>
+        <button type="button" className="btn btn-primary" onClick={submit}>Save</button>
+      </div>
+      {keyModal && <GeminiKeyModal onClose={() => setKeyModal(false)} onSaved={(ok) => { if (ok && key) runAi(); }} />}
+    </div>
+  );
+}
+
+Object.assign(window, { CollocForm, Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck, lwCanRecognize, lwMatchSpoken });

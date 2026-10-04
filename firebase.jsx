@@ -28,6 +28,7 @@ const LW_COLLECTIONS = {
   activity: 'activity',
   texts: 'texts',
   readingProgress: 'reading_progress',
+  collocations: 'collocations',
 };
 
 /* Legacy accounts (registered before real emails) authenticate via a synthetic
@@ -92,7 +93,7 @@ async function lwDeleteAccount(password) {
   /* own reading texts: chapters live in a subcollection and must go first */
   const ownTexts = await lwDb.collection(LW_COLLECTIONS.texts).where('userId', '==', uid).get();
   for (const t of ownTexts.docs) await lwDeleteText(t.id, (t.data().chapters || []).length);
-  for (const coll of [LW_COLLECTIONS.words, LW_COLLECTIONS.groups, LW_COLLECTIONS.progress, LW_COLLECTIONS.activity, LW_COLLECTIONS.readingProgress]) {
+  for (const coll of [LW_COLLECTIONS.words, LW_COLLECTIONS.groups, LW_COLLECTIONS.progress, LW_COLLECTIONS.activity, LW_COLLECTIONS.readingProgress, LW_COLLECTIONS.collocations]) {
     const snap = await lwDb.collection(coll).where('userId', '==', uid).get();
     for (let i = 0; i < snap.docs.length; i += 400) {
       const batch = lwDb.batch();

@@ -122,7 +122,40 @@ function lwFormatDuration(ms) {
   return h + 'h' + (min % 60 ? ' ' + (min % 60) + 'm' : '');
 }
 
+/* ---------------- Collocations game ---------------- */
+
+/* phrases of an entry whose word cards still exist */
+function lwCollocLive(entry, wordsById) {
+  return (entry.phrases || []).filter((p) => wordsById[p.wordId]);
+}
+function lwCollocPlayable(entry, wordsById) {
+  return lwCollocLive(entry, wordsById).length >= 2 && (entry.wrong || []).length >= 1;
+}
+
+/* Entries for one session: playable ones with the most phrase cards due or new
+   first, then the least recently practised. `exclude` (ids just played) go last. */
+function lwCollocPick(entries, progress, wordsById, now, n, exclude = []) {
+  const scored = entries.filter((e) => lwCollocPlayable(e, wordsById)).map((e) => {
+    const live = lwCollocLive(e, wordsById);
+    const due = live.filter((p) => { const pr = progress[p.wordId]; return !pr || pr.due <= now; }).length;
+    const last = Math.max(0, ...live.map((p) => (progress[p.wordId] && progress[p.wordId].lastSeen) || 0));
+    return { e, due, last, ex: exclude.includes(e.id) ? 1 : 0 };
+  });
+  scored.sort((a, b) => a.ex - b.ex || b.due - a.due || a.last - b.last || (a.e.id < b.e.id ? -1 : 1));
+  return scored.slice(0, n).map((s) => s.e);
+}
+
+/* Up to `max` phrases for a round, due or new ones first. */
+function lwCollocRoundPhrases(entry, progress, wordsById, now, max = 5) {
+  const isDue = (p) => { const pr = progress[p.wordId]; return !pr || pr.due <= now; };
+  return lwCollocLive(entry, wordsById).slice().sort((a, b) => isDue(b) - isDue(a)).slice(0, max);
+}
+
 Object.assign(window, {
+  lwCollocLive,
+  lwCollocPlayable,
+  lwCollocPick,
+  lwCollocRoundPhrases,
   LW_GOAL_OPTIONS,
   LW_CEFR_ALL,
   lwPracticeMs,

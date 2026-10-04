@@ -202,7 +202,41 @@ function lwMatchOwnWord(token, index) {
   return index.get(lw) || index.get(st) || index.get(st.replace(/e$/, '')) || null;
 }
 
+/* ---------------- Collocations ---------------- */
+
+const lwCollocKey = (word) => String(word || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+/* Phrase cards for a collocation word: multi-word cards with a token that
+   matches the word (heavy → "heavy rain"; decision → "make a decision").
+   Matching is by stem, so irregular forms (made → make) are not found. */
+function lwFindPhraseCards(word, words) {
+  const key = lwCollocKey(word);
+  if (!key || /\s/.test(key)) return [];
+  return words.filter((w) => {
+    const text = String(w.word || '').trim();
+    if (!/\s/.test(text)) return false;
+    const tokens = lwTokenize(text).filter((_, i) => i % 2 === 1);
+    return tokens.some((t) => readingTokensMatch(t, key));
+  });
+}
+
+/* Default chip text for a phrase: the phrase without the main word and
+   articles ("make a decision" + make → "decision"). */
+const LW_COLLOC_SKIP = new Set(['a', 'an', 'the']);
+function lwCollocPartner(phrase, word) {
+  const key = lwCollocKey(word);
+  const parts = String(phrase || '').trim().split(/\s+/).filter(Boolean);
+  const rest = parts.filter((p) => {
+    const t = p.toLowerCase().replace(/[^a-z’'-]/g, '');
+    return !LW_COLLOC_SKIP.has(t) && !readingTokensMatch(t, key);
+  });
+  return (rest.length ? rest : parts).join(' ');
+}
+
 Object.assign(window, {
+  lwCollocKey,
+  lwFindPhraseCards,
+  lwCollocPartner,
   lwCleanGutenberg,
   lwWordCount,
   lwParagraphs,

@@ -106,6 +106,25 @@ service cloud.firestore {
         && progressId == request.auth.uid + '_' + request.resource.data.textId;
     }
 
+    // Collocations: a word plus links (word ids) to phrase cards in `words` and
+    // wrong partners for the game. Same access model as words (own + shared;
+    // only admins share). Sizes are bounded; content is checked by the app.
+    match /collocations/{collocId} {
+      function validColloc() {
+        return request.resource.data.word is string
+          && request.resource.data.word.size() > 0 && request.resource.data.word.size() <= 60
+          && request.resource.data.phrases is list && request.resource.data.phrases.size() <= 30
+          && request.resource.data.wrong is list && request.resource.data.wrong.size() <= 10;
+      }
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.shared == true || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.shared == true || isAdmin());
+      allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() && validColloc() && (resource.data.userId == request.auth.uid || isAdmin())
+        && (request.resource.data.shared == resource.data.shared || isAdmin());
+      allow create: if isSignedIn() && validColloc() && request.resource.data.userId == request.auth.uid
+        && (request.resource.data.shared == false || (request.resource.data.shared == true && isAdmin()));
+    }
+
     // AI-квоты: пишет ТОЛЬКО Cloud Function через Admin SDK (обходит правила).
     // Клиент может прочитать свой счётчик (док с id `${uid}_${day}`), но не менять его.
     match /ai_usage/{usageId} {
