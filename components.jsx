@@ -1037,10 +1037,19 @@ function lwParseImportLine(line) {
   return null;
 }
 
+/* Key for spotting the same word/phrase twice: case, spacing, apostrophes,
+   ş/ţ vs ș/ț and punctuation at the edges don't count. */
+function lwWordKey(word) {
+  return window.lwNormLetters(String(word || '').toLowerCase())
+    .replace(/[’`]/g, "'")
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s.,!?;:"«»“”()-]+|[\s.,!?;:"«»“”()-]+$/g, '');
+}
+
 /* Full-page import view. Draft text + chosen group + AI status live in App
    (importState) so a typed/generated list survives leaving the tab; the AI
    fill runs at the App level (startAiFill) and reports back via toast. */
-function ImportView({ groups, importState, setImportState, startAiFill, onImport, goLibrary }) {
+function ImportView({ groups, words, importState, setImportState, startAiFill, onImport, goLibrary }) {
   const { text, groupId, status, error } = importState;
   const leafGroups = lwLeafGroups(groups);
   const fileInputRef = React.useRef(null);
@@ -1068,8 +1077,19 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   const rows = lines.map(lwParseImportLine);
 
-  const validCount = rows.filter(Boolean).length;
-  const invalidCount = rows.length - validCount;
+  // Дубли: слово уже есть в текущем языке (в любой группе) или повторяется в списке.
+  const existingKeys = React.useMemo(() => new Set((words || []).map((w) => lwWordKey(w.word))), [words]);
+  const seen = new Set();
+  const dupWords = [];
+  const freshRows = rows.filter(Boolean).filter((r) => {
+    const k = lwWordKey(r.word);
+    if (!k || existingKeys.has(k) || seen.has(k)) { dupWords.push(r.word); return false; }
+    seen.add(k);
+    return true;
+  });
+
+  const validCount = freshRows.length;
+  const invalidCount = rows.filter((r) => !r).length;
   const loading = status === 'loading';
   const canImport = validCount > 0 && groupId && !loading;
 
@@ -1085,7 +1105,9 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
       return p && !p.ipa && !p.tr;
     })
     .map((l) => l.split('|')[0].trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    // уже существующие слова и повторы AI не заполняет
+    .filter((w, i, a) => !existingKeys.has(lwWordKey(w)) && a.findIndex((x) => lwWordKey(x) === lwWordKey(w)) === i);
   const showAi = rawWords.length > 0;
 
   const fillWithAi = () => {
@@ -1097,7 +1119,7 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
   const submit = () => {
     if (!canImport) return;
     const t = Date.now();
-    const items = rows.filter(Boolean).map((r, i) => ({
+    const items = freshRows.map((r, i) => ({
       id: window.lwUid(),
       groupId,
       word: r.word,
@@ -1190,6 +1212,7 @@ function ImportView({ groups, importState, setImportState, startAiFill, onImport
       {rows.length > 0 && (
         <p className="field-hint">
           Ready to import: {validCount}{invalidCount > 0 ? `, skipped lines: ${invalidCount}` : ''}
+          {dupWords.length > 0 && `, duplicates skipped: ${dupWords.length} (${dupWords.slice(0, 5).join(', ')}${dupWords.length > 5 ? '…' : ''})`}
         </p>
       )}
 
@@ -2113,4 +2136,4 @@ function YouTubeClip({ videoId, start = 0, end, rate = 1, free = false, apiRef, 
   );
 }
 
-Object.assign(window, { lwParseYouTube, lwParseTime, lwFormatTime, YouTubeClip, VoicePicker, Marked, LessonBody, LessonForm, lwUnmark, CollocForm, Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck, lwCanRecognize, lwMatchSpoken });
+Object.assign(window, { lwParseYouTube, lwParseTime, lwFormatTime, YouTubeClip, VoicePicker, Marked, LessonBody, LessonForm, lwUnmark, CollocForm, Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwWordKey, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck, lwCanRecognize, lwMatchSpoken });

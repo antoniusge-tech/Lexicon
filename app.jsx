@@ -785,7 +785,7 @@ function App() {
               collocations={scopedCollocations} saveCollocation={saveCollocation} pushToast={pushToast} clips={clips}
               goImport={() => goTo('import')} />
           ) : tab === 'import' ? (
-            <ImportView groups={scopedGroups} importState={importState} setImportState={setImportState}
+            <ImportView groups={scopedGroups} words={scopedWords} importState={importState} setImportState={setImportState}
               startAiFill={startImportAiFill} onImport={importWords}
               goLibrary={() => goTo('library')} />
           ) : tab === 'admin' && isAdmin ? (
