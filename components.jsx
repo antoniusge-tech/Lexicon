@@ -530,25 +530,40 @@ function ExampleBulb({ example, onShow }) {
 }
 
 /* ---------------- Fill-the-blank card ----------------
-   Front: the example sentence with the word blanked out. Flip (click / space)
-   to reveal the word + IPA. Lightbulb toggles the sentence translation.
-   Swipe like the flashcards: right = known (card flies off), left = unknown
-   (the sentence is re-queued and shows up again later — via onSwipe). Swipe
-   down = shuffle the deck, swipe up = skip (via onShuffle / onSwipe('skip')). */
-function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupClick, blank }) {
+   The example sentence with an input in place of the word. Typing the word as
+   it stands in the sentence answers Know (the card flies right). "Show answer"
+   reveals it; typing it after that answers Again (the sentence comes back).
+   The lightbulb in the corner flips the card to the sentence translation and back.
+   Swipe up = skip, swipe down = shuffle (via onAnswer('skip') / onShuffle). */
+const lwFillNorm = (s) => window.lwNormLetters(String(s || '').toLowerCase().replace(/’/g, "'").replace(/\s+/g, ' ').trim());
+
+function FillCard({ entry, group, blank, onAnswer, onShuffle, onGroupClick }) {
   const [drag, setDrag] = React.useState(null);   // {startX, startY, dx, dy, moved} | null
   const [flyDir, setFlyDir] = React.useState(null); // 'known' | 'unknown' | 'shuffle' | 'skip' | null
+  const [typed, setTyped] = React.useState('');
+  const [revealed, setRevealed] = React.useState(false);
+  const [wrong, setWrong] = React.useState(null); // null | 'wrong' | 'form' (base word, not the form used here)
+  const [done, setDone] = React.useState(false);
+  const [showTr, setShowTr] = React.useState(false);
   const dragRef = React.useRef(null);
   dragRef.current = drag;
+  const inputRef = React.useRef(null);
 
   React.useEffect(() => {
     setDrag(null);
     setFlyDir(null);
+    setTyped('');
+    setRevealed(false);
+    setWrong(null);
+    setDone(false);
+    setShowTr(false);
+    if (inputRef.current) inputRef.current.focus({ preventScroll: true });
   }, [entry && entry.id]);
 
   if (!entry) return null;
   const hue = group ? group.color : '#005da7';
   const hasTr = !!(entry.exampleTr && entry.exampleTr.trim());
+  const target = blank ? blank.matched : entry.word;
 
   const makeGroupTag = (baseClass) => {
     if (!group) return null;
@@ -565,8 +580,29 @@ function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupCl
     );
   };
 
+  const onType = (v) => {
+    if (done) return;
+    setTyped(v);
+    setWrong(null);
+    if (lwFillNorm(v) !== lwFillNorm(target)) return;
+    const dir = revealed ? 'unknown' : 'known';
+    setDone(true);
+    setTimeout(() => setFlyDir(dir), 350);
+    setTimeout(() => onAnswer(dir), 570);
+  };
+  const onEnter = () => {
+    if (done || !typed.trim()) return;
+    const formHint = lwFillNorm(typed) === lwFillNorm(entry.word) && lwFillNorm(entry.word) !== lwFillNorm(target);
+    setWrong(formHint ? 'form' : 'wrong');
+  };
+  const reveal = (e) => {
+    e.stopPropagation();
+    setRevealed(true);
+    if (inputRef.current) inputRef.current.focus({ preventScroll: true });
+  };
+
   const onPointerDown = (e) => {
-    if (flyDir) return;
+    if (flyDir || done) return;
     setDrag({ startX: e.clientX, startY: e.clientY, dx: 0, dy: 0, moved: false });
   };
   const onPointerMove = (e) => {
@@ -587,22 +623,26 @@ function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupCl
     } else if (-d.dy > SWIPE_THRESHOLD && -d.dy > Math.abs(d.dx)) {
       setFlyDir('skip');
       setDrag(null);
-      setTimeout(() => onSwipe('skip'), 220);
-    } else if (Math.abs(d.dx) > SWIPE_THRESHOLD) {
-      const dir = d.dx > 0 ? 'known' : 'unknown';
-      setFlyDir(dir);
-      setDrag(null);
-      setTimeout(() => onSwipe(dir), 220);
+      setTimeout(() => onAnswer('skip'), 220);
     } else {
       setDrag(null);
     }
   };
   const onPointerUp = () => endDrag();
   const onPointerLeave = () => { if (dragRef.current && !flyDir) endDrag(); };
-  const onClick = () => {
-    if (drag && drag.moved) return;
-    onFlip();
+  const flip = (e) => {
+    e.stopPropagation();
+    const input = inputRef.current;
+    if (showTr) setTimeout(() => input && input.focus({ preventScroll: true }), 320); // after the turn
+    else if (input) input.blur(); // no typing into the hidden side
+    setShowTr(!showTr);
   };
+  const onClick = (e) => {
+    if (drag && drag.moved) return;
+    if (showTr) { flip(e); return; } // tapping the back turns it over again
+    if (inputRef.current) inputRef.current.focus({ preventScroll: true });
+  };
+  const stop = (e) => e.stopPropagation();
 
   let style = {};
   let swipeClass = '';
@@ -616,31 +656,32 @@ function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupCl
     const sign = flyDir === 'known' ? 1 : -1;
     style = { transform: `translateX(${sign * 600}px) rotate(${sign * 24}deg)`, opacity: 0, transition: 'transform .22s ease-in, opacity .22s ease-in' };
     swipeClass = flyDir === 'known' ? ' swipe-known' : ' swipe-unknown';
-  } else if (drag) {
-    if (Math.abs(drag.dy) > Math.abs(drag.dx)) {
-      style = { transform: `translateY(${drag.dy}px)`, transition: 'none' };
-      if (drag.dy > 24) swipeClass = ' swipe-shuffle-hint';
-      else if (drag.dy < -24) swipeClass = ' swipe-skip-hint';
-    } else {
-      const rotate = drag.dx / 18;
-      style = { transform: `translateX(${drag.dx}px) rotate(${rotate}deg)`, transition: 'none' };
-      if (drag.dx > 24) swipeClass = ' swipe-known';
-      else if (drag.dx < -24) swipeClass = ' swipe-unknown';
-    }
+  } else if (drag && Math.abs(drag.dy) > Math.abs(drag.dx)) {
+    style = { transform: `translateY(${drag.dy}px)`, transition: 'none' };
+    if (drag.dy > 24) swipeClass = ' swipe-shuffle-hint';
+    else if (drag.dy < -24) swipeClass = ' swipe-skip-hint';
   }
   const swipeStrength = drag
-    ? Math.min(Math.max(Math.abs(drag.dx), Math.abs(drag.dy)) / SWIPE_THRESHOLD, 1)
+    ? Math.min(Math.abs(drag.dy) / SWIPE_THRESHOLD, 1)
     : (flyDir && flyDir !== 'shuffle' ? 1 : 0);
 
+  const input = (
+    <input ref={inputRef} className={'fill-input' + (done ? ' right' : wrong ? ' wrong' : '')}
+      style={{ width: Math.max(target.length + 1, 4) + 'ch' }}
+      value={typed} disabled={done} aria-label="Missing word"
+      autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck="false"
+      onChange={(e) => onType(e.target.value)}
+      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onEnter(); } }}
+      onPointerDown={stop} onClick={stop} />
+  );
+
   return (
-    <div className={'fill-scene' + (flipped ? ' is-flipped' : '') + swipeClass} style={style}
-      role="button" tabIndex={0}
+    <div className={'fill-scene' + (showTr ? ' is-flipped' : '') + swipeClass} style={style}
       onClick={onClick}
-      onKeyDown={(e) => { if (e.key === 'Enter') onFlip(); }}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove}
       onPointerUp={onPointerUp} onPointerCancel={onPointerLeave} onPointerLeave={onPointerLeave}>
       {swipeClass === ' swipe-known' && <div className="swipe-stamp" style={{ opacity: swipeStrength }}>Know</div>}
-      {swipeClass === ' swipe-unknown' && <div className="swipe-stamp" style={{ opacity: swipeStrength }}>Don't know</div>}
+      {swipeClass === ' swipe-unknown' && <div className="swipe-stamp" style={{ opacity: swipeStrength }}>Again</div>}
       {swipeClass === ' swipe-shuffle-hint' && <div className="swipe-stamp swipe-stamp-shuffle" style={{ opacity: swipeStrength }}><Ic.Shuffle width="14" height="14" /> Shuffle</div>}
       {(swipeClass === ' swipe-skip-hint' || swipeClass === ' swipe-skip') && <div className="swipe-stamp swipe-stamp-skip" style={{ opacity: swipeStrength }}>Skip</div>}
       {flyDir === 'shuffle' && (
@@ -652,29 +693,40 @@ function FillCard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupCl
         </div>
       )}
       <div className="fill-inner">
-        {/* FRONT: sentence with a blank */}
         <div className="fill-face fill-front">
           {makeGroupTag('choice-tag')}
           <p className="fill-sentence">
-            {blank ? (
-              <>
-                {blank.before}
-                <span className="fill-blank" />
-                {blank.after}
-              </>
-            ) : entry.example}
+            {blank ? <>{blank.before}{input}{blank.after}</> : <>{entry.example} {input}</>}
           </p>
-          {hasTr && (
-            <p className="fill-sentence-tr">{entry.exampleTr}</p>
+          <button type="button" className={'card-bulb' + (hasTr ? ' card-bulb-on' : '')}
+            disabled={!hasTr} aria-label="Show translation" onClick={flip} onPointerDown={stop}>
+            <Ic.Bulb />
+          </button>
+          <div className="fill-status" aria-live="polite">
+            {done ? (
+              <span className="fill-ok"><Ic.Check width="16" height="16" /> {revealed ? 'Now you know it' : 'Correct!'}</span>
+            ) : revealed ? (
+              <span className="fill-answer" onPointerDown={stop} onClick={stop}>
+                <strong>{target}</strong>{entry.ipa && <span className="fill-ipa">{entry.ipa}</span>}
+                <SpeakButton word={entry.word} />
+                <span className="fill-note">Type it to continue</span>
+              </span>
+            ) : wrong ? (
+              <span className="fill-bad">{wrong === 'form' ? 'Right word — type the form used in this sentence' : 'Not quite, try again'}</span>
+            ) : null}
+          </div>
+          {!done && !revealed && (
+            <button type="button" className="fill-reveal" onPointerDown={stop} onClick={reveal}>Show answer</button>
           )}
         </div>
-        {/* BACK: the missing word */}
+        {/* BACK: the sentence translation */}
         <div className="fill-face fill-back" style={{ '--hue': hue }}>
-          <div className="back-label">word</div>
-          <div className="card-tr">{entry.word}</div>
-          {entry.ipa && <div className="back-word">{entry.ipa}</div>}
-          {makeGroupTag('card-tag')}
-          <SpeakButton word={entry.word} />
+          {makeGroupTag('choice-tag')}
+          <div className="back-label">translation</div>
+          {hasTr && <p className="fill-sentence fill-sentence-back">{entry.exampleTr}</p>}
+          <button type="button" className="card-bulb card-bulb-on" aria-label="Back to the sentence" onClick={flip} onPointerDown={stop}>
+            <Ic.Bulb />
+          </button>
         </div>
       </div>
     </div>
