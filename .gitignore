@@ -6,3 +6,7 @@ node_modules/
 # local-only: design mockups/plans and one-off admin scripts
 stitch_/
 scripts/
+
+# word lists for the add-words skill (personal, local-only)
+words/*/*
+!words/*/.gitkeep

@@ -239,12 +239,17 @@ function App() {
       });
   }, [pushToast]);
 
-  /* write imported words to Firestore (owned by this user) */
-  const importWords = useCallback((items) => {
+  /* write imported words to Firestore. Words go to the owner of the group: this
+     user (shared if an admin), or — for an admin importing into another user's
+     group — that user, shared like the group. */
+  const importWords = useCallback((items, group) => {
     if (!authUser) return;
     const isAdmin = userDoc && userDoc.role === 'admin';
-    items.forEach((w) => window.lwSetDoc(window.LW_COLLECTIONS.words,
-      { ...w, userId: authUser.uid, username: userDoc && userDoc.username, shared: isAdmin })
+    const foreign = isAdmin && group && group.userId && group.userId !== authUser.uid;
+    const owner = foreign
+      ? { userId: group.userId, username: group.username, shared: !!group.shared }
+      : { userId: authUser.uid, username: userDoc && userDoc.username, shared: isAdmin };
+    items.forEach((w) => window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, ...owner })
       .catch((e) => { console.error('importWords failed', e); alert('Could not import a word: ' + (e && e.message || e)); }));
   }, [authUser, userDoc]);
 
@@ -317,6 +322,18 @@ function App() {
     const unsubWords = window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.words, authUser.uid, setWords);
     return () => { unsubGroups(); unsubWords(); };
   }, [authUser]);
+
+  /* admins import into anyone's group: while Import is open they see every
+     group and word (other users' private ones too; the rules allow admins). */
+  const adminImport = !!authUser && !!userDoc && userDoc.role === 'admin' && nav.tab === 'import';
+  const [allGroups, setAllGroups] = useState(null);
+  const [allWords, setAllWords] = useState(null);
+  useEffect(() => {
+    if (!adminImport) { setAllGroups(null); setAllWords(null); return; }
+    const unsubGroups = window.lwWatchCollection(window.LW_COLLECTIONS.groups, setAllGroups);
+    const unsubWords = window.lwWatchCollection(window.LW_COLLECTIONS.words, setAllWords);
+    return () => { unsubGroups(); unsubWords(); };
+  }, [adminImport]);
 
   /* live sync with this user's progress + daily activity */
   useEffect(() => {
@@ -785,7 +802,8 @@ function App() {
               collocations={scopedCollocations} saveCollocation={saveCollocation} pushToast={pushToast} clips={clips}
               goImport={() => goTo('import')} />
           ) : tab === 'import' ? (
-            <ImportView groups={scopedGroups} words={scopedWords} importState={importState} setImportState={setImportState}
+            <ImportView groups={allGroups ? allGroups.filter(inLang) : scopedGroups}
+              words={allWords ? allWords.filter(inLang) : scopedWords} uid={authUser.uid} importState={importState} setImportState={setImportState}
               startAiFill={startImportAiFill} onImport={importWords}
               goLibrary={() => goTo('library')} />
           ) : tab === 'admin' && isAdmin ? (

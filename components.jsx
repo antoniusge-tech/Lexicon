@@ -1049,9 +1049,16 @@ function lwWordKey(word) {
 /* Full-page import view. Draft text + chosen group + AI status live in App
    (importState) so a typed/generated list survives leaving the tab; the AI
    fill runs at the App level (startAiFill) and reports back via toast. */
-function ImportView({ groups, words, importState, setImportState, startAiFill, onImport, goLibrary }) {
+function ImportView({ groups, words, uid, importState, setImportState, startAiFill, onImport, goLibrary }) {
   const { text, groupId, status, error } = importState;
-  const leafGroups = lwLeafGroups(groups);
+  /* an admin also gets other users' private groups: those go last, by owner */
+  const foreign = (g) => uid && g.userId !== uid && !g.shared;
+  const leafGroups = React.useMemo(() => {
+    const leaves = lwLeafGroups(groups);
+    return [...leaves.filter((g) => !foreign(g)),
+      ...leaves.filter(foreign).sort((a, b) => (a.username || '').localeCompare(b.username || ''))];
+  }, [groups, uid]);
+  const group = leafGroups.find((g) => g.id === groupId) || null;
   const fileInputRef = React.useRef(null);
   const [keyModal, setKeyModal] = React.useState(false);
 
@@ -1078,7 +1085,11 @@ function ImportView({ groups, words, importState, setImportState, startAiFill, o
   const rows = lines.map(lwParseImportLine);
 
   // Дубли: слово уже есть в текущем языке (в любой группе) или повторяется в списке.
-  const existingKeys = React.useMemo(() => new Set((words || []).map((w) => lwWordKey(w.word))), [words]);
+  // Считаются слова, которые видит владелец выбранной группы: его собственные и общие.
+  const ownerId = group ? group.userId : uid;
+  const existingKeys = React.useMemo(() => new Set((words || [])
+    .filter((w) => !ownerId || w.userId === ownerId || w.shared)
+    .map((w) => lwWordKey(w.word))), [words, ownerId]);
   const seen = new Set();
   const dupWords = [];
   const freshRows = rows.filter(Boolean).filter((r) => {
@@ -1131,7 +1142,7 @@ function ImportView({ groups, words, importState, setImportState, startAiFill, o
       createdAt: t + i, // keeps the list's order in Library's "Recent" sort
     }));
     // Импортируем и очищаем черновик — иначе текст «не пропадает» до импорта.
-    onImport(items);
+    onImport(items, group);
     setImportState((s) => ({ ...s, text: '', status: 'idle', error: null }));
   };
 
@@ -1201,6 +1212,7 @@ function ImportView({ groups, words, importState, setImportState, startAiFill, o
               onClick={() => setGroupId(g.id)}>
               <span className="chip-dot" style={{ background: g.color }} />
               {g.parentId ? (groups.find((p) => p.id === g.parentId) || {}).name + ' / ' + g.name : g.name}
+              {uid && g.userId !== uid && g.username && <small className="gp-owner">({g.username})</small>}
             </button>
           ))}
         </div>
@@ -1706,7 +1718,7 @@ function LessonBody({ lesson }) {
 const lwEmptyTask = (type = 'choice') => (type === 'fill'
   ? { type: 'fill', q: '', answers: [''], why: '' }
   : { type: 'choice', q: '', options: ['', '', '', ''], answer: 0, why: '' });
-const LW_LESSON_LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+const LW_LESSON_LEVELS = ['A0', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 
 /* Lesson editor (admins). Fill by hand or with "Generate with AI"; exactly 10
    test tasks. onSave(lesson, publish) — publish: true publishes, false keeps a draft. */

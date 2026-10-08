@@ -58,7 +58,9 @@ service cloud.firestore {
       allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
       allow update: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin())
         && (request.resource.data.shared == resource.data.shared || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid
+      // Admins may also create words owned by another user (Import into that user's group).
+      allow create: if isSignedIn()
+        && (request.resource.data.userId == request.auth.uid || isAdmin())
         && (request.resource.data.shared == false || (request.resource.data.shared == true && isAdmin()));
     }
 
