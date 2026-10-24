@@ -272,7 +272,7 @@ async function lwDeleteWordsByGroup(groupId, userId) {
   return batch.commit();
 }
 
-/* ---------------- Progress (Leitner) & daily activity ---------------- */
+/* ---------------- Progress (FSRS) & daily activity ---------------- */
 
 /* Daily activity is kept per learning language — XP, level, streak and practice
    time of one language don't count for another. English keeps the original id
@@ -347,7 +347,8 @@ function lwAddBonusXp(uid, lang, date, xp) {
 /* ---------------- Reading texts ---------------- */
 
 /* Save a text: meta doc texts/{id} (no body, so lists stay light) plus one doc
-   per chapter in texts/{id}/chapters/{n}. Chapters repeat userId/shared for the rules. */
+   per chapter in texts/{id}/chapters/{n}. Chapters repeat userId/shared for the rules.
+   A chapter may carry `exercises` (books from scripts/upload-book.mjs). */
 async function lwSaveText(meta, chapters) {
   const ref = lwDb.collection(LW_COLLECTIONS.texts).doc(meta.id);
   const { id, ...data } = meta;
@@ -357,6 +358,7 @@ async function lwSaveText(meta, chapters) {
     chapters.slice(i, i + 400).forEach((c, k) => {
       batch.set(ref.collection('chapters').doc(String(i + k)), {
         userId: meta.userId, shared: meta.shared, title: c.title || '', paragraphs: c.paragraphs,
+        ...(c.exercises ? { exercises: c.exercises } : {}),
       });
     });
     await batch.commit();

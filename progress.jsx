@@ -1,13 +1,8 @@
-/* progress.jsx — pure Leitner / streak / XP logic (no Firestore, no React).
+/* progress.jsx — pure FSRS / streak / XP logic (no Firestore, no React).
    Storage lives in firebase.jsx (lwRecordAnswer); App wires the two together. */
 
 const LW_MIN_MS = 60 * 1000;
 const LW_DAY_MS = 24 * 60 * LW_MIN_MS;
-
-/* Leitner boxes: how long a word rests after landing in box i.
-   Box 5 (30 days, i.e. interval >= 21 days) counts as Mastered. */
-const LW_BOXES = [10 * LW_MIN_MS, LW_DAY_MS, 3 * LW_DAY_MS, 7 * LW_DAY_MS, 14 * LW_DAY_MS, 30 * LW_DAY_MS];
-const LW_MASTERED_BOX = LW_BOXES.length - 1;
 
 const LW_DEFAULT_DAILY_GOAL = 20; // answers per day
 const LW_XP_CORRECT = 10;
@@ -17,23 +12,168 @@ const LW_GOAL_OPTIONS = [10, 20, 30, 50]; // daily goal choices, in answers
 const LW_CEFR_ALL = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 const LW_PRACTICE_GAP_MS = 60 * 1000; // longer pauses between answers don't count as practice
 
+/* ---------------- FSRS-6 scheduler ----------------
+   Each word card carries a memory state: stability S (days until the chance to
+   recall falls to 90%) and difficulty D (1..10). Every answer updates both, and
+   the next review is set where the chance to recall drops to the user's target
+   retention. Formulas and default weights follow ts-fsrs 5 (FSRS-6). */
+const LW_FSRS_W = [0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666, 0.796,
+  1.4835, 0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542];
+const LW_FSRS_DECAY = -LW_FSRS_W[20];
+const LW_FSRS_FACTOR = Math.pow(0.9, 1 / LW_FSRS_DECAY) - 1;
+const LW_FSRS_S_MIN = 0.001;
+const LW_FSRS_S_MAX = 36500;
+
+const LW_RELEARN_MS = 10 * LW_MIN_MS; // Again: the word comes back in this session
+const LW_MASTERED_DAYS = 30; // stability from which a word counts as Mastered
+const LW_DAY_START_MS = 4 * 60 * LW_MIN_MS; // a study day starts at 04:00 local time
+
+/* Grade per answer: 1 Again, 2 Hard, 3 Good, 4 Easy. Picking the right option
+   (choice) only proves recognition, so it is Hard; recall is Good; a word typed
+   quickly with no mistake or hint (fill) is Easy. */
+const LW_MODE_GRADE = { choice: 2 };
+function lwAnswerGrade(known, mode, easy) {
+  if (!known) return 1;
+  if (mode === 'fill' && easy) return 4;
+  return LW_MODE_GRADE[mode] || 3;
+}
+
+/* Review settings, stored as users/{uid}.srs (one set for every language).
+   session: words per Review session (0 = no limit); background: share of a
+   Focus session given to the most at-risk due words outside the focus groups. */
+const LW_SRS_DEFAULTS = { retention: 0.9, session: 50, background: 0.1 };
+const LW_RETENTION_OPTIONS = [0.85, 0.9, 0.95];
+const LW_SESSION_OPTIONS = [20, 50, 100, 0];
+const LW_BACKGROUND_OPTIONS = [0, 0.1, 0.2];
+function lwSrsSettings(userDoc) {
+  return { ...LW_SRS_DEFAULTS, ...((userDoc && userDoc.srs) || {}) };
+}
+/* App sets the current settings while rendering, like lwSetCurrentLang, so
+   every lwNextProgress call (answers, button labels) uses the same retention */
+let lwSrsCurrent = LW_SRS_DEFAULTS;
+function lwSetSrsSettings(s) { lwSrsCurrent = s || LW_SRS_DEFAULTS; }
+
+const lwClampD = (d) => Math.min(10, Math.max(1, d));
+const lwClampS = (s) => Math.min(LW_FSRS_S_MAX, Math.max(LW_FSRS_S_MIN, s));
+const lwFsrsInitDRaw = (g) => LW_FSRS_W[4] - Math.exp((g - 1) * LW_FSRS_W[5]) + 1;
+const lwFsrsInitS = (g) => Math.max(LW_FSRS_W[g - 1], 0.1);
+
+/* chance to recall after t days at stability s */
+function lwFsrsRecall(t, s) {
+  return Math.pow(1 + LW_FSRS_FACTOR * t / s, LW_FSRS_DECAY);
+}
+function lwFsrsNextD(d, g) {
+  const w = LW_FSRS_W;
+  const next = d + (-w[6] * (g - 3)) * (10 - d) / 9;
+  return lwClampD(w[7] * lwFsrsInitDRaw(4) + (1 - w[7]) * next);
+}
+/* new stability: t whole days since the last review, r the chance to recall now */
+function lwFsrsNextS(d, s, t, r, g) {
+  const w = LW_FSRS_W;
+  if (t === 0) { // again on the same day
+    const inc = Math.pow(s, -w[19]) * Math.exp(w[17] * (g - 3 + w[18]));
+    return lwClampS(s * (g >= 2 ? Math.max(inc, 1) : inc));
+  }
+  if (g === 1) {
+    const forget = w[11] * Math.pow(d, -w[12]) * (Math.pow(s + 1, w[13]) - 1) * Math.exp((1 - r) * w[14]);
+    return lwClampS(Math.min(s / Math.exp(w[17] * w[18]), forget));
+  }
+  const hard = g === 2 ? w[15] : 1;
+  const easy = g === 4 ? w[16] : 1;
+  return lwClampS(s * (1 + Math.exp(w[8]) * (11 - d) * Math.pow(s, -w[9]) * (Math.exp((1 - r) * w[10]) - 1) * hard * easy));
+}
+
+/* study-day number of a timestamp (local date, days start at 04:00) */
+function lwSrsDay(t) {
+  const d = new Date(t - LW_DAY_START_MS);
+  return Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / LW_DAY_MS);
+}
+/* 04:00 local time, `days` study days after the one containing `now` */
+function lwSrsDayStart(now, days) {
+  const d = new Date(now - LW_DAY_START_MS);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + days);
+  return d.getTime() + LW_DAY_START_MS;
+}
+
+/* stable pseudo-random number in [0, 1) for a string (interval fuzz) */
+function lwHash01(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0) / 4294967296;
+}
+
+/* days until the next review for stability s, with ts-fsrs' fuzz so words
+   learnt together don't all come back on the same day */
+function lwFsrsInterval(s, elapsed, seed, retention) {
+  const modifier = (Math.pow(retention, 1 / LW_FSRS_DECAY) - 1) / LW_FSRS_FACTOR;
+  const ivl = Math.min(LW_FSRS_S_MAX, Math.max(1, Math.round(s * modifier)));
+  if (ivl < 2.5) return ivl;
+  let delta = 1;
+  [[2.5, 7, 0.15], [7, 20, 0.1], [20, Infinity, 0.05]].forEach(([from, to, f]) => {
+    delta += f * Math.max(Math.min(ivl, to) - from, 0);
+  });
+  let lo = Math.max(2, Math.round(ivl - delta));
+  const hi = Math.min(Math.round(ivl + delta), LW_FSRS_S_MAX);
+  if (ivl > elapsed) lo = Math.max(lo, elapsed + 1);
+  lo = Math.min(lo, hi);
+  return Math.floor(lwHash01(seed) * (hi - lo + 1) + lo);
+}
+
+/* Memory state of a progress doc. Docs written before FSRS have only a Leitner
+   `box` (10 min, 1, 3, 7, 14, 30 days): the box interval becomes the stability
+   and each lapse (up to 3) raises the difficulty, as FSRS would after Again. */
+const LW_LEGACY_BOX_DAYS = [LW_FSRS_W[0], 1, 3, 7, 14, 30];
+function lwCardMemory(prog) {
+  if (prog.stability) return { s: prog.stability, d: prog.difficulty || lwClampD(lwFsrsInitDRaw(3)), last: prog.lastReview || prog.lastSeen || 0 };
+  let d = lwClampD(lwFsrsInitDRaw(3));
+  for (let i = 0; i < Math.min(prog.lapses || 0, 3); i++) d = lwFsrsNextD(d, 1);
+  const s = LW_LEGACY_BOX_DAYS[Math.min(prog.box || 0, LW_LEGACY_BOX_DAYS.length - 1)];
+  return { s, d, last: prog.lastSeen || (prog.due ? prog.due - s * LW_DAY_MS : 0) };
+}
+
+/* chance (0..1) that the word is recalled now; 0 for a word never studied */
+function lwRetrievability(prog, now) {
+  if (!prog) return 0;
+  const m = lwCardMemory(prog);
+  return lwFsrsRecall(Math.max(0, (now - m.last) / LW_DAY_MS), m.s);
+}
+
+const lwRound4 = (x) => Math.round(x * 1e4) / 1e4;
+
 /* Next progress doc for a word after one answer. `prev` is the stored doc or
-   null for a word never studied. Know only moves the word up a box once it is
-   due (or new) — reviewing early keeps the box, so a word can't be ground to
-   Mastered in one evening. Again always drops it to box 0. */
-function lwNextProgress(prev, wordId, known, mode, now) {
-  const base = prev || { wordId, box: 0, due: now, reps: 0, lapses: 0 };
+   null for a word never studied. `opts.easy`: a fill answer typed quickly with
+   no mistake. Know on a word that isn't due yet, on the same study day as its
+   last review, changes nothing, so a word can't be ground to Mastered in one
+   evening. Again always counts as a lapse and brings the word back in 10 min. */
+function lwNextProgress(prev, wordId, known, mode, now, opts = {}) {
+  const g = lwAnswerGrade(known, mode, opts.easy);
+  const base = prev || { wordId, reps: 0, lapses: 0 };
   const next = { ...base, wordId, reps: (base.reps || 0) + 1, lastSeen: now, lastMode: mode };
+  delete next.box; // legacy Leitner field
+  let s, d, t = 0;
+  if (!prev) {
+    s = lwFsrsInitS(g);
+    d = lwClampD(lwFsrsInitDRaw(g));
+  } else {
+    const m = lwCardMemory(prev);
+    t = Math.max(0, lwSrsDay(now) - lwSrsDay(m.last));
+    if (known && prev.due > now && t === 0) {
+      return { ...next, stability: lwRound4(m.s), difficulty: lwRound4(m.d), lastReview: m.last };
+    }
+    const r = lwFsrsRecall(t, m.s);
+    s = lwFsrsNextS(m.d, m.s, t, r, g);
+    d = lwFsrsNextD(m.d, g);
+  }
+  next.stability = lwRound4(s);
+  next.difficulty = lwRound4(d);
+  next.lastReview = now;
   if (!known) {
-    next.box = 0;
-    next.due = now + LW_BOXES[0];
     next.lapses = (base.lapses || 0) + 1;
-  } else if (!prev) {
-    next.box = 1;
-    next.due = now + LW_BOXES[1];
-  } else if (prev.due <= now) {
-    next.box = Math.min((prev.box || 0) + 1, LW_MASTERED_BOX);
-    next.due = now + LW_BOXES[next.box];
+    next.due = now + LW_RELEARN_MS;
+  } else {
+    const retention = lwSrsCurrent.retention || LW_SRS_DEFAULTS.retention;
+    next.due = lwSrsDayStart(now, lwFsrsInterval(s, t, wordId + ':' + next.reps, retention));
   }
   return next;
 }
@@ -42,7 +182,50 @@ function lwNextProgress(prev, wordId, known, mode, now) {
 function lwWordStatus(prog, now) {
   if (!prog) return 'new';
   if (prog.due <= now) return 'review';
-  return prog.box >= LW_MASTERED_BOX ? 'mastered' : 'learning';
+  return lwCardMemory(prog).s >= LW_MASTERED_DAYS ? 'mastered' : 'learning';
+}
+
+/* 0..1 for the Mastery bar: stability on a log scale, full at LW_MASTERED_DAYS */
+function lwWordMastery(prog) {
+  if (!prog) return 0;
+  return Math.min(1, Math.log(1 + lwCardMemory(prog).s) / Math.log(1 + LW_MASTERED_DAYS));
+}
+
+/* ---------------- Review queue ----------------
+   Due words, most likely forgotten first. Words of paused groups never come up.
+   scope 'all': every due word. scope 'focus': due words of the focus groups,
+   with `background` of the first session given to the most at-risk due words
+   from other groups (mixed in by risk). Returns the ordered ids plus counts. */
+function lwReviewQueue({ words, progress, now, focus, scope, isPaused, srs }) {
+  const due = [];
+  let nextDue = null; // soonest upcoming review in this scope, for the empty state
+  words.forEach((w) => {
+    const p = progress[w.id];
+    if (!p || isPaused(w.groupId)) return;
+    const inFocus = focus.includes(w.groupId);
+    if (p.due > now) {
+      if ((scope === 'all' || inFocus) && (nextDue === null || p.due < nextDue)) nextDue = p.due;
+      return;
+    }
+    due.push({ id: w.id, focus: inFocus, r: lwRetrievability(p, now) });
+  });
+  due.sort((a, b) => a.r - b.r);
+  const main = due.filter((x) => x.focus);
+  const counts = { focusDue: main.length, allDue: due.length, nextDue };
+  if (scope === 'all') return { ids: due.map((x) => x.id), ...counts };
+  const others = due.filter((x) => !x.focus);
+  const cap = srs.session > 0 ? Math.min(srs.session, main.length) : main.length;
+  const bgN = Math.min(others.length, Math.ceil(cap * (srs.background || 0)));
+  const room = Math.max(cap - bgN, Math.min(main.length, 1));
+  const first = [...main.slice(0, room), ...others.slice(0, bgN)].sort((a, b) => a.r - b.r);
+  return { ids: [...first, ...main.slice(room)].map((x) => x.id), ...counts };
+}
+
+/* a group's words skip Review while it, or its parent group, is paused */
+function lwGroupPaused(groupId, groupById, groupState) {
+  if (!groupState) return false;
+  const g = groupById[groupId];
+  return groupState[groupId] === 'paused' || !!(g && g.parentId && groupState[g.parentId] === 'paused');
 }
 
 /* compact duration for button labels: 10m, 5h, 3d */
@@ -354,8 +537,18 @@ Object.assign(window, {
   lwLastDays,
   lwTotalMs,
   lwFormatDuration,
-  LW_BOXES,
-  LW_MASTERED_BOX,
+  LW_RELEARN_MS,
+  LW_MASTERED_DAYS,
+  LW_SRS_DEFAULTS,
+  LW_RETENTION_OPTIONS,
+  LW_SESSION_OPTIONS,
+  LW_BACKGROUND_OPTIONS,
+  lwSrsSettings,
+  lwSetSrsSettings,
+  lwRetrievability,
+  lwWordMastery,
+  lwReviewQueue,
+  lwGroupPaused,
   LW_DEFAULT_DAILY_GOAL,
   LW_XP_CORRECT,
   LW_XP_WRONG,

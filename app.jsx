@@ -68,7 +68,7 @@ function App() {
   const [authInfo, setAuthInfo] = useState(() => window.lwAuthInfo()); // sign-in methods (password / Google)
   const [groups, setGroups] = useState([]);
   const [words, setWords] = useState([]);
-  const [progress, setProgress] = useState({}); // { [wordId]: Leitner progress doc }
+  const [progress, setProgress] = useState({}); // { [wordId]: FSRS progress doc }
   const [activityDocs, setActivityDocs] = useState([]); // daily activity docs of every language
   const [now, setNow] = useState(() => Date.now()); // ticks each minute so due counts stay fresh
   const [texts, setTexts] = useState([]); // reading texts: own + shared (meta only, chapters load on open)
@@ -269,6 +269,11 @@ function App() {
   const langs = window.lwUserLangs(userDoc);
   const lang = userDoc && langs.includes(userDoc.lang) ? userDoc.lang : (langs[0] || null);
   window.lwSetCurrentLang(lang || 'en');
+  /* review settings (users.srs, every language) and paused groups (per language) */
+  const srs = useMemo(() => window.lwSrsSettings(userDoc), [userDoc]);
+  window.lwSetSrsSettings(srs);
+  const groupStateField = window.lwLangField('groupState', lang);
+  const groupState = (userDoc && userDoc[groupStateField]) || null;
   /* write some of the user's own profile fields (lang, dailyGoal, cefr, avatar) */
   const updateProfile = useCallback((fields) => {
     if (!authUser) return Promise.resolve();
@@ -394,16 +399,16 @@ function App() {
 
   const dailyGoal = (userDoc && userDoc[window.lwLangField('dailyGoal', lang)]) || window.LW_DEFAULT_DAILY_GOAL;
 
-  /* Record one answer from Study / Choice / Fill / Review: next Leitner box for
-     the word plus today's XP. A +50 bonus lands once, on the answer that reaches
-     the daily goal. Snapshots apply local writes immediately, so rapid answers
+  /* Record one answer from Study / Choice / Fill / Review: the word's next FSRS
+     state (`opts.easy`: a fill typed quickly with no mistake) plus today's XP.
+     A +50 bonus lands once, on the answer that reaches the daily goal. Snapshots apply local writes immediately, so rapid answers
      already see the updated progress/activity. */
   const lastAnswerAt = useRef(0); // for practice time (activity.ms)
   /* answers sent today that the activity snapshot may not show yet: the
      collocation game records several answers at once, and each must see the
      others so the goal bonus lands only once */
   const sentToday = useRef({ date: '', answers: 0, goalMet: false });
-  const recordAnswer = useCallback((wordId, known, mode) => {
+  const recordAnswer = useCallback((wordId, known, mode, opts) => {
     if (!authUser) return;
     const t = Date.now();
     const ms = window.lwPracticeMs(lastAnswerAt.current, t);
@@ -417,7 +422,7 @@ function App() {
     window.lwRecordAnswer({
       uid: authUser.uid,
       lang,
-      progress: wordId ? window.lwNextProgress(progress[wordId] || null, wordId, known, mode, t) : null, // null: a grammar test answer
+      progress: wordId ? window.lwNextProgress(progress[wordId] || null, wordId, known, mode, t, opts) : null, // null: a grammar test answer
       date,
       correct: known,
       xp: known ? window.LW_XP_CORRECT : window.LW_XP_WRONG,
@@ -474,14 +479,29 @@ function App() {
     return m;
   }, [scopedGroups, scopedWords]);
 
+  /* Learn → Review: 'focus' plays the groups selected in Learn (plus a small
+     background share), 'all' every due word; paused groups never come up */
+  const [reviewScope, setReviewScope] = useState(() => window.lwLoad(LW_KEYS.reviewScope, 'focus'));
+  useEffect(() => { window.lwSave(LW_KEYS.reviewScope, reviewScope); }, [reviewScope]);
+  const isPaused = useCallback((gid) => window.lwGroupPaused(gid, groupById, groupState), [groupById, groupState]);
+  const reviewPlan = useMemo(() => window.lwReviewQueue({
+    words: scopedWords, progress, now, focus: selected, scope: reviewScope, isPaused, srs,
+  }), [scopedWords, progress, now, selected, reviewScope, isPaused, srs]);
+  /* pause or resume reviews of a group (users.groupState, per language) */
+  const setGroupPaused = useCallback((gid, paused) => {
+    const next = { ...(groupState || {}) };
+    if (paused) next[gid] = 'paused'; else delete next[gid];
+    updateProfile({ [groupStateField]: next });
+  }, [groupState, groupStateField, updateProfile]);
+
   /* streak / goal / XP / review queue size for the footer (dashboard comes in stage 3).
      Streak, goal and XP count every language; due and status counts only this one's words.
-     Progress for words that no longer exist (e.g. a shared word an admin deleted) is ignored. */
+     Progress for words that no longer exist (e.g. a shared word an admin deleted) is ignored.
+     dueCount is the size of the next Review session (scope, paused groups, session size). */
   const stats = useMemo(() => {
     const today = activity[window.lwLocalDate(now)] || {};
     const xp = window.lwTotalXp(activity);
-    const wordIds = new Set(scopedWords.map((w) => w.id));
-    const dueCount = Object.values(progress).filter((p) => wordIds.has(p.wordId) && p.due <= now).length;
+    const dueCount = srs.session > 0 ? Math.min(srs.session, reviewPlan.ids.length) : reviewPlan.ids.length;
     const statusCounts = window.lwStatusCounts(progress, scopedWords, now);
     return {
       streak: window.lwStreak(activity, now),
@@ -494,7 +514,7 @@ function App() {
       totalMs: window.lwTotalMs(activity),
       week: window.lwLastDays(activity, now, 7),
     };
-  }, [activity, progress, scopedWords, now, dailyGoal]);
+  }, [activity, progress, scopedWords, now, dailyGoal, reviewPlan, srs]);
 
   /* Badges, per language like every other stat: metrics from the current
      language's data; earned ones are kept in users/{uid}.badges (badges_<lang>
@@ -753,9 +773,11 @@ function App() {
         <main key={lang} className={'content content-' + tab}>
           {tab === 'learn' ? (
             <LearnView mode={learnMode} setMode={(m) => goTo(m)} stats={stats} studyStats={studyStats}
-              selectedCount={scopedSelected.length} onPickGroups={() => setGroupsOpen(true)}>
+              selectedCount={scopedSelected.length} onPickGroups={() => setGroupsOpen(true)}
+              reviewScope={reviewScope} setReviewScope={setReviewScope} reviewPlan={reviewPlan}>
               {learnMode === 'review' ? (
-                <ReviewView {...learnProps} now={now} goStudy={() => goTo('cards')} />
+                <ReviewView key={reviewScope} {...learnProps} now={now} plan={reviewPlan} scope={reviewScope} session={srs.session}
+                  showAll={() => setReviewScope('all')} goStudy={() => goTo('cards')} />
               ) : learnMode === 'choice' ? (
                 <ChoiceView {...learnProps} selected={scopedSelected} onStatsChange={setStudyStats} />
               ) : learnMode === 'fill' ? (
@@ -774,8 +796,8 @@ function App() {
           ) : tab === 'reading' && nav.reading.view === 'reader' && scopedTexts.some((t) => t.id === nav.reading.textId) ? (
             <ReaderView key={nav.reading.textId} text={scopedTexts.find((t) => t.id === nav.reading.textId)}
               prog={readingProgress[nav.reading.textId]} uid={authUser.uid}
-              wordIndex={wordIndex} progress={progress} now={now} groups={scopedGroups} addWord={addWordFromReading}
-              onBack={() => goTo('reading-home')} />
+              words={scopedWords} wordIndex={wordIndex} progress={progress} now={now} groups={scopedGroups} addWord={addWordFromReading}
+              recordAnswer={recordAnswer} onBack={() => goTo('reading-home')} />
           ) : tab === 'reading' && nav.reading.view === 'ai' ? (
             <ReadingView groups={scopedGroups} words={scopedWords} countByGroup={scopedCountByGroup}
               reading={reading} setReading={setReading}
@@ -800,6 +822,7 @@ function App() {
             <LibraryView groups={scopedGroups} words={scopedWords} userId={authUser.uid} username={userDoc.username} isAdmin={isAdmin}
               progress={progress} now={now} direction={direction} recordAnswer={recordAnswer}
               collocations={scopedCollocations} saveCollocation={saveCollocation} pushToast={pushToast} clips={clips}
+              groupState={groupState} setGroupPaused={setGroupPaused}
               goImport={() => goTo('import')} />
           ) : tab === 'import' ? (
             <ImportView groups={allGroups ? allGroups.filter(inLang) : scopedGroups}
@@ -812,7 +835,7 @@ function App() {
             <LevelTestScreen lang={lang} user={userDoc} uid={authUser.uid} isAdmin={isAdmin} updateProfile={updateProfile}
               pushToast={pushToast} onClose={() => goTo('profile')} />
           ) : (
-            <ProfileView user={userDoc} stats={stats} badges={badgeStates} updateProfile={updateProfile}
+            <ProfileView user={userDoc} stats={stats} badges={badgeStates} updateProfile={updateProfile} srs={srs}
               authInfo={authInfo} refreshAuthInfo={() => setAuthInfo(window.lwAuthInfo())}
               pushToast={pushToast} goLearn={() => goTo('cards')} goLevelTest={() => goTo('leveltest')}
               theme={theme} onToggleTheme={toggleTheme}
@@ -1079,9 +1102,9 @@ function TabBar({ tab, goTo }) {
 /* ---------------- Learn: header (daily goal, modes, groups) + answer buttons ---------------- */
 
 /* Again / Know under a card — same as swiping left / right, but they show when
-   the word comes back. Know on a word reviewed early keeps its box, so its
-   label shows the time left until it is due. */
-function LeitnerButtons({ prog, wordId, onAnswer }) {
+   the word comes back (FSRS, lwNextProgress). Know on a word reviewed early the
+   same day changes nothing, so its label shows the time left until it is due. */
+function AnswerButtons({ prog, wordId, onAnswer }) {
   const t = Date.now();
   const knowIn = window.lwNextProgress(prog || null, wordId, true, '', t).due - t;
   return (
@@ -1089,7 +1112,7 @@ function LeitnerButtons({ prog, wordId, onAnswer }) {
       <button className="answer-btn answer-again" type="button" onClick={() => onAnswer('unknown')}>
         <span className="answer-icon"><Ic.Close width="22" height="22" /></span>
         <span className="answer-label">Again</span>
-        <span className="answer-int">{window.lwFormatInterval(window.LW_BOXES[0])}</span>
+        <span className="answer-int">{window.lwFormatInterval(window.LW_RELEARN_MS)}</span>
       </button>
       <button className="answer-btn answer-know" type="button" onClick={() => onAnswer('known')}>
         <span className="answer-icon"><Ic.DoubleCheck width="22" height="22" /></span>
@@ -1100,7 +1123,7 @@ function LeitnerButtons({ prog, wordId, onAnswer }) {
   );
 }
 
-function LearnView({ mode, setMode, stats, studyStats, selectedCount, onPickGroups, children }) {
+function LearnView({ mode, setMode, stats, studyStats, selectedCount, onPickGroups, reviewScope, setReviewScope, reviewPlan, children }) {
   /* on narrow screens the modes scroll sideways: keep the chosen one in view */
   const pillsRef = useRef(null);
   useEffect(() => {
@@ -1129,6 +1152,24 @@ function LearnView({ mode, setMode, stats, studyStats, selectedCount, onPickGrou
             </button>
           ))}
         </div>
+        {mode === 'review' && (
+          <div className="learn-sub learn-sub-review">
+            <div className="seg seg-sm" role="radiogroup" aria-label="Which words to review">
+              <button type="button" role="radio" aria-checked={reviewScope === 'focus'} className={'seg-btn' + (reviewScope === 'focus' ? ' on' : '')}
+                onClick={() => setReviewScope('focus')}>Focus</button>
+              <button type="button" role="radio" aria-checked={reviewScope === 'all'} className={'seg-btn' + (reviewScope === 'all' ? ' on' : '')}
+                onClick={() => setReviewScope('all')}>All</button>
+            </div>
+            {reviewScope === 'focus' && (
+              <button type="button" className="groups-chip" onClick={onPickGroups}>
+                <Ic.Tag width="15" height="15" /> {selectedCount} {selectedCount === 1 ? 'group' : 'groups'} <Ic.Chevron width="15" height="15" />
+              </button>
+            )}
+            <span className="learn-session">
+              {reviewScope === 'focus' ? reviewPlan.focusDue + ' due here · ' + reviewPlan.allDue + ' in all' : reviewPlan.allDue + ' due'}
+            </span>
+          </div>
+        )}
         {mode !== 'review' && mode !== 'colloc' && mode !== 'video' && (
           <div className="learn-sub">
             <button type="button" className="groups-chip" onClick={onPickGroups}>
@@ -1483,7 +1524,7 @@ const LW_STATUS_META = [
   { id: 'mastered', label: 'Mastered' },
 ];
 
-function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuthInfo, pushToast, goLearn, goLevelTest,
+function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuthInfo, pushToast, goLearn, goLevelTest, srs,
   theme, onToggleTheme, direction, setDirection, lang, langs, setLang, removeLang, onGeminiKey, onLogout, onDeleteAccount }) {
   const fileRef = useRef(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
@@ -1675,6 +1716,38 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
           <div className="seg">
             <button type="button" className={'seg-btn' + (direction === 'en-ru' ? ' on' : '')} onClick={() => setDirection('en-ru')}>{lang.toUpperCase()} → RU</button>
             <button type="button" className={'seg-btn' + (direction === 'ru-en' ? ' on' : '')} onClick={() => setDirection('ru-en')}>RU → {lang.toUpperCase()}</button>
+          </div>
+        </div>
+        {/* review schedule (users.srs, every language) */}
+        <div className="setting-row setting-row-wrap">
+          <span className="setting-label" title="How likely you should still remember a word when it comes back. Higher means more reviews.">
+            <Ic.Bulb /> Target memory
+          </span>
+          <div className="seg">
+            {window.LW_RETENTION_OPTIONS.map((r) => (
+              <button key={r} type="button" className={'seg-btn' + (srs.retention === r ? ' on' : '')}
+                onClick={() => updateProfile({ srs: { ...srs, retention: r } })}>{Math.round(r * 100)}%</button>
+            ))}
+          </div>
+        </div>
+        <div className="setting-row setting-row-wrap">
+          <span className="setting-label"><Ic.Repeat /> Review session</span>
+          <div className="seg">
+            {window.LW_SESSION_OPTIONS.map((n) => (
+              <button key={n} type="button" className={'seg-btn' + (srs.session === n ? ' on' : '')}
+                onClick={() => updateProfile({ srs: { ...srs, session: n } })}>{n || 'All'}</button>
+            ))}
+          </div>
+        </div>
+        <div className="setting-row setting-row-wrap">
+          <span className="setting-label" title="Share of a Focus review given to words from other groups that are about to be forgotten.">
+            <Ic.Shuffle /> Other groups in Focus
+          </span>
+          <div className="seg">
+            {window.LW_BACKGROUND_OPTIONS.map((b) => (
+              <button key={b} type="button" className={'seg-btn' + (srs.background === b ? ' on' : '')}
+                onClick={() => updateProfile({ srs: { ...srs, background: b } })}>{b ? Math.round(b * 100) + '%' : 'Off'}</button>
+            ))}
           </div>
         </div>
         {'speechSynthesis' in window && <VoicePicker key={lang} />}
@@ -1870,33 +1943,38 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, directio
           </div>
         )}
       </div>
-      {entry && <LeitnerButtons prog={wordProgress[entry.id]} wordId={entry.id} onAnswer={mark} />}
+      {entry && <AnswerButtons prog={wordProgress[entry.id]} wordId={entry.id} onAnswer={mark} />}
     </div>
   );
 }
 
-/* ---------------- Review view (Leitner: every word whose due time has come) ----------------
-   Covers all of the user's words, not just the selected categories. The queue is
-   fixed when the view opens (sorted by due); Again sends the word to the back of
-   this session's queue, Know drops it. Space flips, ← / → answer. */
-function ReviewView({ words, groupById, direction, progress, recordAnswer, now, goStudy, goCategory }) {
+/* ---------------- Review view (FSRS: words whose due time has come) ----------------
+   Scope 'focus' plays the groups selected in Learn plus a small background share
+   of at-risk words from other groups; 'all' plays every due word. Paused groups
+   never come up. The queue is fixed when the view opens (most likely forgotten
+   first) and holds at most the session size; "Continue" loads the next session.
+   Again sends the word to the back of this session's queue, Know drops it.
+   Space flips, ← / → answer. */
+function ReviewView({ words, groupById, direction, progress, recordAnswer, now, plan, scope, session, showAll, goStudy, goCategory }) {
   const [queue, setQueue] = useState(null); // null until the first build
+  const [budget, setBudget] = useState(session > 0 ? session : Infinity); // new words this session may still take
   const [flipped, setFlipped] = useState(false);
   const [done, setDone] = useState(0);
   const [turn, setTurn] = useState(0); // remounts the card, so a re-queued single word animates in again
 
-  const dueIds = useMemo(() => {
-    const wordIds = new Set(words.map((w) => w.id));
-    return Object.values(progress)
-      .filter((p) => wordIds.has(p.wordId) && p.due <= now)
-      .sort((a, b) => a.due - b.due)
-      .map((p) => p.wordId);
-  }, [words, progress, now]);
+  /* due words in this scope, most likely forgotten first (lwReviewQueue) */
+  const dueIds = plan.ids;
+  const load = useCallback((room) => {
+    const take = dueIds.slice(0, room);
+    setQueue(take);
+    setBudget(room - take.length);
+  }, [dueIds]);
 
-  /* build the queue on open; refill once it has run dry and more words came due */
+  /* build the queue on open; refill once it has run dry and more words came due,
+     until the session size is used up ("Continue" starts another session) */
   useEffect(() => {
     const dry = queue === null || !queue.some((id) => words.some((w) => w.id === id));
-    if (dry && (queue === null || dueIds.length)) setQueue(dueIds);
+    if (dry && (queue === null || (dueIds.length && budget > 0))) load(budget);
     // eslint-disable-next-line
   }, [dueIds]);
 
@@ -1935,12 +2013,9 @@ function ReviewView({ words, groupById, direction, progress, recordAnswer, now, 
   const entry = current ? words.find((w) => w.id === current) : null;
   const group = entry ? groupById[entry.groupId] : null;
 
-  /* soonest upcoming review, for the empty state */
-  const nextDue = useMemo(() => {
-    const wordIds = new Set(words.map((w) => w.id));
-    const upcoming = Object.values(progress).filter((p) => wordIds.has(p.wordId) && p.due > now);
-    return upcoming.length ? Math.min(...upcoming.map((p) => p.due)) : null;
-  }, [words, progress, now]);
+  const nextDue = plan.nextDue;
+  const moreDue = dueIds.length; // left after the session size was used up
+  const otherDue = scope === 'focus' ? plan.allDue - plan.focusDue : 0;
 
   return (
     <div className="study">
@@ -1956,26 +2031,38 @@ function ReviewView({ words, groupById, direction, progress, recordAnswer, now, 
             <p className="empty-sub">Study some words first — they come back here when it's time to repeat them.</p>
             <button className="btn btn-primary" onClick={goStudy}><Ic.Cards /> Start studying</button>
           </div>
+        ) : budget === 0 && moreDue > 0 ? (
+          <div className="empty-card">
+            <Ic.Check width="30" height="30" />
+            <p className="empty-title">Session done!</p>
+            <p className="empty-sub">{done} reviewed. {moreDue} more {moreDue === 1 ? 'word is' : 'words are'} due.</p>
+            <button className="btn btn-primary" onClick={() => load(session > 0 ? session : Infinity)}><Ic.Repeat /> Continue</button>
+          </div>
         ) : (
           <div className="empty-card">
             <Ic.Check width="30" height="30" />
-            <p className="empty-title">All caught up!</p>
+            <p className="empty-title">{scope === 'focus' ? 'Focus groups caught up!' : 'All caught up!'}</p>
             <p className="empty-sub">
               {done > 0 ? done + ' reviewed this session. ' : ''}
-              {nextDue ? 'Next review in ' + window.lwFormatInterval(nextDue - now) + '.' : ''}
+              {otherDue > 0 ? otherDue + (otherDue === 1 ? ' word is' : ' words are') + ' due in other groups. '
+                : nextDue ? 'Next review in ' + window.lwFormatInterval(nextDue - now) + '.' : ''}
             </p>
-            <button className="btn btn-primary" onClick={goStudy}><Ic.Cards /> Study new words</button>
+            {otherDue > 0 ? (
+              <button className="btn btn-primary" onClick={showAll}><Ic.Repeat /> Review all groups</button>
+            ) : (
+              <button className="btn btn-primary" onClick={goStudy}><Ic.Cards /> Study new words</button>
+            )}
           </div>
         )}
       </div>
-      {entry && <LeitnerButtons prog={progress[entry.id]} wordId={entry.id} onAnswer={mark} />}
+      {entry && <AnswerButtons prog={progress[entry.id]} wordId={entry.id} onAnswer={mark} />}
     </div>
   );
 }
 
 /* ---------------- Choice view (multiple-choice translation quiz) ----------------
    Plays the selected groups in random order, but only words that are new or due
-   by the Leitner schedule: a right answer moves the word up a box (1 d or more),
+   by the review schedule: a right answer sets its next review (1 d or more),
    so it won't come back until then. A wrong answer re-queues it for this round.
    "Practise all anyway" ignores the schedule. Options come from the whole pool. */
 const CHOICE_OPTIONS = 4;
@@ -2239,11 +2326,12 @@ function FillView({ words, selected, groupById, progress: wordProgress, recordAn
   }, [advance, queue]);
 
   /* known = typed right (drop it); unknown = typed after "Show answer" (send to
-     the back, so it repeats); skip = move on without recording a status */
-  const mark = useCallback((status) => {
+     the back, so it repeats); skip = move on without recording a status.
+     info.easy: typed quickly with no mistake, graded Easy */
+  const mark = useCallback((status, info) => {
     if (!current) return;
     if (status === 'skip') { draw(); return; }
-    recordAnswer(current, status === 'known', 'fill');
+    recordAnswer(current, status === 'known', 'fill', info);
     if (status === 'unknown') retryRef.current.add(current);
     setProgress((p) => ({ ...p, [current]: status }));
     const nq = status === 'unknown' ? [...queue, current] : queue;
@@ -3047,7 +3135,7 @@ function AddTextModal({ isAdmin, onSave, onClose }) {
 
 /* The reader: one page (~250 words) of a chapter at a time. Words are tappable,
    paragraphs can be read aloud and translated; position syncs to reading_progress. */
-function ReaderView({ text, prog, uid, wordIndex, progress, now, groups, addWord, onBack }) {
+function ReaderView({ text, prog, uid, words, wordIndex, progress, now, groups, addWord, recordAnswer, onBack }) {
   const chapters = text.chapters || [];
   const [at, setAt] = useState(() => ({
     chapter: Math.min(Math.max(0, (prog && prog.chapter) || 0), Math.max(0, chapters.length - 1)),
@@ -3060,6 +3148,7 @@ function ReaderView({ text, prog, uid, wordIndex, progress, now, groups, addWord
   const [speaking, setSpeaking] = useState(null); // { para, sent }
   const [sheet, setSheet] = useState(null); // { token, sentence, sentenceTr }
   const [practicePara, setPracticePara] = useState(-1); // paragraph open for "Read aloud"
+  const [practice, setPractice] = useState(null); // exercise kind open for this chapter
 
   /* load the chapter (kept in memory while the reader is open) */
   useEffect(() => {
@@ -3095,6 +3184,8 @@ function ReaderView({ text, prog, uid, wordIndex, progress, now, groups, addWord
   /* stop speech when leaving the page */
   useEffect(() => () => { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); }, [at.chapter, page]);
   useEffect(() => { window.scrollTo(0, 0); setSpeaking(null); setPracticePara(-1); }, [at.chapter, page]);
+  useEffect(() => { setPractice(null); }, [at.chapter]);
+  useEffect(() => { window.scrollTo(0, 0); }, [practice]);
 
   const lastPage = page >= pages.length - 1;
   const goNext = () => {
@@ -3108,7 +3199,7 @@ function ReaderView({ text, prog, uid, wordIndex, progress, now, groups, addWord
   };
   useEffect(() => {
     const h = (e) => {
-      if (sheet || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+      if (sheet || practice || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
       if (e.key === 'ArrowRight') goNext();
       else if (e.key === 'ArrowLeft') goPrev();
     };
@@ -3158,6 +3249,15 @@ function ReaderView({ text, prog, uid, wordIndex, progress, now, groups, addWord
   }, [paragraphs, wordIndex]);
 
   const chMeta = chapters[at.chapter] || {};
+  const ex = chapter && chapter.exercises;
+  const practiceScores = prog && prog.practice && prog.practice[at.chapter];
+  /* an exercise answer: to the user's card for that word, else activity only */
+  const practiceAnswer = (target, ok) => {
+    const card = target ? window.lwFindCardForClip({ word: target }, words) : null;
+    recordAnswer(card ? card.id : null, ok, 'reading');
+  };
+  const savePractice = (kind, pct) => window.lwSaveReadingProgress(uid, text.id, { practice: { [at.chapter]: { [kind]: pct } } })
+    .catch((e) => console.error('practice score', e));
   return (
     <div className="reader">
       <header className="reader-head">
@@ -3170,7 +3270,22 @@ function ReaderView({ text, prog, uid, wordIndex, progress, now, groups, addWord
             </select>
           ) : text.author ? <span className="reader-author">{text.author}</span> : null}
         </div>
+        {ex && (
+          <button type="button" className={'btn btn-soft sm reader-practice-btn' + (practice ? ' on' : '')}
+            onClick={() => setPractice(practice ? null : 'menu')}>
+            <Ic.ListCheck width="15" height="15" /> {practice ? 'Text' : 'Practice'}
+          </button>
+        )}
       </header>
+      {practice === 'menu' ? (
+        <>
+          <ChapterPracticeMenu ex={ex} scores={practiceScores} onPick={setPractice} />
+          <button type="button" className="btn btn-ghost" onClick={() => setPractice(null)}>Back to the text</button>
+        </>
+      ) : practice ? (
+        <ChapterPractice key={practice} kind={practice} ex={ex} onAnswer={practiceAnswer}
+          onSave={(pct) => savePractice(practice, pct)} onBack={() => setPractice('menu')} />
+      ) : <>
       <div className="reader-progress">
         <span>{pages.length ? 'Page ' + (page + 1) + ' of ' + pages.length : 'Loading…'}</span>
         <span className="goal-track"><span className="goal-fill" style={{ display: 'block', width: (pages.length ? ((page + 1) / pages.length) * 100 : 0) + '%' }} /></span>
@@ -3241,11 +3356,444 @@ function ReaderView({ text, prog, uid, wordIndex, progress, now, groups, addWord
           {lastPage && at.chapter < chapters.length - 1 ? 'Next chapter' : 'Next'} <Ic.Arrow />
         </button>
       </nav>
+      {ex && lastPage && <ChapterPracticeMenu ex={ex} scores={practiceScores} onPick={setPractice} />}
+      </>}
 
       {sheet && (
         <WordSheet key={sheet.token + '|' + sheet.sentence} token={sheet.token} sentence={sheet.sentence} sentenceTr={sheet.sentenceTr}
           wordIndex={wordIndex} progress={progress} now={now} groups={groups} addWord={addWord} onClose={() => setSheet(null)} />
       )}
+    </div>
+  );
+}
+
+/* ---------------- Chapter practice ----------------
+   Books from the make-book skill (scripts/upload-book.mjs) keep exercises in
+   each chapter doc: exercises = { questions, fill, bank, dialogue }. Gaps are
+   marked [[word]]. Every answer goes through recordAnswer: to the user's card
+   for that word when there is one (its review progress), else activity only.
+   The last score of each exercise is kept in reading_progress as
+   practice.{chapter}.{kind} = percent. */
+const lwMarks = (t) => [...String(t || '').matchAll(/\[\[(.+?)\]\]/g)].map((m) => m[1]);
+const LW_PRACTICE_KINDS = [
+  { id: 'questions', label: 'Questions', sub: 'Did you get the story?', icon: 'ListCheck', count: (ex) => (ex.questions || []).length },
+  { id: 'fill', label: 'Fill the gaps', sub: 'Type the missing word', icon: 'Blank', count: (ex) => (ex.fill || []).length },
+  { id: 'bank', label: 'Word bank', sub: 'Put the words back into the text', icon: 'Cards', count: (ex) => (ex.bank ? lwMarks(ex.bank.text).length : 0) },
+  { id: 'dialogue', label: 'Dialogue', sub: 'Say your lines, filling the gap', icon: 'Mic',
+    count: (ex) => (ex.dialogue ? (ex.dialogue.lines || []).filter((l) => l.who === ex.dialogue.you).length : 0) },
+];
+
+function ChapterPracticeMenu({ ex, scores, onPick }) {
+  const kinds = LW_PRACTICE_KINDS.filter((k) => k.count(ex) > 0);
+  return (
+    <section className="cp-menu">
+      <h2 className="section-label">Practice this chapter</h2>
+      <div className="cp-grid">
+        {kinds.map((k) => {
+          const I = Ic[k.icon];
+          const score = scores && scores[k.id];
+          return (
+            <button key={k.id} type="button" className="cp-tile" onClick={() => onPick(k.id)}>
+              <span className="tile-icon tile-icon-blue"><I width="18" height="18" /></span>
+              <span className="cp-tile-label">{k.label}</span>
+              <span className="cp-tile-sub">{k.sub}</span>
+              <span className={'cp-tile-meta' + (score === 100 ? ' done' : '')}>
+                {k.count(ex)} {k.id === 'questions' ? 'questions' : k.id === 'dialogue' ? 'lines' : 'gaps'}
+                {score != null ? ' · last ' + score + '%' : ''}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/* progress segments + counter, shared by the step-by-step exercises */
+function PracticeHead({ label, idx, total, results }) {
+  return (
+    <>
+      <div className="colloc-head">
+        <span className="colloc-kicker">{label} · {Math.min(idx + 1, total)} of {total}</span>
+        <span className="colloc-count">{results.filter(Boolean).length} correct</span>
+      </div>
+      <div className="colloc-segs">
+        {Array.from({ length: total }, (_, i) => (
+          <span key={i} className={'colloc-seg' + (i < results.length ? (results[i] ? ' on' : ' bad') : i === idx ? ' cur' : '')} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function PracticeDone({ right, total, onAgain, onBack }) {
+  const pct = total ? Math.round((right / total) * 100) : 0;
+  const good = pct >= 80;
+  return (
+    <div className={'quiz-result' + (good ? ' pass' : ' fail')}>
+      <span className="quiz-result-icon">{good ? <Ic.DoubleCheck width="30" height="30" /> : <Ic.Repeat width="28" height="28" />}</span>
+      <p className="quiz-score">{right}/{total}</p>
+      <h2 className="quiz-result-title">{pct === 100 ? 'Perfect!' : good ? 'Well done!' : 'Keep practising'}</h2>
+      <p className="quiz-result-sub">Every answer counts towards your daily goal and XP.</p>
+      <div className="quiz-result-btns">
+        <button type="button" className="btn btn-soft" onClick={onAgain}>Try again</button>
+        <button type="button" className="btn btn-primary" onClick={onBack}>Back to the chapter</button>
+      </div>
+    </div>
+  );
+}
+
+/* sentence with its [[gap]] shown as a blank, or filled in after the answer */
+function GapSentence({ text, shown, ok }) {
+  const q = window.lwSplitQuote(text);
+  return (
+    <>{q.before}{shown
+      ? <mark className={'cp-gap-filled' + (ok ? ' ok' : ' bad')}>{q.target}</mark>
+      : <span className="cp-gap">{'_'.repeat(Math.max(4, Math.min(12, q.target.length)))}</span>}{q.after}</>
+  );
+}
+
+/* comprehension questions: 4 options, shuffled per attempt */
+function PracticeQuestions({ items, onAnswer, onFinish }) {
+  const [tasks] = useState(() => shuffle(items).map((t) => {
+    const order = shuffle([0, 1, 2, 3]);
+    return { ...t, options: order.map((i) => t.options[i]), answer: order.indexOf(t.answer) };
+  }));
+  const [idx, setIdx] = useState(0);
+  const [given, setGiven] = useState(null);
+  const [results, setResults] = useState([]);
+  const task = tasks[idx];
+  const pick = (i) => {
+    if (given != null) return;
+    const ok = i === task.answer;
+    setGiven(i);
+    setResults((r) => [...r, ok]);
+    onAnswer(null, ok);
+  };
+  const next = () => {
+    if (idx + 1 < tasks.length) { setIdx(idx + 1); setGiven(null); }
+    else onFinish(results.filter(Boolean).length, tasks.length);
+  };
+  return (
+    <>
+      <PracticeHead label="Questions" idx={idx} total={tasks.length} results={results} />
+      <div className="ls-card quiz-card">
+        <p className="quiz-q quiz-q-big">{task.q}</p>
+        <div className="quiz-options">
+          {task.options.map((o, i) => {
+            const cls = given == null ? '' : i === task.answer ? ' right' : i === given ? ' wrong' : ' dim';
+            return (
+              <button key={i} type="button" className={'quiz-option' + cls} disabled={given != null} onClick={() => pick(i)}>
+                <span className="quiz-letter">{'ABCD'[i]}</span>{o}
+              </button>
+            );
+          })}
+        </div>
+        {given != null && task.why && (
+          <div className={'quiz-feedback' + (given === task.answer ? ' ok' : ' bad')} role="status">
+            <p className="quiz-why">{task.why}</p>
+          </div>
+        )}
+      </div>
+      {given != null && (
+        <button type="button" className="btn btn-primary quiz-next" onClick={next} autoFocus>
+          {idx + 1 < tasks.length ? 'Next' : 'See result'} <Ic.Arrow width="16" height="16" />
+        </button>
+      )}
+    </>
+  );
+}
+
+/* typed gaps: a sentence from the chapter with one word missing */
+function PracticeFill({ items, onAnswer, onFinish }) {
+  const [tasks] = useState(() => shuffle(items.map((f) => (typeof f === 'string' ? { s: f } : f))));
+  const [idx, setIdx] = useState(0);
+  const [typed, setTyped] = useState('');
+  const [state, setState] = useState(null); // null | { ok, form, shown }
+  const [results, setResults] = useState([]);
+  const inputRef = useRef(null);
+  useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, [idx]);
+  const task = tasks[idx];
+  const target = window.lwSplitQuote(task.s).target;
+  const settle = (ok, extra) => {
+    setState({ ok, ...extra });
+    setResults((r) => [...r, ok]);
+    onAnswer(target, ok);
+  };
+  const check = () => {
+    if (state || !typed.trim()) return;
+    const ok = window.lwCheckFill(typed, [target]);
+    /* the right word in another form (hire for hired) is still a miss, but say so */
+    const form = !ok && window.lwSpeechTokens(typed).length === window.lwSpeechTokens(target).length
+      && window.lwSpeechTokens(typed).every((t, i) => window.readingTokensMatch(t, window.lwSpeechTokens(target)[i]));
+    settle(ok, { form });
+  };
+  const next = () => {
+    if (idx + 1 < tasks.length) { setIdx(idx + 1); setTyped(''); setState(null); }
+    else onFinish(results.filter(Boolean).length, tasks.length);
+  };
+  return (
+    <>
+      <PracticeHead label="Fill the gaps" idx={idx} total={tasks.length} results={results} />
+      <div className="ls-card quiz-card">
+        <p className="quiz-q quiz-q-big cp-sentence"><GapSentence text={task.s} shown={!!state} ok={state && state.ok} /></p>
+        {task.hint && <p className="cp-hint"><Ic.Bulb width="15" height="15" /> {task.hint}</p>}
+        <form className="quiz-fill" onSubmit={(e) => { e.preventDefault(); check(); }}>
+          <input ref={inputRef} className={'input quiz-input' + (!state ? '' : state.ok ? ' right' : ' wrong')} value={typed}
+            disabled={!!state} placeholder="Type the missing word" autoComplete="off" autoCapitalize="off" spellCheck="false"
+            onChange={(e) => setTyped(e.target.value)} />
+          {!state && <button type="submit" className="btn btn-primary" disabled={!typed.trim()}>Check</button>}
+        </form>
+        {!state && <button type="button" className="btn btn-ghost sm cp-show" onClick={() => settle(false, { shown: true })}>Show answer</button>}
+        {state && (
+          <div className={'quiz-feedback' + (state.ok ? ' ok' : ' bad')} role="status">
+            <p className="quiz-feedback-title">
+              {state.ok ? 'Correct!' : state.form ? 'Right word, wrong form — it is “' + target + '”' : 'The answer is “' + target + '”'}
+            </p>
+          </div>
+        )}
+      </div>
+      {state && (
+        <button type="button" className="btn btn-primary quiz-next" onClick={next} autoFocus>
+          {idx + 1 < tasks.length ? 'Next' : 'See result'} <Ic.Arrow width="16" height="16" />
+        </button>
+      )}
+    </>
+  );
+}
+
+/* word bank: a paragraph with gaps; tap a word to put it into the selected gap */
+function PracticeBank({ bank, onAnswer, onFinish }) {
+  const parts = useMemo(() => String(bank.text || '').split(/\[\[(.+?)\]\]/), [bank.text]);
+  const answers = parts.filter((_, i) => i % 2 === 1);
+  const [chips, setChips] = useState(() => shuffle([...answers, ...(bank.extra || [])]));
+  const [filled, setFilled] = useState(() => answers.map(() => null)); // chip index per gap
+  const [active, setActive] = useState(0);
+  const [checked, setChecked] = useState(false);
+  const firstEmpty = (f, from = 0) => {
+    for (let k = 0; k < f.length; k++) { const i = (from + k) % f.length; if (f[i] == null) return i; }
+    return -1;
+  };
+  const put = (ci) => {
+    if (checked || filled.includes(ci)) return;
+    const at = filled[active] == null ? active : firstEmpty(filled, active);
+    if (at < 0) return;
+    const f = filled.slice();
+    f[at] = ci;
+    setFilled(f);
+    setActive(Math.max(0, firstEmpty(f, at)));
+  };
+  const tapGap = (gi) => {
+    if (checked) return;
+    if (filled[gi] != null) { const f = filled.slice(); f[gi] = null; setFilled(f); }
+    setActive(gi);
+  };
+  const ok = (gi) => filled[gi] != null && chips[filled[gi]].toLowerCase() === answers[gi].toLowerCase();
+  const check = () => {
+    setChecked(true);
+    answers.forEach((a, gi) => onAnswer(a, ok(gi)));
+  };
+  const again = () => { setChips(shuffle([...answers, ...(bank.extra || [])])); setFilled(answers.map(() => null)); setActive(0); setChecked(false); };
+  const right = answers.filter((_, gi) => ok(gi)).length;
+  let gi = -1;
+  return (
+    <>
+      <div className="colloc-head">
+        <span className="colloc-kicker">Word bank</span>
+        <span className="colloc-count">{checked ? right + ' of ' + answers.length + ' correct' : answers.length + ' gaps'}</span>
+      </div>
+      <div className="ls-card cp-bank-text">
+        <p className="rpara-text">
+          {parts.map((p, i) => {
+            if (i % 2 === 0) return <React.Fragment key={i}>{p}</React.Fragment>;
+            gi++;
+            const g = gi;
+            const ci = filled[g];
+            const cls = checked ? (ok(g) ? ' ok' : ' bad') : g === active ? ' active' : '';
+            return (
+              <React.Fragment key={i}>
+                <button type="button" className={'cp-slot' + (ci != null ? ' full' : '') + cls} onClick={() => tapGap(g)}
+                  aria-label={'Gap ' + (g + 1) + (ci != null ? ': ' + chips[ci] : '')}>
+                  {ci != null ? chips[ci] : ' '}
+                </button>
+                {checked && !ok(g) && <span className="cp-fix">{answers[g]}</span>}
+              </React.Fragment>
+            );
+          })}
+        </p>
+      </div>
+      {!checked && (
+        <div className="cp-chips">
+          {chips.map((c, ci) => (
+            <button key={ci} type="button" className={'chip cp-chip' + (filled.includes(ci) ? ' used' : '')}
+              disabled={filled.includes(ci)} onClick={() => put(ci)}>{c}</button>
+          ))}
+        </div>
+      )}
+      {!checked ? (
+        <button type="button" className="btn btn-primary quiz-next" disabled={filled.some((f) => f == null)} onClick={check}>Check</button>
+      ) : (
+        <div className="quiz-result-btns">
+          <button type="button" className="btn btn-soft" onClick={again}>Try again</button>
+          <button type="button" className="btn btn-primary" onClick={() => onFinish(right, answers.length, true)}>Done</button>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* dialogue: the partner's lines are read aloud; the learner says their own line,
+   filling the gap, and it is compared with the original (or types the word) */
+function PracticeDialogue({ dialogue, onAnswer, onFinish }) {
+  const lines = dialogue.lines || [];
+  const you = dialogue.you;
+  const canSpeak = window.lwCanRecognize();
+  const [idx, setIdx] = useState(0);
+  const [done, setDone] = useState({}); // line index -> { ok, score, heard, typed, shown, tokensOk }
+  const [listening, setListening] = useState(false);
+  const [error, setError] = useState('');
+  const [typed, setTyped] = useState('');
+  const [typing, setTyping] = useState(!canSpeak);
+  const recRef = useRef(null);
+  const endRef = useRef(null);
+  const results = lines.map((l, i) => (l.who === you && done[i] ? done[i].ok : undefined)).filter((x) => x !== undefined);
+  const mine = lines.filter((l) => l.who === you).length;
+  const line = lines[idx];
+  const isMine = line && line.who === you;
+
+  const say = (text) => { if ('speechSynthesis' in window) { window.speechSynthesis.cancel(); window.speechSynthesis.speak(window.lwUtterance(window.lwUnmark(text), 1)); } };
+  useEffect(() => { if (line && !isMine) say(line.text); }, [idx]); // eslint-disable-line
+  useEffect(() => { if (endRef.current) endRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [idx, done]);
+  useEffect(() => () => { if (recRef.current) recRef.current.abort(); if ('speechSynthesis' in window) window.speechSynthesis.cancel(); }, []);
+
+  const settle = (res) => {
+    setDone((d) => ({ ...d, [idx]: res }));
+    onAnswer(window.lwSplitQuote(line.text).target, res.ok);
+  };
+  /* the gap is right when every one of its words was heard in place */
+  const judge = (heard) => {
+    const q = window.lwSplitQuote(line.text);
+    const m = window.lwMatchSpoken(window.lwUnmark(line.text), heard);
+    const from = window.lwSpeechTokens(q.before).length;
+    const n = window.lwSpeechTokens(q.target).length;
+    return { ok: m.ok.slice(from, from + n).every(Boolean), score: m.score, heard, tokensOk: m.ok };
+  };
+  const listen = () => {
+    setError('');
+    setListening(true);
+    recRef.current = window.lwListenOnce({
+      onEnd: (alts) => {
+        recRef.current = null;
+        setListening(false);
+        if (!alts.length) { setError("Didn't hear anything — try again a bit louder."); return; }
+        const best = alts.map(judge).sort((a, b) => (b.ok - a.ok) || (b.score - a.score))[0];
+        settle(best);
+      },
+      onError: (msg) => { recRef.current = null; setListening(false); setError(msg); },
+    });
+  };
+  const checkTyped = () => {
+    if (!typed.trim()) return;
+    settle({ ok: window.lwCheckFill(typed, [window.lwSplitQuote(line.text).target]), typed });
+  };
+  const next = () => {
+    setTyped(''); setError('');
+    if (idx + 1 < lines.length) setIdx(idx + 1);
+    else onFinish(results.filter(Boolean).length, mine);
+  };
+
+  /* the learner's line once answered: words heard in green, missed in red */
+  const answeredLine = (l, r) => {
+    if (!r.tokensOk) return <GapSentence text={l.text} shown ok={r.ok} />;
+    const words = window.lwUnmark(l.text).split(/(\s+)/);
+    let k = -1;
+    return words.map((w, i) => {
+      if (/^\s+$/.test(w) || !window.lwSpeechTokens(w).length) return w;
+      k += window.lwSpeechTokens(w).length;
+      return <span key={i} className={r.tokensOk[k] ? 'pron-ok' : 'pron-miss'}>{w}</span>;
+    });
+  };
+
+  return (
+    <>
+      <PracticeHead label={dialogue.title || 'Dialogue'} idx={Math.min(results.length, mine - 1)} total={mine} results={results} />
+      <p className="field-hint">You are <strong>{you}</strong>. Listen to the others, then say your line with the missing word.</p>
+      <div className="ls-card cp-chat">
+        {lines.slice(0, idx + 1).map((l, i) => {
+          const r = done[i];
+          const me = l.who === you;
+          return (
+            <div key={i} className={'cp-line' + (me ? ' me' : '')}>
+              <span className="cp-who">{l.who}</span>
+              <div className="cp-bubble">
+                <p className="cp-text">
+                  {!me ? l.text : r ? answeredLine(l, r) : <GapSentence text={l.text} />}
+                  {!me && <button type="button" className="icon-btn sm cp-replay" onClick={() => say(l.text)} aria-label="Listen again"><Ic.Speaker width="15" height="15" /></button>}
+                </p>
+                {l.tr && <p className="cp-tr">{l.tr}</p>}
+                {me && r && (
+                  <p className={'cp-verdict' + (r.ok ? ' ok' : ' bad')}>
+                    {r.ok ? 'Correct' : 'The word is “' + window.lwSplitQuote(l.text).target + '”'}
+                    {r.score != null ? ' · ' + r.score + '% of the line heard' : ''}
+                    {r.heard && !r.ok ? ' · heard: “' + r.heard + '”' : ''}
+                  </p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        <span ref={endRef} />
+      </div>
+      {isMine && !done[idx] ? (
+        <div className="cp-controls">
+          {!typing ? (
+            <>
+              <button type="button" className={'pron-btn' + (listening ? ' on' : '')} onClick={listening ? () => recRef.current && recRef.current.stop() : listen}>
+                <Ic.Mic width="16" height="16" /> {listening ? 'Listening…' : 'Say the line'}
+              </button>
+              <button type="button" className="btn btn-ghost sm" onClick={() => setTyping(true)}>Type instead</button>
+            </>
+          ) : (
+            <form className="quiz-fill" onSubmit={(e) => { e.preventDefault(); checkTyped(); }}>
+              <input className="input quiz-input" value={typed} autoFocus placeholder="Type the missing word" autoComplete="off"
+                autoCapitalize="off" spellCheck="false" onChange={(e) => setTyped(e.target.value)} />
+              <button type="submit" className="btn btn-primary" disabled={!typed.trim()}>Check</button>
+            </form>
+          )}
+          {typing && canSpeak && <button type="button" className="btn btn-ghost sm" onClick={() => setTyping(false)}><Ic.Mic width="15" height="15" /> Speak instead</button>}
+          <button type="button" className="btn btn-ghost sm" onClick={() => settle({ ok: false, shown: true })}>Show answer</button>
+          {error && <span className="pron-error">{error}</span>}
+        </div>
+      ) : (
+        <button type="button" className="btn btn-primary quiz-next" onClick={next} autoFocus>
+          {idx + 1 < lines.length ? 'Continue' : 'See result'} <Ic.Arrow width="16" height="16" />
+        </button>
+      )}
+    </>
+  );
+}
+
+/* one exercise of a chapter; `run` remounts it for "Try again" */
+function ChapterPractice({ kind, ex, onAnswer, onSave, onBack }) {
+  const [run, setRun] = useState(0);
+  const [result, setResult] = useState(null); // { right, total }
+  const finish = (right, total, skipScreen) => {
+    onSave(total ? Math.round((right / total) * 100) : 0);
+    if (skipScreen) onBack();
+    else setResult({ right, total });
+  };
+  const again = () => { setResult(null); setRun((r) => r + 1); };
+  const props = { onAnswer, onFinish: finish };
+  return (
+    <div className="quiz cp">
+      <div className="ls-back-row">
+        <button type="button" className="btn btn-ghost sm" onClick={onBack}><Ic.Close width="15" height="15" /> Back to the text</button>
+      </div>
+      {result ? <PracticeDone right={result.right} total={result.total} onAgain={again} onBack={onBack} />
+        : kind === 'questions' ? <PracticeQuestions key={run} {...props} items={ex.questions} />
+        : kind === 'fill' ? <PracticeFill key={run} {...props} items={ex.fill} />
+        : kind === 'bank' ? <PracticeBank key={run} {...props} bank={ex.bank} />
+        : <PracticeDialogue key={run} {...props} dialogue={ex.dialogue} />}
     </div>
   );
 }
@@ -3519,10 +4067,10 @@ function StatusBadge({ status }) {
   return <span className={'st-badge st-badge-' + status}><span className={'status-swatch status-' + status} />{LW_STATUS_LABEL[status]}</span>;
 }
 
-/* Mastery = how far up the Leitner boxes the word is (box / 5); new words are 0%. */
+/* Mastery = the word's FSRS stability on a log scale, full at 30 days (lwWordMastery); new words are 0%. */
 function WordCard({ word, group, prog, now, canEdit, onEdit, onDelete, clip, onClip }) {
   const status = window.lwWordStatus(prog, now);
-  const pct = prog ? Math.round(((prog.box || 0) / window.LW_MASTERED_BOX) * 100) : 0;
+  const pct = Math.round(window.lwWordMastery(prog) * 100);
   return (
     <article className="wcard">
       <div className="wcard-top">
@@ -3595,7 +4143,7 @@ function PracticeCardModal({ word, group, prog, direction, recordAnswer, onClose
               <Flashcard entry={word} group={group} flipped={flipped} direction={direction}
                 onFlip={() => setFlipped((f) => !f)} onSwipe={answer} onShuffle={() => {}} />
             </div>
-            <LeitnerButtons prog={prog} wordId={word.id} onAnswer={answer} />
+            <AnswerButtons prog={prog} wordId={word.id} onAnswer={answer} />
           </>
         )}
       </div>
@@ -3606,7 +4154,12 @@ function PracticeCardModal({ word, group, prog, direction, recordAnswer, onClose
 /* ---------------- Library view ---------------- */
 const LW_LIB_PAGE = 50; // word cards shown per "Show more"
 function LibraryView({ groups, words, userId, username, isAdmin, progress, now, direction, recordAnswer, goImport,
-  collocations, saveCollocation, pushToast, clips }) {
+  collocations, saveCollocation, pushToast, clips, groupState, setGroupPaused }) {
+  /* paused groups (and subgroups of a paused group) skip Learn → Review */
+  const pausedSelf = (id) => !!(groupState && groupState[id] === 'paused');
+  const pauseItem = (g) => (pausedSelf(g.id)
+    ? { label: 'Resume reviews', icon: <Ic.Play width="15" height="15" />, onClick: () => setGroupPaused(g.id, false) }
+    : { label: 'Pause reviews', icon: <Ic.Pause width="15" height="15" />, onClick: () => setGroupPaused(g.id, true) });
   /* a card's clip (Learn → Video), for the ▶ on word cards */
   const clipByWord = useMemo(() => {
     const m = {};
@@ -3665,7 +4218,7 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
   const dueKey = (w) => {
     const p = progress[w.id];
     if (!p) return now + 1e12; // new: after everything scheduled
-    if (p.box >= window.LW_MASTERED_BOX && p.due > now) return now + 2e12; // mastered and not due: last
+    if (p.due > now && window.lwWordStatus(p, now) === 'mastered') return now + 2e12; // mastered and not due: last
     return p.due;
   };
   const filtered = scoped.filter((w) => lib.status === 'all' || statusOf(w) === lib.status).sort(
@@ -3907,9 +4460,11 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
                   <span className="grp-dot" style={{ background: g.color }} />
                   <span className="grp-name">{g.name}</span>
                   <span className="grp-count">{items.length + subWordCount}</span>
+                  {pausedSelf(g.id) && <span className="grp-paused"><Ic.Pause width="11" height="11" /> Paused</span>}
                 </button>
                 <div className="grp-tools">
                   <ActionsMenu items={[
+                    pauseItem(g),
                     ...(subGroups.length === 0 ? [
                       { label: 'Word', icon: <Ic.Plus width="15" height="15" />, onClick: () => setWordModal({ mode: 'new', groupId: g.id }) },
                     ] : []),
@@ -3937,9 +4492,11 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
                             <span className="grp-dot" style={{ background: sg.color }} />
                             <span className="grp-name">{sg.name}</span>
                             <span className="grp-count">{subItems.length}</span>
+                            {(pausedSelf(sg.id) || pausedSelf(g.id)) && <span className="grp-paused"><Ic.Pause width="11" height="11" /> Paused</span>}
                           </button>
                           <div className="grp-tools">
                             <ActionsMenu items={[
+                              ...(pausedSelf(g.id) ? [] : [pauseItem(sg)]),
                               { label: 'Word', icon: <Ic.Plus width="15" height="15" />, onClick: () => setWordModal({ mode: 'new', groupId: sg.id }) },
                               ...(canEdit(sg) ? [
                                 { label: 'Edit subgroup', icon: <Ic.Edit />, onClick: () => setGroupModal({ mode: 'edit', initial: sg }) },
@@ -4574,7 +5131,7 @@ function VideoView({ clips, words, progress, now, online, recordAnswer, addWord,
         </div>
       )}
       {mode === 'flip' && st.flipped && !st.answered && (
-        <LeitnerButtons prog={card ? progress[card.id] : null} wordId={card ? card.id : clip.id} onAnswer={(a) => answer(a === 'known')} />
+        <AnswerButtons prog={card ? progress[card.id] : null} wordId={card ? card.id : clip.id} onAnswer={(a) => answer(a === 'known')} />
       )}
       {st.answered && (
         <div className="video-after">
@@ -4949,7 +5506,7 @@ function CollocSheet({ entry, wordsById, canEdit, onEdit, onDelete, onClose }) {
 
 /* Game. A session is 5 entries; a round shows the entry's word in the middle and
    up to 8 chips around it (right partners + wrong ones). Answers go to the
-   phrase cards' Leitner progress: a right chip is Know for its card; a wrong
+   phrase cards' review progress: a right chip is Know for its card; a wrong
    chip is Again for every right phrase not found yet; Hint is Again for the
    hinted phrase. Each card is answered at most once per round. */
 const LW_COLLOC_SESSION = 5;

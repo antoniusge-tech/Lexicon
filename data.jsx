@@ -14,6 +14,7 @@ const LW_KEYS = {
   grammar: 'lw_grammar_v1', // {level, saved} — Grammar list filters
   videoMode: 'lw_video_mode_v1', // 'flip' | 'type' — how Learn → Video asks
   voice: 'lw_voice_v1', // {voiceURI, rate} — speech voice for this device ('' = auto)
+  reviewScope: 'lw_review_scope_v1', // 'focus' | 'all' — which due words Learn → Review plays
   reading: 'lw_reading_cards_v1', // последняя пачка сгенерированных текстов-карточек
 };
 

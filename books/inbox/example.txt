@@ -1,0 +1,14 @@
+# title: A Year in HR
+# lang: en
+# level: B1
+# groups: HR
+# user: Yurii
+# chapters: auto
+# chapter words: 400
+# kind: story
+# exercises: questions, fill, bank, dialogue
+# replace: no
+
+Главная героиня — Maya, новый HR-менеджер в небольшой IT-компании в Варшаве.
+Год её работы: вакансия, собеседования, оффер, онбординг, оценка эффективности,
+конфликт в команде, сокращение и exit interview. Тон лёгкий, с юмором, но без карикатуры.

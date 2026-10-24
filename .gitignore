@@ -10,3 +10,8 @@ scripts/
 # word lists for the add-words skill (personal, local-only)
 words/*/*
 !words/*/.gitkeep
+
+# books for the make-book skill (generated, local-only)
+books/*/*
+!books/*/.gitkeep
+!books/inbox/example.txt

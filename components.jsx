@@ -537,6 +537,8 @@ function ExampleBulb({ example, onShow }) {
    Swipe up = skip, swipe down = shuffle (via onAnswer('skip') / onShuffle). */
 const lwFillNorm = (s) => window.lwNormLetters(String(s || '').toLowerCase().replace(/’/g, "'").replace(/\s+/g, ' ').trim());
 
+const LW_FILL_EASY_MS = 12000;
+
 function FillCard({ entry, group, blank, onAnswer, onShuffle, onGroupClick }) {
   const [drag, setDrag] = React.useState(null);   // {startX, startY, dx, dy, moved} | null
   const [flyDir, setFlyDir] = React.useState(null); // 'known' | 'unknown' | 'shuffle' | 'skip' | null
@@ -548,6 +550,9 @@ function FillCard({ entry, group, blank, onAnswer, onShuffle, onGroupClick }) {
   const dragRef = React.useRef(null);
   dragRef.current = drag;
   const inputRef = React.useRef(null);
+  /* Easy (FSRS grade 4): typed right within LW_FILL_EASY_MS of the card showing,
+     with no wrong Enter and no look at the translation */
+  const easyRef = React.useRef({ shownAt: 0, slip: false });
 
   React.useEffect(() => {
     setDrag(null);
@@ -557,6 +562,7 @@ function FillCard({ entry, group, blank, onAnswer, onShuffle, onGroupClick }) {
     setWrong(null);
     setDone(false);
     setShowTr(false);
+    easyRef.current = { shownAt: Date.now(), slip: false };
     if (inputRef.current) inputRef.current.focus({ preventScroll: true });
   }, [entry && entry.id]);
 
@@ -586,14 +592,16 @@ function FillCard({ entry, group, blank, onAnswer, onShuffle, onGroupClick }) {
     setWrong(null);
     if (lwFillNorm(v) !== lwFillNorm(target)) return;
     const dir = revealed ? 'unknown' : 'known';
+    const easy = !revealed && !easyRef.current.slip && Date.now() - easyRef.current.shownAt <= LW_FILL_EASY_MS;
     setDone(true);
     setTimeout(() => setFlyDir(dir), 350);
-    setTimeout(() => onAnswer(dir), 570);
+    setTimeout(() => onAnswer(dir, { easy }), 570);
   };
   const onEnter = () => {
     if (done || !typed.trim()) return;
     const formHint = lwFillNorm(typed) === lwFillNorm(entry.word) && lwFillNorm(entry.word) !== lwFillNorm(target);
     setWrong(formHint ? 'form' : 'wrong');
+    easyRef.current.slip = true;
   };
   const reveal = (e) => {
     e.stopPropagation();
@@ -635,6 +643,7 @@ function FillCard({ entry, group, blank, onAnswer, onShuffle, onGroupClick }) {
     const input = inputRef.current;
     if (showTr) setTimeout(() => input && input.focus({ preventScroll: true }), 320); // after the turn
     else if (input) input.blur(); // no typing into the hidden side
+    easyRef.current.slip = true;
     setShowTr(!showTr);
   };
   const onClick = (e) => {
@@ -1364,6 +1373,34 @@ function lwMatchSpoken(target, heard) {
   return { tokens: a, ok, score: a.length ? Math.round((ok.filter(Boolean).length / a.length) * 100) : 0 };
 }
 
+const lwSpeechError = (code) => (code === 'not-allowed' || code === 'service-not-allowed' ? 'Allow microphone access to check your pronunciation.'
+  : code === 'no-speech' ? "Didn't hear anything — try again a bit louder."
+  : code === 'network' ? 'Speech recognition needs an internet connection.'
+  : 'Speech recognition failed (' + code + ').');
+
+/* One phrase from the microphone in the current language. onEnd(alternatives)
+   gets up to 3 transcripts (empty if nothing was heard); onError(message).
+   Returns the recogniser so the caller can stop() or abort() it. */
+function lwListenOnce({ onEnd, onError }) {
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  const Recognition = lwRecognitionClass();
+  const rec = new Recognition();
+  rec.lang = window.lwLangInfo().speech;
+  rec.interimResults = false;
+  rec.maxAlternatives = 3;
+  let alts = [];
+  let failed = false;
+  rec.onresult = (e) => {
+    const r = e.results[0];
+    alts = [];
+    for (let k = 0; r && k < r.length; k++) alts.push(r[k].transcript);
+  };
+  rec.onerror = (e) => { failed = true; onError(lwSpeechError(e.error)); };
+  rec.onend = () => { if (!failed) onEnd(alts); };
+  rec.start();
+  return rec;
+}
+
 function PronunciationCheck({ target, label = 'Say it', passage = false }) {
   const [state, setState] = React.useState('idle'); // idle | listening | done | error
   const [heard, setHeard] = React.useState('');
@@ -1394,10 +1431,7 @@ function PronunciationCheck({ target, label = 'Say it', passage = false }) {
       textRef.current = parts.join(' ');
     };
     rec.onerror = (e) => {
-      setError(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? 'Allow microphone access to check your pronunciation.'
-        : e.error === 'no-speech' ? "Didn't hear anything — try again a bit louder."
-        : e.error === 'network' ? 'Speech recognition needs an internet connection.'
-        : 'Speech recognition failed (' + e.error + ').');
+      setError(lwSpeechError(e.error));
       setState('error');
     };
     rec.onend = () => {
@@ -2200,4 +2234,4 @@ function YouTubeClip({ videoId, start = 0, end, rate = 1, free = false, apiRef, 
   );
 }
 
-Object.assign(window, { lwParseYouTube, lwParseTime, lwFormatTime, YouTubeClip, VoicePicker, Marked, LessonBody, LessonForm, lwUnmark, CollocForm, Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwWordKey, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck, lwCanRecognize, lwMatchSpoken });
+Object.assign(window, { lwParseYouTube, lwParseTime, lwFormatTime, YouTubeClip, VoicePicker, Marked, LessonBody, LessonForm, lwUnmark, CollocForm, Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwWordKey, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck, lwCanRecognize, lwMatchSpoken, lwSpeechTokens, lwListenOnce });
