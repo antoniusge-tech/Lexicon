@@ -1,5 +1,7 @@
-/* reading.jsx — pure text helpers for the reader (no React, no Firestore):
+/* reading.js — pure text helpers for the reader (no React, no Firestore):
    Gutenberg cleanup, chapter/page splitting, sentences, tokens, word matching. */
+
+import { lwCurrentLang } from './data.js';
 
 /* Strip the Project Gutenberg header/licence and footer, normalise line breaks. */
 function lwCleanGutenberg(raw) {
@@ -176,7 +178,7 @@ function lwRoStem(w) {
 function readingStem(token) {
   let w = lwNormLetters(String(token || '').toLowerCase()).replace(/[’']/g, '');
   if (!w) return '';
-  if (window.lwCurrentLang() === 'ro') return lwRoStem(w);
+  if (lwCurrentLang() === 'ro') return lwRoStem(w);
   /* strip common inflectional endings */
   if (w.length > 4 && w.endsWith('ies')) return w.slice(0, -3) + 'y';
   if (w.length > 4 && w.endsWith('ied')) return w.slice(0, -3) + 'y';
@@ -271,6 +273,14 @@ function lwSplitQuote(quote) {
   return m ? { before: m[1], target: m[2], after: m[3] } : { before: String(quote || ''), target: '', after: '' };
 }
 
+export {
+  lwFindCardForClip, lwSplitQuote, LW_LETTERS, lwNormLetters, lwCollocKey,
+  lwFindPhraseCards, lwCollocPartner, lwCleanGutenberg, lwWordCount, lwParagraphs,
+  lwSplitChapters, lwSplitSentences, lwPaginate, lwTokenize, readingStem,
+  readingTokensMatch, lwWordsIndex, lwMatchOwnWord,
+};
+
+/* Console API: scripts/*.mjs and books run in the browser console and call these as window.lwX. */
 Object.assign(window, {
   lwFindCardForClip,
   lwSplitQuote,

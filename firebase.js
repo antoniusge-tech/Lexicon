@@ -1,4 +1,9 @@
-/* firebase.jsx — Firebase init + per-user Firestore data layer + auth */
+/* firebase.js — Firebase init + per-user Firestore data layer + auth */
+
+import firebase from 'firebase/compat/app';
+import 'firebase/compat/auth';
+import 'firebase/compat/firestore';
+import { lwCurrentLang, lwRoIpa } from './data.js';
 
 const LW_FIREBASE_CONFIG = {
   apiKey: 'AIzaSyAFNfL2zqb5jqhEzTHVYzQx0DLQfCHpt14',
@@ -295,9 +300,9 @@ function lwSetDoc(collectionName, item) {
   // A new doc gets the language being studied now; an edited doc keeps its own
   // (edits start from the stored doc). Legacy docs without one are only shown in
   // English, so editing them there tags them 'en'.
-  if (LW_LANG_COLLECTIONS.includes(collectionName) && !data.lang) data.lang = window.lwCurrentLang();
+  if (LW_LANG_COLLECTIONS.includes(collectionName) && !data.lang) data.lang = lwCurrentLang();
   // Romanian is read as written: a word saved without a transcription gets one by rule.
-  if (collectionName === LW_COLLECTIONS.words && data.lang === 'ro' && !data.ipa && data.word) data.ipa = window.lwRoIpa(data.word, data.pos);
+  if (collectionName === LW_COLLECTIONS.words && data.lang === 'ro' && !data.ipa && data.word) data.ipa = lwRoIpa(data.word, data.pos);
   return lwDb.collection(collectionName).doc(id).set(data);
 }
 
@@ -396,7 +401,7 @@ function lwAddBonusXp(uid, lang, date, xp) {
 async function lwSaveText(meta, chapters) {
   const ref = lwDb.collection(LW_COLLECTIONS.texts).doc(meta.id);
   const { id, ...data } = meta;
-  if (!data.lang) data.lang = window.lwCurrentLang();
+  if (!data.lang) data.lang = lwCurrentLang();
   for (let i = 0; i < chapters.length; i += 400) {
     const batch = lwDb.batch();
     chapters.slice(i, i + 400).forEach((c, k) => {
@@ -477,7 +482,22 @@ async function lwAdminFetchAllData() {
   };
 }
 
+export {
+  LW_COLLECTIONS, lwReadReport, lwWatchCollection, lwWatchUserCollection,
+  lwWatchUserAndSharedCollection, lwSetDoc, lwDeleteDoc, lwDeleteWordsByGroup,
+  lwRecordAnswer, lwAddPracticeTime, lwSaveText, lwDeleteText, lwGetChapter,
+  lwSaveReadingProgress, lwDeleteReadingProgress, lwDeleteProgressForWords,
+  lwWatchLessons, lwWatchLevelQuestions, lwWatchClips, lwSaveLessonProgress,
+  lwAddBonusXp, lwRegister, lwLogin, lwLogout, lwResetPassword, lwDeleteAccount,
+  lwWatchAuth, lwWatchUserDoc, lwUpdateUser, lwAuthInfo, lwSignInWithGoogle,
+  lwCreateProfile, lwLinkGoogle, lwUnlinkGoogle, lwAdminFetchUsers, lwAdminSetRole,
+  lwAdminFetchAllData,
+};
+
+/* Console API: scripts/*.mjs and books run in the browser console and call these as window.lwX
+   (and the compat SDK as window.firebase, which the CDN build used to provide). */
 Object.assign(window, {
+  firebase,
   LW_COLLECTIONS,
   lwReadReport,
   lwWatchCollection,

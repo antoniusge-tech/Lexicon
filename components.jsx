@@ -1,5 +1,20 @@
 /* components.jsx — icons, flashcard, chips, modals, forms */
 
+import React from 'react';
+import { createPortal } from 'react-dom';
+import {
+  LW_POS, lwAiFillWord, lwAiGenerateLesson, lwAiRegenerateTask, lwAiSuggestCollocations,
+  lwAutoFindPhoto, lwCurrentLang, lwFileToPhoto, lwGetGeminiKey, lwHasGeminiKey,
+  lwLangInfo, lwLangVoices, lwNormPos, lwNormTask, lwOnVoicesChanged,
+  lwSaveVoiceSettings, lwSetGeminiKey, lwUid, lwUtterance, lwVoiceAccent, lwVoiceScore,
+  lwVoiceSettings,
+} from './data.js';
+import { LW_LESSON_TASKS } from './progress.js';
+import {
+  LW_LETTERS, lwCollocKey, lwCollocPartner, lwFindPhraseCards, lwNormLetters,
+  readingTokensMatch,
+} from './reading.js';
+
 /* ---------------- Icons ---------------- */
 const Ic = {
   Sun: (p) => (
@@ -225,7 +240,7 @@ const Ic = {
    word forms that Reading highlights with. Returns the sentence split around the
    blank ({ before, after, matched }) or null if no form was found. */
 function lwWordForms(word) {
-  const w = window.lwNormLetters(String(word || '').toLowerCase().trim());
+  const w = lwNormLetters(String(word || '').toLowerCase().trim());
   if (!w) return [];
   const forms = new Set([w]);
   forms.add(w + 's');
@@ -245,12 +260,12 @@ function lwBlankSentence(sentence, word) {
   const forms = new Set(lwWordForms(word));
   if (!forms.size) return null;
   /* split keeping delimiters (non-letters) so we can re-join verbatim */
-  const parts = text.split(new RegExp('([' + window.LW_LETTERS + '’\']+)'));
+  const parts = text.split(new RegExp('([' + LW_LETTERS + '’\']+)'));
   /* Romanian words change their ending a lot (casa, casei, casele): match by stem */
-  const ro = window.lwCurrentLang() === 'ro' && !/\s/.test(String(word).trim());
+  const ro = lwCurrentLang() === 'ro' && !/\s/.test(String(word).trim());
   let idx = -1;
   for (let i = 1; i < parts.length; i += 2) {
-    if (forms.has(window.lwNormLetters(parts[i].toLowerCase())) || (ro && window.readingTokensMatch(parts[i], word))) { idx = i; break; }
+    if (forms.has(lwNormLetters(parts[i].toLowerCase())) || (ro && readingTokensMatch(parts[i], word))) { idx = i; break; }
   }
   if (idx === -1) return null;
   return {
@@ -264,19 +279,19 @@ function lwBlankSentence(sentence, word) {
 function lwSpeak(text) {
   if (!text || !('speechSynthesis' in window)) return;
   window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(window.lwUtterance(text)); // the voice and speed chosen in Profile
+  window.speechSynthesis.speak(lwUtterance(text)); // the voice and speed chosen in Profile
 }
 
 /* ---------------- Voice picker (Profile) ---------------- */
 /* voices of the language being studied; Profile remounts it (key) when that changes */
 function VoicePicker() {
-  const [voices, setVoices] = React.useState(() => window.lwLangVoices());
-  const [cfg, setCfg] = React.useState(() => window.lwVoiceSettings());
-  React.useEffect(() => window.lwOnVoicesChanged(() => setVoices(window.lwLangVoices())), []);
-  const langInfo = window.lwLangInfo();
-  const set = (fields) => { window.lwSaveVoiceSettings(fields); setCfg(window.lwVoiceSettings()); };
+  const [voices, setVoices] = React.useState(() => lwLangVoices());
+  const [cfg, setCfg] = React.useState(() => lwVoiceSettings());
+  React.useEffect(() => lwOnVoicesChanged(() => setVoices(lwLangVoices())), []);
+  const langInfo = lwLangInfo();
+  const set = (fields) => { lwSaveVoiceSettings(fields); setCfg(lwVoiceSettings()); };
   const best = voices[0];
-  const label = (v) => v.name + (window.lwVoiceAccent(v) ? ' · ' + window.lwVoiceAccent(v) : '') + (window.lwVoiceScore(v) >= 30 ? ' ★' : '');
+  const label = (v) => v.name + (lwVoiceAccent(v) ? ' · ' + lwVoiceAccent(v) : '') + (lwVoiceScore(v) >= 30 ? ' ★' : '');
   const chosen = cfg.voiceURI && voices.some((v) => v.voiceURI === cfg.voiceURI) ? cfg.voiceURI : '';
   return (
     <>
@@ -535,7 +550,7 @@ function ExampleBulb({ example, onShow }) {
    reveals it; typing it after that answers Again (the sentence comes back).
    The lightbulb in the corner flips the card to the sentence translation and back.
    Swipe up = skip, swipe down = shuffle (via onAnswer('skip') / onShuffle). */
-const lwFillNorm = (s) => window.lwNormLetters(String(s || '').toLowerCase().replace(/’/g, "'").replace(/\s+/g, ' ').trim());
+const lwFillNorm = (s) => lwNormLetters(String(s || '').toLowerCase().replace(/’/g, "'").replace(/\s+/g, ' ').trim());
 
 const LW_FILL_EASY_MS = 12000;
 
@@ -792,7 +807,7 @@ function ActionsMenu({ items }) {
       <button ref={btnRef} className="icon-btn sm" onClick={toggle} aria-label="More actions" aria-expanded={open}>
         <Ic.MoreVertical />
       </button>
-      {open && pos && ReactDOM.createPortal(
+      {open && pos && createPortal(
         <div ref={popRef} className="actions-menu-pop" style={{ top: pos.top, right: pos.right }} onClick={() => setOpen(false)}>
           {items.map((it, i) => (
             <button key={i} className={'actions-menu-item' + (it.danger ? ' danger' : '')} onClick={it.onClick}>
@@ -837,16 +852,16 @@ function lwLeafGroups(groups) {
 /* Ввод / смена / удаление личного ключа Gemini. onSaved() вызывается после
    успешного сохранения — используется, чтобы сразу запустить отложенное действие. */
 function GeminiKeyModal({ onClose, onSaved }) {
-  const [key, setKey] = React.useState(() => window.lwGetGeminiKey());
-  const had = window.lwHasGeminiKey();
+  const [key, setKey] = React.useState(() => lwGetGeminiKey());
+  const had = lwHasGeminiKey();
 
   const save = () => {
-    window.lwSetGeminiKey(key);
+    lwSetGeminiKey(key);
     if (onSaved) onSaved(!!key.trim());
     onClose();
   };
   const clear = () => {
-    window.lwSetGeminiKey('');
+    lwSetGeminiKey('');
     setKey('');
     if (onSaved) onSaved(false);
     onClose();
@@ -906,7 +921,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
        fields this form doesn't edit (createdAt, …) must be carried over */
     onSave({
       ...(initial || {}),
-      id: initial ? initial.id : window.lwUid(),
+      id: initial ? initial.id : lwUid(),
       groupId,
       word: word.trim(),
       ipa: ipa.trim(),
@@ -923,13 +938,13 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
     const file = e.target.files && e.target.files[0];
     e.target.value = '';
     if (!file) return;
-    window.lwFileToPhoto(file).then(setPhoto).catch(() => {});
+    lwFileToPhoto(file).then(setPhoto).catch(() => {});
   };
 
   const findPhoto = () => {
     if (!word.trim()) return;
     setAutoState('loading');
-    window.lwAutoFindPhoto(word.trim())
+    lwAutoFindPhoto(word.trim())
       .then((dataUrl) => {
         if (dataUrl) { setPhoto(dataUrl); setAutoState('idle'); }
         else setAutoState('notfound');
@@ -939,7 +954,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
 
   const runAiFill = () => {
     setAiState('loading');
-    window.lwAiFillWord(word.trim())
+    lwAiFillWord(word.trim())
       .then((r) => {
         // Не затираем поля, которые пользователь уже заполнил.
         if (r.ipa && !ipa.trim()) setIpa(r.ipa);
@@ -954,7 +969,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
 
   const fillWithAi = () => {
     if (!word.trim()) return;
-    if (!window.lwHasGeminiKey()) { setKeyModal(true); return; } // спросим ключ только сейчас
+    if (!lwHasGeminiKey()) { setKeyModal(true); return; } // спросим ключ только сейчас
     runAiFill();
   };
 
@@ -962,8 +977,8 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
     <div className="form">
       <div className="form-grid">
         <label className="field">
-          <span className="field-label">{window.lwLangInfo().name} word</span>
-          <input className="input" value={word} autoFocus placeholder={'e.g. ' + window.lwLangInfo().ex.word}
+          <span className="field-label">{lwLangInfo().name} word</span>
+          <input className="input" value={word} autoFocus placeholder={'e.g. ' + lwLangInfo().ex.word}
             onChange={(e) => setWord(e.target.value)} />
         </label>
         <label className="field">
@@ -982,13 +997,13 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
           <span className="field-label">Part of speech</span>
           <select className="input" value={pos} onChange={(e) => setPos(e.target.value)}>
             <option value="">—</option>
-            {window.LW_POS.map((p) => <option key={p} value={p}>{p}</option>)}
+            {LW_POS.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </label>
       </div>
       <label className="field">
         <span className="field-label">Example sentence</span>
-        <input className="input" value={example} placeholder={'e.g. ' + window.lwLangInfo().ex.example}
+        <input className="input" value={example} placeholder={'e.g. ' + lwLangInfo().ex.example}
           onChange={(e) => setExample(e.target.value)} />
       </label>
       <label className="field">
@@ -1084,7 +1099,7 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
 function lwParseImportLine(line) {
   const parts = line.split('|').map((p) => p.trim());
   if (parts.length >= 5) {
-    return { word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3], exampleTr: parts[4], pos: window.lwNormPos(parts[5]) };
+    return { word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3], exampleTr: parts[4], pos: lwNormPos(parts[5]) };
   }
   if (parts.length === 4) {
     return { word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3], exampleTr: '' };
@@ -1101,7 +1116,7 @@ function lwParseImportLine(line) {
 /* Key for spotting the same word/phrase twice: case, spacing, apostrophes,
    ş/ţ vs ș/ț and punctuation at the edges don't count. */
 function lwWordKey(word) {
-  return window.lwNormLetters(String(word || '').toLowerCase())
+  return lwNormLetters(String(word || '').toLowerCase())
     .replace(/[’`]/g, "'")
     .replace(/\s+/g, ' ')
     .replace(/^[\s.,!?;:"«»“”()-]+|[\s.,!?;:"«»“”()-]+$/g, '');
@@ -1184,7 +1199,7 @@ function ImportView({ groups, words, uid, importState, setImportState, startAiFi
 
   const fillWithAi = () => {
     if (!rawWords.length || loading) return;
-    if (!window.lwHasGeminiKey()) { setKeyModal(true); return; }
+    if (!lwHasGeminiKey()) { setKeyModal(true); return; }
     startAiFill(rawWords);
   };
 
@@ -1192,7 +1207,7 @@ function ImportView({ groups, words, uid, importState, setImportState, startAiFi
     if (!canImport) return;
     const t = Date.now();
     const items = freshRows.map((r, i) => ({
-      id: window.lwUid(),
+      id: lwUid(),
       groupId,
       word: r.word,
       ipa: r.ipa,
@@ -1247,7 +1262,7 @@ function ImportView({ groups, words, uid, importState, setImportState, startAiFi
           <input ref={fileInputRef} type="file" accept=".txt,text/plain" style={{ display: 'none' }} onChange={handleFile} />
         </div>
         <textarea className="input mono" rows={10} value={text} autoFocus disabled={loading}
-          placeholder={window.lwLangInfo().ex.import}
+          placeholder={lwLangInfo().ex.import}
           onChange={(e) => setText(e.target.value)} />
         {error === 'bad-key' ? (
           <p className="field-hint">Your Gemini key is invalid.{' '}
@@ -1349,7 +1364,7 @@ function WeekChart({ days, goal }) {
    SpeechRecognition is missing (Firefox). Chrome sends the audio to Google. */
 const lwRecognitionClass = () => window.SpeechRecognition || window.webkitSpeechRecognition || null;
 const lwCanRecognize = () => !!lwRecognitionClass();
-const lwSpeechTokens = (t) => (window.lwNormLetters(String(t).toLowerCase()).replace(/[’]/g, "'").match(new RegExp('[' + window.LW_LETTERS + "0-9']+", 'g')) || []);
+const lwSpeechTokens = (t) => (lwNormLetters(String(t).toLowerCase()).replace(/[’]/g, "'").match(new RegExp('[' + LW_LETTERS + "0-9']+", 'g')) || []);
 
 /* which target tokens appear, in order, in what was heard */
 function lwMatchSpoken(target, heard) {
@@ -1357,7 +1372,7 @@ function lwMatchSpoken(target, heard) {
   let b = lwSpeechTokens(heard);
   /* recognisers sometimes split one word ("under stand"): glue it back for single words */
   if (a.length === 1 && b.length > 1 && b.join('') === a[0]) b = [a[0]];
-  const eq = (x, y) => x === y || (window.readingTokensMatch && window.readingTokensMatch(x, y));
+  const eq = (x, y) => x === y || (readingTokensMatch && readingTokensMatch(x, y));
   const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
   for (let i = a.length - 1; i >= 0; i--) {
     for (let j = b.length - 1; j >= 0; j--) {
@@ -1385,7 +1400,7 @@ function lwListenOnce({ onEnd, onError }) {
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   const Recognition = lwRecognitionClass();
   const rec = new Recognition();
-  rec.lang = window.lwLangInfo().speech;
+  rec.lang = lwLangInfo().speech;
   rec.interimResults = false;
   rec.maxAlternatives = 3;
   let alts = [];
@@ -1415,7 +1430,7 @@ function PronunciationCheck({ target, label = 'Say it', passage = false }) {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     const Recognition = lwRecognitionClass();
     const rec = new Recognition();
-    rec.lang = window.lwLangInfo().speech;
+    rec.lang = lwLangInfo().speech;
     rec.interimResults = false;
     rec.maxAlternatives = passage ? 1 : 3;
     rec.continuous = passage; // a passage can take several breaths; a word is one shot
@@ -1515,14 +1530,14 @@ function CollocForm({ initial, words, entries, isAdmin, userId, onSave, onOpenEx
   const [keyModal, setKeyModal] = React.useState(false);
   const [tried, setTried] = React.useState(false);
 
-  const key = window.lwCollocKey(word);
+  const key = lwCollocKey(word);
   /* admins build shared entries, so only shared cards may be linked */
   const pool = React.useMemo(() => (isAdmin ? words.filter((w) => w.shared) : words), [words, isAdmin]);
   const byId = React.useMemo(() => Object.fromEntries(words.map((w) => [w.id, w])), [words]);
   const linked = ((initial && initial.phrases) || []).map((p) => byId[p.wordId]).filter(Boolean);
-  const found = React.useMemo(() => window.lwFindPhraseCards(key, pool), [key, pool]);
+  const found = React.useMemo(() => lwFindPhraseCards(key, pool), [key, pool]);
   const cards = [...linked, ...found.filter((w) => !linked.some((l) => l.id === w.id))];
-  const pick = (w) => picks[w.id] || { on: !initial, partner: window.lwCollocPartner(w.word, key) };
+  const pick = (w) => picks[w.id] || { on: !initial, partner: lwCollocPartner(w.word, key) };
   const setPick = (w, fields) => setPicks((m) => ({ ...m, [w.id]: { ...pick(w), ...fields } }));
 
   const duplicate = !initial && key && entries.find((e) => e.key === key
@@ -1531,7 +1546,7 @@ function CollocForm({ initial, words, entries, isAdmin, userId, onSave, onOpenEx
   const setRow = (k, fields) => setAdded((rows) => rows.map((r) => {
     if (r.key !== k) return r;
     const next = { ...r, ...fields };
-    if ('phrase' in fields && !r.partnerTouched) next.partner = window.lwCollocPartner(fields.phrase, key);
+    if ('phrase' in fields && !r.partnerTouched) next.partner = lwCollocPartner(fields.phrase, key);
     if ('partner' in fields) next.partnerTouched = true;
     return next;
   }));
@@ -1570,7 +1585,7 @@ function CollocForm({ initial, words, entries, isAdmin, userId, onSave, onOpenEx
   const runAi = () => {
     setAiState('loading');
     const have = [...cards.map((w) => w.word), ...added.map((r) => r.phrase)];
-    window.lwAiSuggestCollocations(key, have)
+    lwAiSuggestCollocations(key, have)
       .then((r) => {
         if (!pattern.trim() && r.pattern) setPattern(r.pattern);
         if (!pos && r.pos) setPos(r.pos);
@@ -1588,7 +1603,7 @@ function CollocForm({ initial, words, entries, isAdmin, userId, onSave, onOpenEx
   };
   const suggest = () => {
     if (!key) return;
-    if (!window.lwHasGeminiKey()) { setKeyModal(true); return; }
+    if (!lwHasGeminiKey()) { setKeyModal(true); return; }
     runAi();
   };
 
@@ -1813,7 +1828,7 @@ function LessonForm({ initial, topics, onSave, onDelete, onCancel }) {
     const quiz = ((initial && initial.quiz) || []).map((t) => (t.type === 'fill'
       ? { ...t, answers: (t.answers || []).length ? t.answers.slice() : [''] }
       : { ...t, options: [0, 1, 2, 3].map((i) => (t.options || [])[i] || '') }));
-    while (quiz.length < window.LW_LESSON_TASKS) quiz.push(lwEmptyTask(quiz.length % 5 === 4 ? 'fill' : 'choice'));
+    while (quiz.length < LW_LESSON_TASKS) quiz.push(lwEmptyTask(quiz.length % 5 === 4 ? 'fill' : 'choice'));
     return {
       title: '', topic: '', level: 'B1', minutes: 10, compare: '', focus: '',
       formulas: [], compareTable: { rows: [], tip: '' }, examples: [],
@@ -1846,7 +1861,7 @@ function LessonForm({ initial, topics, onSave, onDelete, onCancel }) {
       tip: (d.compareTable.tip || '').trim(),
     },
     examples: d.examples.map((x) => ({ sentence: x.sentence.trim(), tr: (x.tr || '').trim(), notes: (x.notes || []).filter((n) => n.part.trim() && n.text.trim()) })).filter((x) => x.sentence),
-    quiz: d.quiz.map((t) => window.lwNormTask(t.type === 'fill' ? { ...t, answers: t.answers.map((a) => a.trim()) } : t)),
+    quiz: d.quiz.map((t) => lwNormTask(t.type === 'fill' ? { ...t, answers: t.answers.map((a) => a.trim()) } : t)),
   });
   const out = clean();
   const errors = [];
@@ -1863,30 +1878,30 @@ function LessonForm({ initial, topics, onSave, onDelete, onCancel }) {
     onSave(out, publish);
   };
 
-  const needKey = (action) => { if (window.lwHasGeminiKey()) return false; setKeyModal(() => action); return true; };
+  const needKey = (action) => { if (lwHasGeminiKey()) return false; setKeyModal(() => action); return true; };
   const generate = () => {
     if (!d.title.trim() && !d.topic.trim()) { setAiState('empty'); return; }
     if (needKey(generate)) return;
     setAiState('loading');
-    window.lwAiGenerateLesson({ title: d.title, topic: d.topic, level: d.level, compare: d.compare })
+    lwAiGenerateLesson({ title: d.title, topic: d.topic, level: d.level, compare: d.compare })
       .then((r) => {
         setD((x) => {
           const quiz = r.quiz.slice();
-          while (quiz.length < window.LW_LESSON_TASKS) quiz.push(lwEmptyTask(quiz.length % 5 === 4 ? 'fill' : 'choice'));
+          while (quiz.length < LW_LESSON_TASKS) quiz.push(lwEmptyTask(quiz.length % 5 === 4 ? 'fill' : 'choice'));
           return {
             ...x, title: x.title.trim() || r.title, focus: r.focus, minutes: r.minutes, formulas: r.formulas,
             compareTable: r.compareTable, examples: r.examples,
             quiz: quiz.map((t) => (t.type === 'fill' ? { ...t, answers: t.answers.length ? t.answers : [''] } : t)),
           };
         });
-        setAiState(r.quiz.length < window.LW_LESSON_TASKS ? 'short' : 'idle');
+        setAiState(r.quiz.length < LW_LESSON_TASKS ? 'short' : 'idle');
       })
       .catch((e) => setAiState((e && e.code) || 'error'));
   };
   const regenTask = (i) => {
     if (needKey(() => regenTask(i))) return;
     setTaskBusy(i);
-    window.lwAiRegenerateTask({ ...d, quiz: d.quiz.filter((_, j) => j !== i) }, d.quiz[i].type)
+    lwAiRegenerateTask({ ...d, quiz: d.quiz.filter((_, j) => j !== i) }, d.quiz[i].type)
       .then((t) => { setD((x) => ({ ...x, quiz: x.quiz.map((q, j) => (j === i ? (t.type === 'fill' ? t : { ...t, options: t.options.slice() }) : q)) })); setTaskBusy(-1); })
       .catch((e) => { setTaskBusy(-1); setAiState((e && e.code) || 'error'); });
   };
@@ -1905,7 +1920,7 @@ function LessonForm({ initial, topics, onSave, onDelete, onCancel }) {
         </div>
         <h2 className="ls-title">{out.title || 'Untitled lesson'}</h2>
         <LessonBody lesson={out} />
-        <p className="field-hint">The test ({window.LW_LESSON_TASKS} tasks) is shown after “I've studied this”.</p>
+        <p className="field-hint">The test ({LW_LESSON_TASKS} tasks) is shown after “I've studied this”.</p>
       </div>
     );
   }
@@ -2030,7 +2045,7 @@ function LessonForm({ initial, topics, onSave, onDelete, onCancel }) {
         <Ic.Plus width="15" height="15" /> Add example
       </button>
 
-      <h4 className="lf-h">Test — {window.LW_LESSON_TASKS} tasks</h4>
+      <h4 className="lf-h">Test — {LW_LESSON_TASKS} tasks</h4>
       {d.quiz.map((t, i) => (
         <div className={'lf-block lf-task' + (tried && !out.quiz[i] ? ' bad' : '')} key={i}>
           <div className="lf-row">
@@ -2234,4 +2249,13 @@ function YouTubeClip({ videoId, start = 0, end, rate = 1, free = false, apiRef, 
   );
 }
 
+export {
+  lwParseYouTube, lwParseTime, lwFormatTime, YouTubeClip, VoicePicker, Marked,
+  LessonBody, LessonForm, lwUnmark, CollocForm, Ic, PhotoFill, Flashcard, FillCard,
+  GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine,
+  lwWordKey, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck,
+  lwCanRecognize, lwMatchSpoken, lwSpeechTokens, lwListenOnce,
+};
+
+/* Console API: scripts/*.mjs and books run in the browser console and call these as window.lwX. */
 Object.assign(window, { lwParseYouTube, lwParseTime, lwFormatTime, YouTubeClip, VoicePicker, Marked, LessonBody, LessonForm, lwUnmark, CollocForm, Ic, PhotoFill, Flashcard, FillCard, GroupChip, ActionsMenu, Modal, WordForm, ImportView, lwLeafGroups, lwParseImportLine, lwWordKey, lwBlankSentence, SpeakButton, GeminiKeyModal, WeekChart, PronunciationCheck, lwCanRecognize, lwMatchSpoken, lwSpeechTokens, lwListenOnce });

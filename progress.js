@@ -1,5 +1,7 @@
-/* progress.jsx — pure FSRS / streak / XP logic (no Firestore, no React).
-   Storage lives in firebase.jsx (lwRecordAnswer); App wires the two together. */
+/* progress.js — pure FSRS / streak / XP logic (no Firestore, no React).
+   Storage lives in firebase.js (lwRecordAnswer); App wires the two together. */
+
+
 
 const LW_MIN_MS = 60 * 1000;
 const LW_DAY_MS = 24 * 60 * LW_MIN_MS;
@@ -509,6 +511,20 @@ function lwClipPick(clips, cardOf, progress, now, n, exclude = []) {
     .sort((a, b) => a.r - b.r || a.k - b.k).slice(0, n).map((x) => x.c);
 }
 
+export {
+  lwClipPick, LW_LEVEL_TEST_LEN, LW_LEVEL_TEST_MIN_BANK, LW_CEFR_NAMES, lwLevelTestPick,
+  lwLevelIndex, lwLevelTestResult, LW_BADGES, lwBestStreak, lwBadgeMetrics,
+  lwBadgeStates, LW_LESSON_TASKS, LW_XP_LESSON_BONUS, lwLessonTopics, lwLessonStatus,
+  lwCheckFill, lwCollocLive, lwCollocPlayable, lwCollocPick, lwCollocRoundPhrases,
+  LW_GOAL_OPTIONS, LW_CEFR_ALL, lwPracticeMs, lwStatusCounts, lwLastDays, lwTotalMs,
+  lwFormatDuration, LW_RELEARN_MS, LW_MASTERED_DAYS, LW_SRS_DEFAULTS,
+  LW_RETENTION_OPTIONS, LW_SESSION_OPTIONS, LW_BACKGROUND_OPTIONS, lwSrsSettings,
+  lwSetSrsSettings, lwRetrievability, lwWordMastery, lwReviewQueue, lwGroupPaused,
+  LW_DEFAULT_DAILY_GOAL, LW_XP_CORRECT, LW_XP_WRONG, LW_XP_GOAL_BONUS, lwNextProgress,
+  lwWordStatus, lwFormatInterval, lwLocalDate, lwStreak, lwTotalXp, lwLevel,
+};
+
+/* Console API: scripts/*.mjs and books run in the browser console and call these as window.lwX. */
 Object.assign(window, {
   lwClipPick,
   LW_LEVEL_TEST_LEN,

@@ -1,4 +1,48 @@
 /* app.jsx — main App: nav, theme, study + library views, persistence */
+
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import {
+  LW_COLLECTIONS, lwAddBonusXp, lwAddPracticeTime, lwAdminFetchAllData,
+  lwAdminFetchUsers, lwAdminSetRole, lwAuthInfo, lwDeleteAccount, lwDeleteDoc,
+  lwDeleteProgressForWords, lwDeleteReadingProgress, lwDeleteText, lwDeleteWordsByGroup,
+  lwGetChapter, lwLinkGoogle, lwLogout, lwRecordAnswer, lwSaveLessonProgress,
+  lwSaveReadingProgress, lwSaveText, lwSetDoc, lwUnlinkGoogle, lwUpdateUser, lwWatchAuth,
+  lwWatchClips, lwWatchCollection, lwWatchLessons, lwWatchLevelQuestions,
+  lwWatchUserAndSharedCollection, lwWatchUserCollection, lwWatchUserDoc,
+} from './firebase.js';
+import {
+  LW_CEFR_LEVELS, LW_KEYS, LW_LANGUAGES, LW_POS, LW_READING_BATCH, LW_TEXT_LENGTHS,
+  LW_TEXT_TOPICS, lwAiFillWords, lwAiGenerateBatch, lwAiLookupWord, lwAiTagPos,
+  lwAiTranslateSentences, lwCefrField, lwCurrentLang, lwDocLang, lwFileToPhoto,
+  lwHasGeminiKey, lwLangField, lwLangInfo, lwLoad, lwSave, lwSetCurrentLang, lwUid,
+  lwUserLangs, lwUtterance, lwWordOfTheDay,
+} from './data.js';
+import {
+  LW_BACKGROUND_OPTIONS, LW_CEFR_ALL, LW_CEFR_NAMES, LW_DEFAULT_DAILY_GOAL,
+  LW_GOAL_OPTIONS, LW_LESSON_TASKS, LW_LEVEL_TEST_LEN, LW_LEVEL_TEST_MIN_BANK,
+  LW_RELEARN_MS, LW_RETENTION_OPTIONS, LW_SESSION_OPTIONS, LW_XP_CORRECT,
+  LW_XP_GOAL_BONUS, LW_XP_LESSON_BONUS, LW_XP_WRONG, lwBadgeMetrics, lwBadgeStates,
+  lwCheckFill, lwClipPick, lwCollocLive, lwCollocPick, lwCollocPlayable,
+  lwCollocRoundPhrases, lwFormatDuration, lwFormatInterval, lwGroupPaused, lwLastDays,
+  lwLessonStatus, lwLessonTopics, lwLevel, lwLevelIndex, lwLevelTestPick,
+  lwLevelTestResult, lwLocalDate, lwNextProgress, lwPracticeMs, lwReviewQueue,
+  lwSetSrsSettings, lwSrsSettings, lwStatusCounts, lwStreak, lwTotalMs, lwTotalXp,
+  lwWordMastery, lwWordStatus,
+} from './progress.js';
+import {
+  LW_LETTERS, lwCleanGutenberg, lwFindCardForClip, lwMatchOwnWord, lwPaginate,
+  lwSplitChapters, lwSplitQuote, lwSplitSentences, lwTokenize, lwWordCount, lwWordsIndex,
+  readingTokensMatch,
+} from './reading.js';
+import {
+  ActionsMenu, CollocForm, FillCard, Flashcard, GeminiKeyModal, GroupChip, Ic,
+  ImportView, LessonBody, LessonForm, Modal, PhotoFill, PronunciationCheck, SpeakButton,
+  VoicePicker, WeekChart, WordForm, YouTubeClip, lwBlankSentence, lwCanRecognize,
+  lwFormatTime, lwLeafGroups, lwListenOnce, lwMatchSpoken, lwParseImportLine,
+  lwParseTime, lwParseYouTube, lwSpeechTokens, lwUnmark,
+} from './components.jsx';
+import { AuthView, ChooseUsernameView } from './auth.jsx';
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
 /* Fisher–Yates */
@@ -31,7 +75,7 @@ const LW_TABS = [
 const LW_SCREENS = ['learn', 'reading', 'grammar', 'library', 'profile', 'import', 'admin', 'leveltest'];
 const LW_ROLE_LABEL = { admin: 'Admin', premium: 'Premium', user: 'User' };
 
-/* Human-readable reading-generation errors, keyed by the .code set in data.jsx.
+/* Human-readable reading-generation errors, keyed by the .code set in data.js.
    Reused by the reading tab's inline hints and by the toast messages. */
 const LW_READING_ERROR_MSG = {
   quota: 'Daily Gemini limit reached. Try again later.',
@@ -54,18 +98,18 @@ const LW_IMPORT_ERROR_MSG = {
 /* AI reading cards are kept per language (English keeps the original key) */
 const lwReadingKey = (lang) => (lang === 'en' ? LW_KEYS.reading : LW_KEYS.reading + '_' + lang);
 function lwLoadReading(lang) {
-  const saved = window.lwLoad(lwReadingKey(lang), null);
+  const saved = lwLoad(lwReadingKey(lang), null);
   const cards = saved && Array.isArray(saved.cards) ? saved.cards : [];
   const index = saved && Number.isInteger(saved.index) ? saved.index : 0;
   return { lang, cards, index: cards.length ? Math.min(index, cards.length - 1) : 0, status: 'idle', error: null };
 }
 
 function App() {
-  const [theme, setTheme] = useState(() => window.lwLoad(LW_KEYS.theme, 'light'));
+  const [theme, setTheme] = useState(() => lwLoad(LW_KEYS.theme, 'light'));
   const [authUser, setAuthUser] = useState(undefined); // undefined = loading, null = signed out
   const [userDoc, setUserDoc] = useState(undefined); // undefined = loading, null = no profile yet (new Google user)
   const [online, setOnline] = useState(() => navigator.onLine);
-  const [authInfo, setAuthInfo] = useState(() => window.lwAuthInfo()); // sign-in methods (password / Google)
+  const [authInfo, setAuthInfo] = useState(() => lwAuthInfo()); // sign-in methods (password / Google)
   const [groups, setGroups] = useState([]);
   const [words, setWords] = useState([]);
   const [progress, setProgress] = useState({}); // { [wordId]: FSRS progress doc }
@@ -79,7 +123,7 @@ function App() {
   const [lessonProgress, setLessonProgress] = useState({}); // { [lessonId]: lesson_progress doc }
   /* where the user is: a screen (tab) + the Learn sub-mode; both survive reloads */
   const [nav, setNav] = useState(() => {
-    const saved = window.lwLoad(LW_KEYS.nav, null) || {};
+    const saved = lwLoad(LW_KEYS.nav, null) || {};
     return {
       tab: LW_SCREENS.includes(saved.tab) ? saved.tab : 'learn',
       learnMode: LW_LEARN_MODES.some((m) => m.id === saved.learnMode) ? saved.learnMode : 'cards',
@@ -96,14 +140,14 @@ function App() {
   /* study groups picked on Learn, per language: { en: [groupId…], ro: […] }
      (older devices saved a plain array — that was English) */
   const [selectedByLang, setSelectedByLang] = useState(() => {
-    const saved = window.lwLoad(LW_KEYS.selected, null);
+    const saved = lwLoad(LW_KEYS.selected, null);
     if (Array.isArray(saved)) return { en: saved };
     return saved && typeof saved === 'object' ? saved : {};
   });
   /* card direction per language: 'en-ru' = studied language first (EN → RU,
      RO → RU), 'ru-en' = Russian first. Older devices saved a plain string (English). */
   const [directionByLang, setDirectionByLang] = useState(() => {
-    const saved = window.lwLoad(LW_KEYS.direction, null);
+    const saved = lwLoad(LW_KEYS.direction, null);
     if (typeof saved === 'string') return { en: saved };
     return saved && typeof saved === 'object' ? saved : {};
   });
@@ -145,7 +189,7 @@ function App() {
       const code = e.detail;
       if (missingVoiceWarned.current.has(code)) return;
       missingVoiceWarned.current.add(code);
-      const name = window.lwLangInfo(code).name;
+      const name = lwLangInfo(code).name;
       pushToast({
         kind: 'error',
         title: 'No ' + name + ' voice on this device',
@@ -164,14 +208,14 @@ function App() {
   const startReadingGeneration = useCallback((params) => {
     const { pool, levels, topicPrompts, lengthWords } = params;
     const myGen = ++genIdRef.current;
-    const genLang = window.lwCurrentLang();
+    const genLang = lwCurrentLang();
     setReading((r) => ({ ...r, cards: [], index: 0, status: 'loading', error: null }));
-    window.lwAiGenerateBatch(pool, levels, topicPrompts, lengthWords, window.LW_READING_BATCH)
+    lwAiGenerateBatch(pool, levels, topicPrompts, lengthWords, LW_READING_BATCH)
       .then((cards) => {
         if (genIdRef.current !== myGen) return; // superseded by a newer request
         /* the user switched language meanwhile: keep the texts for that language */
         setReading((r) => {
-          if (r.lang !== genLang) { window.lwSave(lwReadingKey(genLang), { cards, index: 0 }); return r; }
+          if (r.lang !== genLang) { lwSave(lwReadingKey(genLang), { cards, index: 0 }); return r; }
           return { ...r, cards, index: 0, status: 'idle', error: null };
         });
         pushToast({
@@ -201,7 +245,7 @@ function App() {
   const startImportAiFill = useCallback((rawWords) => {
     const myGen = ++genIdRef.current;
     setImportState((s) => ({ ...s, status: 'loading', error: null }));
-    window.lwAiFillWords(rawWords)
+    lwAiFillWords(rawWords)
       .then((res) => {
         if (genIdRef.current !== myGen) return;
         const byWord = {};
@@ -211,7 +255,7 @@ function App() {
           const out = lines.map((line) => {
             const l = line.trim();
             if (!l) return line;
-            const p = window.lwParseImportLine(l);
+            const p = lwParseImportLine(l);
             const w = (p && p.word) || (l.indexOf('|') === -1 ? l : '');
             const r = w && byWord[w.toLowerCase()];
             if (!r) return line; // leave lines AI didn't touch untouched
@@ -249,35 +293,35 @@ function App() {
     const owner = foreign
       ? { userId: group.userId, username: group.username, shared: !!group.shared }
       : { userId: authUser.uid, username: userDoc && userDoc.username, shared: isAdmin };
-    items.forEach((w) => window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, ...owner })
+    items.forEach((w) => lwSetDoc(LW_COLLECTIONS.words, { ...w, ...owner })
       .catch((e) => { console.error('importWords failed', e); alert('Could not import a word: ' + (e && e.message || e)); }));
   }, [authUser, userDoc]);
 
   /* auth state */
-  useEffect(() => window.lwWatchAuth(setAuthUser), []);
+  useEffect(() => lwWatchAuth(setAuthUser), []);
 
   /* user profile (role, lang) */
   useEffect(() => {
-    setAuthInfo(window.lwAuthInfo());
+    setAuthInfo(lwAuthInfo());
     if (!authUser) { setUserDoc(undefined); return; }
-    return window.lwWatchUserDoc(authUser.uid, setUserDoc);
+    return lwWatchUserDoc(authUser.uid, setUserDoc);
   }, [authUser]);
 
   /* languages this user learns and the one studied now. Everything below —
      groups, words, texts, collocations, lessons — is scoped to `lang`. Set before
      any child renders, so AI prompts, speech and new docs follow it too. */
-  const langs = window.lwUserLangs(userDoc);
+  const langs = lwUserLangs(userDoc);
   const lang = userDoc && langs.includes(userDoc.lang) ? userDoc.lang : (langs[0] || null);
-  window.lwSetCurrentLang(lang || 'en');
+  lwSetCurrentLang(lang || 'en');
   /* review settings (users.srs, every language) and paused groups (per language) */
-  const srs = useMemo(() => window.lwSrsSettings(userDoc), [userDoc]);
-  window.lwSetSrsSettings(srs);
-  const groupStateField = window.lwLangField('groupState', lang);
+  const srs = useMemo(() => lwSrsSettings(userDoc), [userDoc]);
+  lwSetSrsSettings(srs);
+  const groupStateField = lwLangField('groupState', lang);
   const groupState = (userDoc && userDoc[groupStateField]) || null;
   /* write some of the user's own profile fields (lang, dailyGoal, cefr, avatar) */
   const updateProfile = useCallback((fields) => {
     if (!authUser) return Promise.resolve();
-    return window.lwUpdateUser(authUser.uid, fields).catch((e) => {
+    return lwUpdateUser(authUser.uid, fields).catch((e) => {
       console.error('updateProfile failed', e);
       pushToast({ kind: 'error', title: 'Could not save your profile', msg: (e && e.message) || String(e) });
     });
@@ -287,7 +331,7 @@ function App() {
   const setLang = useCallback((l) => {
     if (l === lang) return;
     setNav((n) => ({ ...n, reading: { view: 'home' }, grammar: { view: 'home' } }));
-    window.lwSave(LW_KEYS.library, { ...(window.lwLoad(LW_KEYS.library, null) || {}), groupId: '' });
+    lwSave(LW_KEYS.library, { ...(lwLoad(LW_KEYS.library, null) || {}), groupId: '' });
     updateProfile({ lang: l, langs: langs.includes(l) ? langs : [...langs, l] });
   }, [lang, langs, updateProfile]);
   /* first launch: the languages picked; the first one is studied first */
@@ -326,8 +370,8 @@ function App() {
   const ownerIsAdmin = userDoc ? userDoc.role === 'admin' : null;
   useEffect(() => {
     if (!authUser || ownerIsAdmin === null) { setGroups([]); setWords([]); return; }
-    const unsubGroups = window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.groups, authUser.uid, setGroups, ownerIsAdmin);
-    const unsubWords = window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.words, authUser.uid, setWords, ownerIsAdmin);
+    const unsubGroups = lwWatchUserAndSharedCollection(LW_COLLECTIONS.groups, authUser.uid, setGroups, ownerIsAdmin);
+    const unsubWords = lwWatchUserAndSharedCollection(LW_COLLECTIONS.words, authUser.uid, setWords, ownerIsAdmin);
     return () => { unsubGroups(); unsubWords(); };
   }, [authUser, ownerIsAdmin]);
 
@@ -338,17 +382,17 @@ function App() {
   const [allWords, setAllWords] = useState(null);
   useEffect(() => {
     if (!adminImport) { setAllGroups(null); setAllWords(null); return; }
-    const unsubGroups = window.lwWatchCollection(window.LW_COLLECTIONS.groups, setAllGroups);
-    const unsubWords = window.lwWatchCollection(window.LW_COLLECTIONS.words, setAllWords);
+    const unsubGroups = lwWatchCollection(LW_COLLECTIONS.groups, setAllGroups);
+    const unsubWords = lwWatchCollection(LW_COLLECTIONS.words, setAllWords);
     return () => { unsubGroups(); unsubWords(); };
   }, [adminImport]);
 
   /* live sync with this user's progress + daily activity */
   useEffect(() => {
     if (!authUser) { setProgress({}); setActivityDocs([]); return; }
-    const unsubProgress = window.lwWatchUserCollection(window.LW_COLLECTIONS.progress, authUser.uid,
+    const unsubProgress = lwWatchUserCollection(LW_COLLECTIONS.progress, authUser.uid,
       (items) => setProgress(Object.fromEntries(items.map((p) => [p.wordId, p]))));
-    const unsubActivity = window.lwWatchUserCollection(window.LW_COLLECTIONS.activity, authUser.uid, setActivityDocs);
+    const unsubActivity = lwWatchUserCollection(LW_COLLECTIONS.activity, authUser.uid, setActivityDocs);
     return () => { unsubProgress(); unsubActivity(); };
   }, [authUser]);
 
@@ -356,7 +400,7 @@ function App() {
      time and the week chart come only from this language's activity
      ({ 'YYYY-MM-DD': doc }; docs without `lang` are English). */
   const activity = useMemo(
-    () => Object.fromEntries(activityDocs.filter((a) => window.lwDocLang(a) === lang).map((a) => [a.date, a])),
+    () => Object.fromEntries(activityDocs.filter((a) => lwDocLang(a) === lang).map((a) => [a.date, a])),
     [activityDocs, lang]
   );
   const direction = directionByLang[lang] || 'en-ru';
@@ -365,8 +409,8 @@ function App() {
   /* reading texts (own + shared) and where the user is in each */
   useEffect(() => {
     if (!authUser || ownerIsAdmin === null) { setTexts([]); setReadingProgress({}); return; }
-    const unsubTexts = window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.texts, authUser.uid, setTexts, ownerIsAdmin);
-    const unsubRp = window.lwWatchUserCollection(window.LW_COLLECTIONS.readingProgress, authUser.uid,
+    const unsubTexts = lwWatchUserAndSharedCollection(LW_COLLECTIONS.texts, authUser.uid, setTexts, ownerIsAdmin);
+    const unsubRp = lwWatchUserCollection(LW_COLLECTIONS.readingProgress, authUser.uid,
       (items) => setReadingProgress(Object.fromEntries(items.map((r) => [r.textId, r]))));
     return () => { unsubTexts(); unsubRp(); };
   }, [authUser, ownerIsAdmin]);
@@ -375,24 +419,24 @@ function App() {
   const roleForLessons = userDoc ? userDoc.role : null;
   useEffect(() => {
     if (!authUser || !roleForLessons) { setLessons([]); return; }
-    return window.lwWatchLessons(roleForLessons === 'admin', setLessons);
+    return lwWatchLessons(roleForLessons === 'admin', setLessons);
   }, [authUser, roleForLessons]);
   useEffect(() => {
     if (!authUser) { setLessonProgress({}); return; }
-    return window.lwWatchUserCollection(window.LW_COLLECTIONS.lessonProgress, authUser.uid,
+    return lwWatchUserCollection(LW_COLLECTIONS.lessonProgress, authUser.uid,
       (items) => setLessonProgress(Object.fromEntries(items.map((p) => [p.lessonId, p]))));
   }, [authUser]);
 
   /* video clips of the language studied now */
   useEffect(() => {
     if (!authUser || !lang) { setClips([]); return; }
-    return window.lwWatchClips(lang, setClips);
+    return lwWatchClips(lang, setClips);
   }, [authUser, lang]);
 
   /* collocation entries (own + shared) */
   useEffect(() => {
     if (!authUser || ownerIsAdmin === null) { setCollocations([]); return; }
-    return window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.collocations, authUser.uid, setCollocations, ownerIsAdmin);
+    return lwWatchUserAndSharedCollection(LW_COLLECTIONS.collocations, authUser.uid, setCollocations, ownerIsAdmin);
   }, [authUser, ownerIsAdmin]);
 
   useEffect(() => {
@@ -400,7 +444,7 @@ function App() {
     return () => clearInterval(t);
   }, []);
 
-  const dailyGoal = (userDoc && userDoc[window.lwLangField('dailyGoal', lang)]) || window.LW_DEFAULT_DAILY_GOAL;
+  const dailyGoal = (userDoc && userDoc[lwLangField('dailyGoal', lang)]) || LW_DEFAULT_DAILY_GOAL;
 
   /* Record one answer from Study / Choice / Fill / Review: the word's next FSRS
      state (`opts.easy`: a fill typed quickly with no mistake) plus today's XP.
@@ -414,21 +458,21 @@ function App() {
   const recordAnswer = useCallback((wordId, known, mode, opts) => {
     if (!authUser) return;
     const t = Date.now();
-    const ms = window.lwPracticeMs(lastAnswerAt.current, t);
+    const ms = lwPracticeMs(lastAnswerAt.current, t);
     lastAnswerAt.current = t;
-    const date = window.lwLocalDate(t);
+    const date = lwLocalDate(t);
     const today = activity[date] || {};
     const sent = sentToday.current.date === date && sentToday.current.lang === lang ? sentToday.current : { date, lang, answers: 0, goalMet: false };
     const answersBefore = Math.max(today.answers || 0, sent.answers);
-    const goalBonus = !today.goalMet && !sent.goalMet && answersBefore + 1 >= dailyGoal ? window.LW_XP_GOAL_BONUS : 0;
+    const goalBonus = !today.goalMet && !sent.goalMet && answersBefore + 1 >= dailyGoal ? LW_XP_GOAL_BONUS : 0;
     sentToday.current = { date, lang, answers: answersBefore + 1, goalMet: sent.goalMet || !!goalBonus || !!today.goalMet };
-    window.lwRecordAnswer({
+    lwRecordAnswer({
       uid: authUser.uid,
       lang,
-      progress: wordId ? window.lwNextProgress(progress[wordId] || null, wordId, known, mode, t, opts) : null, // null: a grammar test answer
+      progress: wordId ? lwNextProgress(progress[wordId] || null, wordId, known, mode, t, opts) : null, // null: a grammar test answer
       date,
       correct: known,
-      xp: known ? window.LW_XP_CORRECT : window.LW_XP_WRONG,
+      xp: known ? LW_XP_CORRECT : LW_XP_WRONG,
       goalBonus,
       ms,
     }).catch((e) => {
@@ -439,17 +483,17 @@ function App() {
   }, [authUser, lang, activity, progress, dailyGoal, pushToast]);
 
   /* persistence (local-only settings) */
-  useEffect(() => { document.documentElement.dataset.theme = theme; window.lwSave(LW_KEYS.theme, theme); }, [theme]);
-  useEffect(() => { window.lwSave(LW_KEYS.selected, selectedByLang); }, [selectedByLang]);
-  useEffect(() => { window.lwSave(LW_KEYS.direction, directionByLang); }, [directionByLang]);
-  useEffect(() => { window.lwSave(LW_KEYS.nav, nav); }, [nav]);
+  useEffect(() => { document.documentElement.dataset.theme = theme; lwSave(LW_KEYS.theme, theme); }, [theme]);
+  useEffect(() => { lwSave(LW_KEYS.selected, selectedByLang); }, [selectedByLang]);
+  useEffect(() => { lwSave(LW_KEYS.direction, directionByLang); }, [directionByLang]);
+  useEffect(() => { lwSave(LW_KEYS.nav, nav); }, [nav]);
   /* персистим пачку карточек чтения (без эфемерных status/error) */
   useEffect(() => {
-    window.lwSave(lwReadingKey(reading.lang), { cards: reading.cards, index: reading.index });
+    lwSave(lwReadingKey(reading.lang), { cards: reading.cards, index: reading.index });
   }, [reading.lang, reading.cards, reading.index]);
 
   /* content of the language studied now (docs without `lang` are English) */
-  const inLang = useCallback((d) => window.lwDocLang(d) === lang, [lang]);
+  const inLang = useCallback((d) => lwDocLang(d) === lang, [lang]);
   const scopedGroups = useMemo(() => groups.filter(inLang), [groups, inLang]);
   const scopedWords = useMemo(() => words.filter(inLang), [words, inLang]);
   const scopedTexts = useMemo(() => texts.filter(inLang), [texts, inLang]);
@@ -484,10 +528,10 @@ function App() {
 
   /* Learn → Review: 'focus' plays the groups selected in Learn (plus a small
      background share), 'all' every due word; paused groups never come up */
-  const [reviewScope, setReviewScope] = useState(() => window.lwLoad(LW_KEYS.reviewScope, 'focus'));
-  useEffect(() => { window.lwSave(LW_KEYS.reviewScope, reviewScope); }, [reviewScope]);
-  const isPaused = useCallback((gid) => window.lwGroupPaused(gid, groupById, groupState), [groupById, groupState]);
-  const reviewPlan = useMemo(() => window.lwReviewQueue({
+  const [reviewScope, setReviewScope] = useState(() => lwLoad(LW_KEYS.reviewScope, 'focus'));
+  useEffect(() => { lwSave(LW_KEYS.reviewScope, reviewScope); }, [reviewScope]);
+  const isPaused = useCallback((gid) => lwGroupPaused(gid, groupById, groupState), [groupById, groupState]);
+  const reviewPlan = useMemo(() => lwReviewQueue({
     words: scopedWords, progress, now, focus: selected, scope: reviewScope, isPaused, srs,
   }), [scopedWords, progress, now, selected, reviewScope, isPaused, srs]);
   /* pause or resume reviews of a group (users.groupState, per language) */
@@ -502,20 +546,20 @@ function App() {
      Progress for words that no longer exist (e.g. a shared word an admin deleted) is ignored.
      dueCount is the size of the next Review session (scope, paused groups, session size). */
   const stats = useMemo(() => {
-    const today = activity[window.lwLocalDate(now)] || {};
-    const xp = window.lwTotalXp(activity);
+    const today = activity[lwLocalDate(now)] || {};
+    const xp = lwTotalXp(activity);
     const dueCount = srs.session > 0 ? Math.min(srs.session, reviewPlan.ids.length) : reviewPlan.ids.length;
-    const statusCounts = window.lwStatusCounts(progress, scopedWords, now);
+    const statusCounts = lwStatusCounts(progress, scopedWords, now);
     return {
-      streak: window.lwStreak(activity, now),
+      streak: lwStreak(activity, now),
       todayAnswers: today.answers || 0,
       goal: dailyGoal,
       xp,
-      level: window.lwLevel(xp),
+      level: lwLevel(xp),
       dueCount,
       statusCounts,
-      totalMs: window.lwTotalMs(activity),
-      week: window.lwLastDays(activity, now, 7),
+      totalMs: lwTotalMs(activity),
+      week: lwLastDays(activity, now, 7),
     };
   }, [activity, progress, scopedWords, now, dailyGoal, reviewPlan, srs]);
 
@@ -524,18 +568,18 @@ function App() {
      for non-English, lwLangField). New ones are saved 2 s after the data
      settles and announced with a toast; the very first time, everything
      already earned is saved quietly with a single toast. */
-  const badgesField = window.lwLangField('badges', lang);
+  const badgesField = lwLangField('badges', lang);
   const earnedBadges = userDoc ? userDoc[badgesField] : undefined;
   const badgeStates = useMemo(() => {
     if (!authUser) return [];
     const textIds = new Set(scopedTexts.map((t) => t.id));
-    const metrics = window.lwBadgeMetrics({
+    const metrics = lwBadgeMetrics({
       uid: authUser.uid, activity, progress, words: scopedWords,
       readingProgress: Object.fromEntries(Object.entries(readingProgress).filter(([id]) => textIds.has(id))),
       lessons: scopedLessons, lessonProgress, collocations: scopedCollocations,
-      levelTest: userDoc && userDoc[window.lwLangField('levelTest', lang)], now,
+      levelTest: userDoc && userDoc[lwLangField('levelTest', lang)], now,
     });
-    return window.lwBadgeStates(metrics, earnedBadges);
+    return lwBadgeStates(metrics, earnedBadges);
   }, [authUser, activity, progress, scopedWords, scopedTexts, readingProgress, scopedLessons, lessonProgress, scopedCollocations, now, earnedBadges, userDoc, lang]);
   useEffect(() => {
     if (!authUser || !userDoc || !lang) return;
@@ -545,7 +589,7 @@ function App() {
       const ts = Date.now();
       const fields = {};
       fresh.forEach((b) => { fields[badgesField + '.' + b.badge.id] = ts; });
-      window.lwUpdateUser(authUser.uid, fields).catch((e) => console.error('badges', e));
+      lwUpdateUser(authUser.uid, fields).catch((e) => console.error('badges', e));
       if (!earnedBadges) {
         pushToast({ kind: 'success', title: 'You have ' + fresh.length + (fresh.length === 1 ? ' badge' : ' badges'), msg: 'See your achievements in Profile.', action: { label: 'View', view: 'profile' } });
       } else {
@@ -569,7 +613,7 @@ function App() {
     /* Grammar again while already on it returns to the lesson list */
     if (name === 'grammar') { setNav((n) => ({ ...n, tab: 'grammar', grammar: n.tab === 'grammar' ? { view: 'home' } : n.grammar })); return; }
     if (name === 'collocations') {
-      window.lwSave(LW_KEYS.library, { ...(window.lwLoad(LW_KEYS.library, null) || {}), view: 'colloc' });
+      lwSave(LW_KEYS.library, { ...(lwLoad(LW_KEYS.library, null) || {}), view: 'colloc' });
       setNav((n) => ({ ...n, tab: 'library' }));
       return;
     }
@@ -584,10 +628,10 @@ function App() {
      found by name among their own leaf groups with the same `shared`, created
      on first use. Resolves to the group id. */
   const ensureAutoGroup = useCallback(async (name, color, shared) => {
-    const existing = window.lwLeafGroups(scopedGroups).find((g) => g.name === name && g.userId === authUser.uid && !!g.shared === shared);
+    const existing = lwLeafGroups(scopedGroups).find((g) => g.name === name && g.userId === authUser.uid && !!g.shared === shared);
     if (existing) return existing.id;
-    const id = window.lwUid() + window.lwUid();
-    await window.lwSetDoc(window.LW_COLLECTIONS.groups,
+    const id = lwUid() + lwUid();
+    await lwSetDoc(LW_COLLECTIONS.groups,
       { id, name, color, userId: authUser.uid, username: userDoc && userDoc.username, shared });
     return id;
   }, [authUser, userDoc, scopedGroups]);
@@ -600,10 +644,10 @@ function App() {
     let gid = groupId;
     if (!gid || gid === LW_READING_GROUP) gid = await ensureAutoGroup(LW_READING_GROUP_NAME, '#2F9E8F', false);
     const word = {
-      ...fields, ...base, id: fields.id || window.lwUid() + window.lwUid(), groupId: gid,
+      ...fields, ...base, id: fields.id || lwUid() + lwUid(), groupId: gid,
       createdAt: fields.createdAt || Date.now(),
     };
-    await window.lwSetDoc(window.LW_COLLECTIONS.words, word);
+    await lwSetDoc(LW_COLLECTIONS.words, word);
     return word;
   }, [authUser, userDoc, ensureAutoGroup]);
 
@@ -612,9 +656,9 @@ function App() {
     const gid = await ensureAutoGroup(LW_VIDEO_GROUP_NAME, '#D6453E', false);
     const word = {
       ...fields, userId: authUser.uid, username: userDoc && userDoc.username, shared: false,
-      id: window.lwUid() + window.lwUid(), groupId: gid, createdAt: Date.now(),
+      id: lwUid() + lwUid(), groupId: gid, createdAt: Date.now(),
     };
-    await window.lwSetDoc(window.LW_COLLECTIONS.words, word);
+    await lwSetDoc(LW_COLLECTIONS.words, word);
     return word;
   }, [authUser, userDoc, ensureAutoGroup]);
 
@@ -631,8 +675,8 @@ function App() {
       const t = Date.now();
       for (let i = 0; i < newPhrases.length; i++) {
         const { partner, ...fields } = newPhrases[i];
-        const id = window.lwUid() + window.lwUid();
-        await window.lwSetDoc(window.LW_COLLECTIONS.words, {
+        const id = lwUid() + lwUid();
+        await lwSetDoc(LW_COLLECTIONS.words, {
           ...fields, pos: 'phrase', id, groupId: gid, createdAt: t + i,
           userId: authUser.uid, username: userDoc && userDoc.username, shared,
         });
@@ -640,14 +684,14 @@ function App() {
       }
     }
     const doc = {
-      ...entry, ...owner, id: entry.id || window.lwUid() + window.lwUid(),
+      ...entry, ...owner, id: entry.id || lwUid() + lwUid(),
       phrases: links, createdAt: entry.createdAt || Date.now(), updatedAt: Date.now(),
     };
-    await window.lwSetDoc(window.LW_COLLECTIONS.collocations, doc);
+    await lwSetDoc(LW_COLLECTIONS.collocations, doc);
     return doc;
   }, [authUser, userDoc, ensureAutoGroup]);
 
-  const wordIndex = useMemo(() => window.lwWordsIndex(scopedWords), [scopedWords]);
+  const wordIndex = useMemo(() => lwWordsIndex(scopedWords), [scopedWords]);
 
   /* Reading time counts as practice time (activity.ms, no answers/XP): every
      30 s while a text is open, the page is visible and the user did something
@@ -666,7 +710,7 @@ function App() {
     const t = setInterval(() => {
       const speaking = 'speechSynthesis' in window && window.speechSynthesis.speaking;
       if (document.hidden || (!speaking && Date.now() - lastActiveAt.current > 60 * 1000)) return;
-      window.lwAddPracticeTime(authUser.uid, lang, window.lwLocalDate(Date.now()), TICK)
+      lwAddPracticeTime(authUser.uid, lang, lwLocalDate(Date.now()), TICK)
         .catch((e) => console.error('reading time', e));
     }, TICK);
     return () => clearInterval(t);
@@ -685,12 +729,12 @@ function App() {
     const moved = !prev || (prev.topic || '').trim().toLowerCase() !== lesson.topic.toLowerCase();
     const order = moved ? Math.max(0, ...scopedLessons.filter(sameTopic).map((l) => l.order || 0)) + 10 : (prev.order || 0);
     const doc = {
-      ...lesson, id: lesson.id || window.lwUid() + window.lwUid(), order, published: !!publish,
+      ...lesson, id: lesson.id || lwUid() + lwUid(), order, published: !!publish,
       userId: (prev && prev.userId) || authUser.uid, username: (prev && prev.username) || userDoc.username, shared: true,
       createdAt: (prev && prev.createdAt) || Date.now(), updatedAt: Date.now(),
     };
     setGrammar({ view: 'lesson', lessonId: doc.id });
-    window.lwSetDoc(window.LW_COLLECTIONS.lessons, doc)
+    lwSetDoc(LW_COLLECTIONS.lessons, doc)
       .then(() => pushToast({ kind: 'success', title: publish ? 'Lesson published' : 'Draft saved', msg: doc.title }))
       .catch(lessonError('Could not save the lesson'));
   }, [scopedLessons, authUser, userDoc, setGrammar, pushToast, lessonError]);
@@ -702,31 +746,31 @@ function App() {
     [list[index], list[j]] = [list[j], list[index]];
     list.forEach((l, i) => {
       const order = (i + 1) * 10;
-      if (l.order !== order) window.lwSetDoc(window.LW_COLLECTIONS.lessons, { ...l, order }).catch(lessonError('Could not reorder'));
+      if (l.order !== order) lwSetDoc(LW_COLLECTIONS.lessons, { ...l, order }).catch(lessonError('Could not reorder'));
     });
   }, [lessonError]);
-  const saveLessonProgress = useCallback((lessonId, fields) => window.lwSaveLessonProgress(authUser.uid, lessonId, fields)
+  const saveLessonProgress = useCallback((lessonId, fields) => lwSaveLessonProgress(authUser.uid, lessonId, fields)
     .catch(lessonError('Could not save lesson progress')), [authUser, lessonError]);
   /* a finished test: attempts, last/best score; 10/10 completes the lesson (+50 XP the first time) */
   const finishLessonTest = useCallback((lessonId, score) => {
     const p = lessonProgress[lessonId] || {};
-    const passed = score >= window.LW_LESSON_TASKS;
+    const passed = score >= LW_LESSON_TASKS;
     const fields = { attempts: (p.attempts || 0) + 1, last: score, best: Math.max(p.best || 0, score) };
     if (passed && !p.completedAt) {
       fields.completedAt = Date.now();
-      window.lwAddBonusXp(authUser.uid, lang, window.lwLocalDate(Date.now()), window.LW_XP_LESSON_BONUS).catch(lessonError('Could not add XP'));
+      lwAddBonusXp(authUser.uid, lang, lwLocalDate(Date.now()), LW_XP_LESSON_BONUS).catch(lessonError('Could not add XP'));
     }
     saveLessonProgress(lessonId, fields);
     return passed && !p.completedAt;
   }, [lessonProgress, authUser, lang, saveLessonProgress, lessonError]);
 
   /* save a new text (meta + chapters); admins may publish it for everyone */
-  const saveText = useCallback((meta, chapters) => window.lwSaveText({
+  const saveText = useCallback((meta, chapters) => lwSaveText({
     ...meta,
-    id: window.lwUid() + window.lwUid(),
+    id: lwUid() + lwUid(),
     userId: authUser.uid,
     username: userDoc && userDoc.username,
-    chapters: chapters.map((c) => ({ title: c.title || '', words: c.paragraphs.reduce((n, p) => n + window.lwWordCount(p), 0) })),
+    chapters: chapters.map((c) => ({ title: c.title || '', words: c.paragraphs.reduce((n, p) => n + lwWordCount(p), 0) })),
     createdAt: Date.now(),
   }, chapters), [authUser, userDoc]);
 
@@ -805,7 +849,7 @@ function App() {
             <ReadingView groups={scopedGroups} words={scopedWords} countByGroup={scopedCountByGroup}
               reading={reading} setReading={setReading}
               startGenerate={startReadingGeneration}
-              defaultLevel={userDoc[window.lwCefrField(lang)]}
+              defaultLevel={userDoc[lwCefrField(lang)]}
               wordIndex={wordIndex} progress={progress} now={now} addWord={addWordFromReading}
               onBack={() => goTo('reading-home')}
               goLibrary={() => goTo('library')} />
@@ -818,9 +862,9 @@ function App() {
               onDelete={(t) => setDeleteText(t)} />
           ) : tab === 'grammar' ? (
             <GrammarScreen nav={nav.grammar} setGrammar={setGrammar} lessons={scopedLessons} progressBy={lessonProgress}
-              isAdmin={isAdmin} userLevel={userDoc[window.lwCefrField(lang)]} recordAnswer={recordAnswer}
+              isAdmin={isAdmin} userLevel={userDoc[lwCefrField(lang)]} recordAnswer={recordAnswer}
               saveLesson={saveLesson} moveLesson={moveLesson} saveProgress={saveLessonProgress} finishTest={finishLessonTest}
-              deleteLesson={(l) => { setGrammar({ view: 'home' }); window.lwDeleteDoc(window.LW_COLLECTIONS.lessons, l.id).catch(lessonError('Could not delete the lesson')); }} />
+              deleteLesson={(l) => { setGrammar({ view: 'home' }); lwDeleteDoc(LW_COLLECTIONS.lessons, l.id).catch(lessonError('Could not delete the lesson')); }} />
           ) : tab === 'library' ? (
             <LibraryView groups={scopedGroups} words={scopedWords} userId={authUser.uid} username={userDoc.username} isAdmin={isAdmin}
               progress={progress} now={now} direction={direction} recordAnswer={recordAnswer}
@@ -839,13 +883,13 @@ function App() {
               pushToast={pushToast} onClose={() => goTo('profile')} />
           ) : (
             <ProfileView user={userDoc} stats={stats} badges={badgeStates} updateProfile={updateProfile} srs={srs}
-              authInfo={authInfo} refreshAuthInfo={() => setAuthInfo(window.lwAuthInfo())}
+              authInfo={authInfo} refreshAuthInfo={() => setAuthInfo(lwAuthInfo())}
               pushToast={pushToast} goLearn={() => goTo('cards')} goLevelTest={() => goTo('leveltest')}
               theme={theme} onToggleTheme={toggleTheme}
               direction={direction} setDirection={setDirection}
               lang={lang} langs={langs} setLang={setLang} removeLang={removeLang}
               onGeminiKey={() => setGeminiKeyOpen(true)}
-              onLogout={() => window.lwLogout()}
+              onLogout={() => lwLogout()}
               onDeleteAccount={() => setDeleteAccountOpen(true)} />
           )}
         </main>
@@ -865,8 +909,8 @@ function App() {
             <button className="btn btn-danger" onClick={() => {
               const t = deleteText;
               setDeleteText(null);
-              window.lwDeleteText(t.id, (t.chapters || []).length)
-                .then(() => { if (readingProgress[t.id]) return window.lwDeleteReadingProgress(authUser.uid, t.id); })
+              lwDeleteText(t.id, (t.chapters || []).length)
+                .then(() => { if (readingProgress[t.id]) return lwDeleteReadingProgress(authUser.uid, t.id); })
                 .catch((e) => pushToast({ kind: 'error', title: 'Could not delete the text', msg: (e && e.message) || String(e) }));
             }}>Delete</button>
           </>}>
@@ -894,7 +938,7 @@ function DeleteAccountModal({ hasPassword, onClose }) {
     setBusy(true);
     setError('');
     try {
-      await window.lwDeleteAccount(password);
+      await lwDeleteAccount(password);
       try {
         [LW_KEYS.studySession, LW_KEYS.selected, LW_KEYS.nav].forEach((k) => localStorage.removeItem(k));
       } catch (e) { /* ignore */ }
@@ -1031,7 +1075,7 @@ function NavDrawer({ open, onClose, tab, learnMode, goTo, stats, user, isAdmin, 
           <div className="drawer-logo"><Ic.Library /></div>
           <div className="drawer-brand">
             <span className="brand-name">Lexicon</span>
-            <span className="drawer-sub">{window.lwLangInfo(lang).name} lab</span>
+            <span className="drawer-sub">{lwLangInfo(lang).name} lab</span>
           </div>
           <button className="icon-btn drawer-close" onClick={onClose} aria-label="Close menu"><Ic.Close /></button>
         </div>
@@ -1054,7 +1098,7 @@ function NavDrawer({ open, onClose, tab, learnMode, goTo, stats, user, isAdmin, 
         {langs.length > 1 && (
           <div className="seg drawer-langs" role="group" aria-label="Language you learn">
             {langs.map((code) => {
-              const l = window.lwLangInfo(code);
+              const l = lwLangInfo(code);
               return (
                 <button key={code} type="button" className={'seg-btn' + (lang === code ? ' on' : '')}
                   aria-pressed={lang === code} onClick={() => setLang(code)}>{l.flag} {l.name}</button>
@@ -1109,18 +1153,18 @@ function TabBar({ tab, goTo }) {
    same day changes nothing, so its label shows the time left until it is due. */
 function AnswerButtons({ prog, wordId, onAnswer }) {
   const t = Date.now();
-  const knowIn = window.lwNextProgress(prog || null, wordId, true, '', t).due - t;
+  const knowIn = lwNextProgress(prog || null, wordId, true, '', t).due - t;
   return (
     <div className="answer-btns">
       <button className="answer-btn answer-again" type="button" onClick={() => onAnswer('unknown')}>
         <span className="answer-icon"><Ic.Close width="22" height="22" /></span>
         <span className="answer-label">Again</span>
-        <span className="answer-int">{window.lwFormatInterval(window.LW_RELEARN_MS)}</span>
+        <span className="answer-int">{lwFormatInterval(LW_RELEARN_MS)}</span>
       </button>
       <button className="answer-btn answer-know" type="button" onClick={() => onAnswer('known')}>
         <span className="answer-icon"><Ic.DoubleCheck width="22" height="22" /></span>
         <span className="answer-label">Know</span>
-        <span className="answer-int">{window.lwFormatInterval(knowIn)}</span>
+        <span className="answer-int">{lwFormatInterval(knowIn)}</span>
       </button>
     </div>
   );
@@ -1191,29 +1235,29 @@ function LearnView({ mode, setMode, stats, studyStats, selectedCount, onPickGrou
 
 /* ---------------- Level test (any language) + question bank editor (admins) ---------------- */
 function LevelTestScreen({ lang, user, uid, isAdmin, updateProfile, pushToast, onClose }) {
-  const info = window.lwLangInfo(lang);
-  const cefrKey = window.lwCefrField(lang);
-  const testKey = window.lwLangField('levelTest', lang);
+  const info = lwLangInfo(lang);
+  const cefrKey = lwCefrField(lang);
+  const testKey = lwLangField('levelTest', lang);
   const [bank, setBank] = useState(null); // null while loading
-  useEffect(() => window.lwWatchLevelQuestions(lang, setBank), [lang]);
+  useEffect(() => lwWatchLevelQuestions(lang, setBank), [lang]);
   const [view, setView] = useState('intro'); // intro | test | result | manage
   const [run, setRun] = useState(null); // { asked, answers, level, q, order, picked }
   const [result, setResult] = useState(null);
   useEffect(() => { window.scrollTo(0, 0); }, [view, run && run.q && run.q.id]);
   const last = user[testKey];
-  const ready = bank && bank.length >= window.LW_LEVEL_TEST_MIN_BANK;
+  const ready = bank && bank.length >= LW_LEVEL_TEST_MIN_BANK;
 
   const ask = (q, asked, answers, level) => setRun({ asked, answers, level, q, order: shuffle([0, 1, 2, 3]), picked: null });
   const start = () => {
-    const level = user[cefrKey] ? window.lwLevelIndex(user[cefrKey]) : 1; // A2 when unknown
-    const q = window.lwLevelTestPick(bank, [], level);
+    const level = user[cefrKey] ? lwLevelIndex(user[cefrKey]) : 1; // A2 when unknown
+    const q = lwLevelTestPick(bank, [], level);
     if (!q) return;
     setResult(null);
     ask(q, [q.id], [], level);
     setView('test');
   };
   const finish = (answers) => {
-    const res = window.lwLevelTestResult(answers);
+    const res = lwLevelTestResult(answers);
     setResult(res);
     setView('result');
     updateProfile({ [testKey]: { level: res.level, correct: res.correct, total: res.total, at: Date.now() } });
@@ -1226,7 +1270,7 @@ function LevelTestScreen({ lang, user, uid, isAdmin, updateProfile, pushToast, o
     setTimeout(() => {
       const answers = [...run.answers, { id: run.q.id, level: run.q.level, target: run.level, ok }];
       const level = ok ? Math.min(5, run.level + 1) : Math.max(0, run.level - 1);
-      const q = answers.length < window.LW_LEVEL_TEST_LEN ? window.lwLevelTestPick(bank, run.asked, level) : null;
+      const q = answers.length < LW_LEVEL_TEST_LEN ? lwLevelTestPick(bank, run.asked, level) : null;
       if (!q) { finish(answers); return; }
       ask(q, [...run.asked, q.id], answers, level);
     }, 250);
@@ -1245,10 +1289,10 @@ function LevelTestScreen({ lang, user, uid, isAdmin, updateProfile, pushToast, o
           <span className="ls-pos">{info.name} level test</span>
         </div>
         <div className="colloc-head">
-          <span className="colloc-kicker">Question {n + 1} of {window.LW_LEVEL_TEST_LEN}</span>
+          <span className="colloc-kicker">Question {n + 1} of {LW_LEVEL_TEST_LEN}</span>
         </div>
         <div className="colloc-segs">
-          {Array.from({ length: window.LW_LEVEL_TEST_LEN }, (_, i) => <span key={i} className={'colloc-seg' + (i < n ? ' on' : i === n ? ' cur' : '')} />)}
+          {Array.from({ length: LW_LEVEL_TEST_LEN }, (_, i) => <span key={i} className={'colloc-seg' + (i < n ? ' on' : i === n ? ' cur' : '')} />)}
         </div>
         <div className="ls-card quiz-card">
           <p className="quiz-type">{run.q.skill === 'vocabulary' ? 'Vocabulary' : 'Grammar'}</p>
@@ -1275,7 +1319,7 @@ function LevelTestScreen({ lang, user, uid, isAdmin, updateProfile, pushToast, o
       <div className="grammar quiz lt">
         <div className="quiz-result pass">
           <span className="lt-level">{result.level}</span>
-          <h2 className="quiz-result-title">{window.LW_CEFR_NAMES[result.level]}</h2>
+          <h2 className="quiz-result-title">{LW_CEFR_NAMES[result.level]}</h2>
           <p className="quiz-result-sub">Your {info.name} level. You answered {result.correct} of {result.total} questions correctly.</p>
           <div className="lt-bars">
             {result.byLevel.map((b) => (
@@ -1311,7 +1355,7 @@ function LevelTestScreen({ lang, user, uid, isAdmin, updateProfile, pushToast, o
       <section className="ls-cta lt-intro">
         <span className="ls-cta-icon"><Ic.ListCheck width="24" height="24" /></span>
         <h1 className="ls-cta-title">{info.name} level test</h1>
-        <p className="ls-cta-sub">{window.LW_LEVEL_TEST_LEN} questions · about 8 minutes. The questions get harder or easier as you answer.
+        <p className="ls-cta-sub">{LW_LEVEL_TEST_LEN} questions · about 8 minutes. The questions get harder or easier as you answer.
           No hints and no answers during the test — tap “I don't know” instead of guessing.</p>
         {last && <p className="ls-cta-note">Last test: {last.level} ({last.correct}/{last.total}) · {new Date(last.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</p>}
         {bank === null ? <span className="spinner" aria-hidden="true" />
@@ -1328,18 +1372,18 @@ function LevelTestScreen({ lang, user, uid, isAdmin, updateProfile, pushToast, o
 const lwEmptyLevelQuestion = (level) => ({ level: level || 'B1', skill: 'grammar', q: '', options: ['', '', '', ''], answer: 0, why: '' });
 
 function LevelQuestionsAdmin({ bank, lang, uid, pushToast, onBack }) {
-  const info = window.lwLangInfo(lang);
+  const info = lwLangInfo(lang);
   const [level, setLevel] = useState('all');
   const [form, setForm] = useState(null); // question being edited or created
   const [confirm, setConfirm] = useState(null);
-  const counts = Object.fromEntries(window.LW_CEFR_ALL.map((lv) => [lv, bank.filter((q) => q.level === lv).length]));
+  const counts = Object.fromEntries(LW_CEFR_ALL.map((lv) => [lv, bank.filter((q) => q.level === lv).length]));
   const list = bank.filter((q) => level === 'all' || q.level === level)
-    .sort((a, b) => window.lwLevelIndex(a.level) - window.lwLevelIndex(b.level) || (a.createdAt || 0) - (b.createdAt || 0));
+    .sort((a, b) => lwLevelIndex(a.level) - lwLevelIndex(b.level) || (a.createdAt || 0) - (b.createdAt || 0));
   const fail = (title) => (e) => pushToast({ kind: 'error', title, msg: (e && e.message) || String(e) });
   const save = (q) => {
     const now = Date.now();
-    window.lwSetDoc(window.LW_COLLECTIONS.levelQuestions, {
-      ...q, id: q.id || window.lwUid() + window.lwUid(), lang, userId: q.userId || uid, shared: true,
+    lwSetDoc(LW_COLLECTIONS.levelQuestions, {
+      ...q, id: q.id || lwUid() + lwUid(), lang, userId: q.userId || uid, shared: true,
       createdAt: q.createdAt || now, updatedAt: now,
     }).catch(fail('Could not save the question'));
     setForm(null);
@@ -1354,13 +1398,13 @@ function LevelQuestionsAdmin({ bank, lang, uid, pushToast, onBack }) {
       <div className="lib-intro">
         <div>
           <h1 className="lib-title">Test questions</h1>
-          <p className="lib-sub">{info.name} · {bank.length} questions · the test needs at least {window.LW_LEVEL_TEST_MIN_BANK}, about 10 per level is best</p>
+          <p className="lib-sub">{info.name} · {bank.length} questions · the test needs at least {LW_LEVEL_TEST_MIN_BANK}, about 10 per level is best</p>
         </div>
         <button className="btn btn-primary" onClick={() => setForm(lwEmptyLevelQuestion(level === 'all' ? 'B1' : level))}><Ic.Plus /> New question</button>
       </div>
       <div className="status-chips">
         <button type="button" className={'chip' + (level === 'all' ? ' chip-on' : '')} onClick={() => setLevel('all')}>All <span className="chip-count">{bank.length}</span></button>
-        {window.LW_CEFR_ALL.map((lv) => (
+        {LW_CEFR_ALL.map((lv) => (
           <button key={lv} type="button" className={'chip' + (level === lv ? ' chip-on' : '')} onClick={() => setLevel(lv)}>
             {lv} <span className="chip-count">{counts[lv]}</span>
           </button>
@@ -1401,7 +1445,7 @@ function LevelQuestionsAdmin({ bank, lang, uid, pushToast, onBack }) {
             <button className="btn btn-danger" onClick={() => {
               const q = confirm;
               setConfirm(null);
-              window.lwDeleteDoc(window.LW_COLLECTIONS.levelQuestions, q.id).catch(fail('Could not delete the question'));
+              lwDeleteDoc(LW_COLLECTIONS.levelQuestions, q.id).catch(fail('Could not delete the question'));
             }}>Delete</button>
           </>}>
           <p className="confirm-text">Delete <strong>{confirm.q}</strong>? This can't be undone.</p>
@@ -1431,7 +1475,7 @@ function LevelQuestionForm({ initial, onSave, onCancel }) {
         <label className="field">
           <span className="field-label">Level</span>
           <select className="input" value={d.level} onChange={(e) => set('level', e.target.value)}>
-            {window.LW_CEFR_ALL.map((lv) => <option key={lv} value={lv}>{lv} · {window.LW_CEFR_NAMES[lv]}</option>)}
+            {LW_CEFR_ALL.map((lv) => <option key={lv} value={lv}>{lv} · {LW_CEFR_NAMES[lv]}</option>)}
           </select>
         </label>
         <label className="field">
@@ -1537,9 +1581,9 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
   const levelStart = 50 * (stats.level - 1) ** 2;
   const levelEnd = 50 * stats.level ** 2;
   const levelPct = Math.round(((stats.xp - levelStart) / (levelEnd - levelStart)) * 100);
-  const langInfo = window.lwLangInfo(lang);
-  const cefrKey = window.lwCefrField(lang);
-  const cefrTargetKey = window.lwCefrField(lang, true);
+  const langInfo = lwLangInfo(lang);
+  const cefrKey = lwCefrField(lang);
+  const cefrTargetKey = lwCefrField(lang, true);
   const otherLangs = LW_LANGUAGES.filter((l) => !langs.includes(l.code));
   const since = user.createdAt && user.createdAt.toDate
     ? user.createdAt.toDate().toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : null;
@@ -1553,7 +1597,7 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
     if (!file) return;
     setAvatarBusy(true);
     try {
-      await updateProfile({ avatar: await window.lwFileToPhoto(file, 256, true) });
+      await updateProfile({ avatar: await lwFileToPhoto(file, 256, true) });
     } catch (err) {
       pushToast({ kind: 'error', title: 'Could not use this image', msg: 'Try a JPEG or PNG photo.' });
     }
@@ -1563,7 +1607,7 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
   const googleAction = async (link) => {
     setGoogleBusy(true);
     try {
-      if (link) await window.lwLinkGoogle(); else await window.lwUnlinkGoogle();
+      if (link) await lwLinkGoogle(); else await lwUnlinkGoogle();
       refreshAuthInfo();
       pushToast({ kind: 'success', title: link ? 'Google account linked' : 'Google account unlinked',
         msg: link ? 'You can now sign in with Google.' : 'Sign in with your password from now on.' });
@@ -1611,7 +1655,7 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
         <div className="tile"><span className="tile-icon tile-icon-gold"><Ic.Flame width="18" height="18" /></span>
           <span className="tile-num">{stats.streak} {stats.streak === 1 ? 'day' : 'days'}</span><span className="tile-label">Current streak</span></div>
         <div className="tile"><span className="tile-icon tile-icon-teal"><Ic.Clock width="18" height="18" /></span>
-          <span className="tile-num">{window.lwFormatDuration(stats.totalMs)}</span><span className="tile-label">Practice time</span></div>
+          <span className="tile-num">{lwFormatDuration(stats.totalMs)}</span><span className="tile-label">Practice time</span></div>
       </section>
 
       {/* level progress */}
@@ -1666,7 +1710,7 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
         <h2 className="dash-title">{langInfo.name} level</h2>
         <p className="dash-sub">Your level sets the default difficulty of reading texts.</p>
         {(() => {
-          const lt = user[window.lwLangField('levelTest', lang)];
+          const lt = user[lwLangField('levelTest', lang)];
           return (
             <div className="lt-link">
               <span>{lt ? 'Last test: ' + lt.level + ' · ' + new Date(lt.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : 'Not sure?'}</span>
@@ -1677,7 +1721,7 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
         <div className="cefr-row">
           <span className="cefr-label">I'm at</span>
           <div className="cefr-pills">
-            {window.LW_CEFR_ALL.map((lv) => (
+            {LW_CEFR_ALL.map((lv) => (
               <button key={lv} type="button" className={'cefr-pill' + (user[cefrKey] === lv ? ' on' : '')}
                 onClick={() => updateProfile({ [cefrKey]: lv })}>{lv}</button>
             ))}
@@ -1686,7 +1730,7 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
         <div className="cefr-row">
           <span className="cefr-label">Goal</span>
           <div className="cefr-pills">
-            {window.LW_CEFR_ALL.map((lv) => (
+            {LW_CEFR_ALL.map((lv) => (
               <button key={lv} type="button" className={'cefr-pill' + (user[cefrTargetKey] === lv ? ' on' : '')}
                 onClick={() => updateProfile({ [cefrTargetKey]: lv })}>{lv}</button>
             ))}
@@ -1699,7 +1743,7 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
       {/* nudge */}
       <section className="cta-card">
         <h2 className="cta-title">{left > 0 ? left + (left === 1 ? ' answer' : ' answers') + ' to today\'s goal' : 'Daily goal reached 🎉'}</h2>
-        <p className="cta-sub">{left > 0 ? 'Reach it to earn +' + window.LW_XP_GOAL_BONUS + ' XP and keep your streak going.' : 'Come back tomorrow to keep your ' + stats.streak + '-day streak.'}</p>
+        <p className="cta-sub">{left > 0 ? 'Reach it to earn +' + LW_XP_GOAL_BONUS + ' XP and keep your streak going.' : 'Come back tomorrow to keep your ' + stats.streak + '-day streak.'}</p>
         <button type="button" className="btn btn-primary lg" onClick={goLearn}><Ic.Learn width="18" height="18" /> {left > 0 ? 'Start learning' : 'Keep practicing'}</button>
       </section>
 
@@ -1708,9 +1752,9 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
         <div className="setting-row">
           <span className="setting-label"><Ic.Flag /> Daily goal</span>
           <div className="seg">
-            {window.LW_GOAL_OPTIONS.map((g) => (
+            {LW_GOAL_OPTIONS.map((g) => (
               <button key={g} type="button" className={'seg-btn' + (stats.goal === g ? ' on' : '')}
-                onClick={() => updateProfile({ [window.lwLangField('dailyGoal', lang)]: g })}>{g}</button>
+                onClick={() => updateProfile({ [lwLangField('dailyGoal', lang)]: g })}>{g}</button>
             ))}
           </div>
         </div>
@@ -1727,7 +1771,7 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
             <Ic.Bulb /> Target memory
           </span>
           <div className="seg">
-            {window.LW_RETENTION_OPTIONS.map((r) => (
+            {LW_RETENTION_OPTIONS.map((r) => (
               <button key={r} type="button" className={'seg-btn' + (srs.retention === r ? ' on' : '')}
                 onClick={() => updateProfile({ srs: { ...srs, retention: r } })}>{Math.round(r * 100)}%</button>
             ))}
@@ -1736,7 +1780,7 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
         <div className="setting-row setting-row-wrap">
           <span className="setting-label"><Ic.Repeat /> Review session</span>
           <div className="seg">
-            {window.LW_SESSION_OPTIONS.map((n) => (
+            {LW_SESSION_OPTIONS.map((n) => (
               <button key={n} type="button" className={'seg-btn' + (srs.session === n ? ' on' : '')}
                 onClick={() => updateProfile({ srs: { ...srs, session: n } })}>{n || 'All'}</button>
             ))}
@@ -1747,7 +1791,7 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
             <Ic.Shuffle /> Other groups in Focus
           </span>
           <div className="seg">
-            {window.LW_BACKGROUND_OPTIONS.map((b) => (
+            {LW_BACKGROUND_OPTIONS.map((b) => (
               <button key={b} type="button" className={'seg-btn' + (srs.background === b ? ' on' : '')}
                 onClick={() => updateProfile({ srs: { ...srs, background: b } })}>{b ? Math.round(b * 100) + '%' : 'Off'}</button>
             ))}
@@ -1758,7 +1802,7 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
           <span className="setting-label"><Ic.Book /> Language you learn</span>
           <div className="seg">
             {langs.map((code) => {
-              const l = window.lwLangInfo(code);
+              const l = lwLangInfo(code);
               return (
                 <button key={code} type="button" className={'seg-btn' + (lang === code ? ' on' : '')}
                   aria-pressed={lang === code} onClick={() => setLang(code)} title={l.name}>{l.flag} {l.name}</button>
@@ -1789,7 +1833,7 @@ function ProfileView({ user, stats, badges, updateProfile, authInfo, refreshAuth
         </button>
         <button type="button" className="setting-row" onClick={onGeminiKey}>
           <span className="setting-label"><Ic.Key /> Gemini API key</span>
-          <span className="setting-value">{window.lwHasGeminiKey() ? 'Connected' : 'Not set'} <Ic.ChevronRight width="16" height="16" /></span>
+          <span className="setting-value">{lwHasGeminiKey() ? 'Connected' : 'Not set'} <Ic.ChevronRight width="16" height="16" /></span>
         </button>
       </section>
 
@@ -1834,7 +1878,7 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, directio
   /* start or resume a study session for this pool of words */
   const poolKey = pool.map((w) => w.id).join(',');
   useEffect(() => {
-    const saved = window.lwLoad(LW_KEYS.studySession, null);
+    const saved = lwLoad(LW_KEYS.studySession, null);
     if (saved && saved.poolKey === poolKey) {
       setProgress(saved.progress || {});
       setQueue(saved.queue || []);
@@ -1852,7 +1896,7 @@ function StudyView({ groups, words, selected, groupById, onStatsChange, directio
   /* persist session progress so it survives reloads */
   useEffect(() => {
     if (!pool.length) return;
-    window.lwSave(LW_KEYS.studySession, { poolKey, queue, current, progress });
+    lwSave(LW_KEYS.studySession, { poolKey, queue, current, progress });
   }, [poolKey, pool.length, queue, current, progress]);
 
   useEffect(() => { setFlipped(false); }, [direction]);
@@ -2048,7 +2092,7 @@ function ReviewView({ words, groupById, direction, progress, recordAnswer, now, 
             <p className="empty-sub">
               {done > 0 ? done + ' reviewed this session. ' : ''}
               {otherDue > 0 ? otherDue + (otherDue === 1 ? ' word is' : ' words are') + ' due in other groups. '
-                : nextDue ? 'Next review in ' + window.lwFormatInterval(nextDue - now) + '.' : ''}
+                : nextDue ? 'Next review in ' + lwFormatInterval(nextDue - now) + '.' : ''}
             </p>
             {otherDue > 0 ? (
               <button className="btn btn-primary" onClick={showAll}><Ic.Repeat /> Review all groups</button>
@@ -2224,7 +2268,7 @@ function ChoiceView({ words, selected, groupById, direction, progress, recordAns
           <p className="empty-title">{answeredCount > 0 ? 'Round complete!' : 'All caught up!'}</p>
           <p className="empty-sub">
             {answeredCount > 0 ? correctCount + ' / ' + answeredCount + ' correct. ' : ''}
-            {dueNow === 0 && nextDue ? 'Next word due in ' + window.lwFormatInterval(nextDue - now) + '.' : ''}
+            {dueNow === 0 && nextDue ? 'Next word due in ' + lwFormatInterval(nextDue - now) + '.' : ''}
           </p>
           {dueNow > 0 ? (
             <button className="btn btn-primary" onClick={() => begin(false)}><Ic.Shuffle /> Start over</button>
@@ -2260,7 +2304,7 @@ function FillView({ words, selected, groupById, progress: wordProgress, recordAn
   const pool = useMemo(
     () => words.filter((w) => selected.includes(w.groupId)
       && w.example && w.example.trim()
-      && window.lwBlankSentence(w.example, w.word)),
+      && lwBlankSentence(w.example, w.word)),
     [words, selected]
   );
 
@@ -2350,7 +2394,7 @@ function FillView({ words, selected, groupById, progress: wordProgress, recordAn
 
   const entry = current ? words.find((w) => w.id === current) : null;
   const group = entry ? groupById[entry.groupId] : null;
-  const blank = entry ? window.lwBlankSentence(entry.example, entry.word) : null;
+  const blank = entry ? lwBlankSentence(entry.example, entry.word) : null;
   const allDone = pool.length > 0 && !entry;
   const answered = Object.keys(progress).length;
 
@@ -2379,7 +2423,7 @@ function FillView({ words, selected, groupById, progress: wordProgress, recordAn
             <p className="empty-title">{answered > 0 ? 'All sentences done!' : 'All caught up!'}</p>
             <p className="empty-sub">
               {answered > 0 ? knownCount + ' / ' + roundSize + ' known. ' : ''}
-              {dueNow === 0 && nextDue ? 'Next word due in ' + window.lwFormatInterval(nextDue - now) + '.' : ''}
+              {dueNow === 0 && nextDue ? 'Next word due in ' + lwFormatInterval(nextDue - now) + '.' : ''}
             </p>
             {dueNow > 0 ? (
               <button className="btn btn-primary" onClick={() => begin(false)}><Ic.Shuffle /> Start over</button>
@@ -2412,7 +2456,7 @@ function FillView({ words, selected, groupById, progress: wordProgress, recordAn
 
 /* split the highlight phrase into meaningful sub-words (drops filler like "on") */
 function readingPhraseTokens(highlight) {
-  return String(highlight || '').match(new RegExp('[' + window.LW_LETTERS + '0-9’\']+', 'g')) || [];
+  return String(highlight || '').match(new RegExp('[' + LW_LETTERS + '0-9’\']+', 'g')) || [];
 }
 
 /* render a sentence, wrapping tokens that match the active highlighted word/phrase in <mark>.
@@ -2423,7 +2467,7 @@ function ReadingSentenceText({ text, highlight }) {
   if (target.length === 0) return text;
 
   /* split keeping delimiters so we can re-join verbatim */
-  const parts = String(text).split(new RegExp('([' + window.LW_LETTERS + '0-9’\']+)'));
+  const parts = String(text).split(new RegExp('([' + LW_LETTERS + '0-9’\']+)'));
   /* map word-part indices (odd positions) to their token order */
   const wordIdx = [];
   for (let i = 1; i < parts.length; i += 2) wordIdx.push(i);
@@ -2464,7 +2508,7 @@ function ReadingSentenceText({ text, highlight }) {
 
 function ReadingView({ groups, words, countByGroup, reading, setReading, startGenerate, defaultLevel, wordIndex, progress, now, addWord, onBack, goLibrary }) {
   const leafGroups = useMemo(
-    () => (window.lwLeafGroups ? window.lwLeafGroups(groups) : groups).filter((g) => countByGroup[g.id] > 0),
+    () => (lwLeafGroups ? lwLeafGroups(groups) : groups).filter((g) => countByGroup[g.id] > 0),
     [groups, countByGroup]
   );
 
@@ -2551,7 +2595,7 @@ function ReadingView({ groups, words, countByGroup, reading, setReading, startGe
 
   const generate = () => {
     if (!activeGroup) return;
-    if (!window.lwHasGeminiKey()) { setKeyModal(true); return; }
+    if (!lwHasGeminiKey()) { setKeyModal(true); return; }
     runGenerate();
   };
 
@@ -2786,24 +2830,24 @@ function lwHash(str) {
   return (h >>> 0).toString(36);
 }
 
-function lwReadTrCache() { return window.lwLoad(LW_KEYS.trCache, null) || {}; }
+function lwReadTrCache() { return lwLoad(LW_KEYS.trCache, null) || {}; }
 function lwWriteTrCache(key, value) {
   const c = lwReadTrCache();
   delete c[key];
   c[key] = value; // re-insert = newest
   const keys = Object.keys(c);
   keys.slice(0, Math.max(0, keys.length - LW_TR_CACHE_MAX)).forEach((k) => { delete c[k]; });
-  window.lwSave(LW_KEYS.trCache, c);
+  lwSave(LW_KEYS.trCache, c);
 }
 
 /* A sentence whose words can be tapped; words already in the user's cards are
    underlined in their status colour. Separators stay plain text. */
 function TapText({ text, wordIndex, progress, now, onTap, activeToken }) {
-  const parts = window.lwTokenize(text);
+  const parts = lwTokenize(text);
   return parts.map((part, i) => {
     if (i % 2 === 0) return part;
-    const own = window.lwMatchOwnWord(part, wordIndex);
-    const status = own ? window.lwWordStatus(progress[own.id], now) : null;
+    const own = lwMatchOwnWord(part, wordIndex);
+    const status = own ? lwWordStatus(progress[own.id], now) : null;
     return (
       <span key={i} role="button" tabIndex={0}
         className={'tw' + (own ? ' tw-known tw-' + status : '') + (activeToken === part ? ' tw-active' : '')}
@@ -2818,7 +2862,7 @@ function TapText({ text, wordIndex, progress, now, onTap, activeToken }) {
 /* Bottom sheet for a tapped word: the user's own card if they have it (instant),
    otherwise a Gemini lookup in the context of the sentence, with "+ Add to cards". */
 function WordSheet({ token, sentence, sentenceTr, wordIndex, progress, now, groups, addWord, onClose }) {
-  const own = window.lwMatchOwnWord(token, wordIndex);
+  const own = lwMatchOwnWord(token, wordIndex);
   const cacheKey = token.toLowerCase() + '|' + sentence;
   const [look, setLook] = useState(() => (LW_LOOKUP_CACHE.has(cacheKey)
     ? { status: 'done', data: LW_LOOKUP_CACHE.get(cacheKey) } : { status: own ? 'own' : 'idle', data: null }));
@@ -2826,25 +2870,25 @@ function WordSheet({ token, sentence, sentenceTr, wordIndex, progress, now, grou
   const [manual, setManual] = useState(false);
   const [added, setAdded] = useState(null);
   const [busy, setBusy] = useState(false);
-  const leafGroups = window.lwLeafGroups(groups);
+  const leafGroups = lwLeafGroups(groups);
   const readingGroup = groups.find((g) => g.name === LW_READING_GROUP_NAME && leafGroups.includes(g));
   const [groupId, setGroupId] = useState(() => {
-    const saved = window.lwLoad(LW_KEYS.readerGroup, LW_READING_GROUP);
+    const saved = lwLoad(LW_KEYS.readerGroup, LW_READING_GROUP);
     return saved === LW_READING_GROUP || leafGroups.some((g) => g.id === saved) ? saved : LW_READING_GROUP;
   });
 
   const lookup = () => {
     if (own) return;
-    if (!window.lwHasGeminiKey()) { setLook({ status: 'no-key', data: null }); return; }
+    if (!lwHasGeminiKey()) { setLook({ status: 'no-key', data: null }); return; }
     setLook({ status: 'loading', data: null });
-    window.lwAiLookupWord(token, sentence)
+    lwAiLookupWord(token, sentence)
       .then((data) => { LW_LOOKUP_CACHE.set(cacheKey, data); setLook({ status: 'done', data }); })
       .catch((e) => setLook({ status: (e && e.code) || 'error', data: null }));
   };
   useEffect(() => { if (look.status === 'idle') lookup(); /* eslint-disable-next-line */ }, []);
 
   const d = look.data;
-  const chooseGroup = (id) => { setGroupId(id); window.lwSave(LW_KEYS.readerGroup, id); };
+  const chooseGroup = (id) => { setGroupId(id); lwSave(LW_KEYS.readerGroup, id); };
   const add = async () => {
     if (!d || busy) return;
     setBusy(true);
@@ -2862,7 +2906,7 @@ function WordSheet({ token, sentence, sentenceTr, wordIndex, progress, now, grou
   if (manual) {
     return (
       <Modal title="New word" onClose={onClose}>
-        <WordForm initial={{ id: window.lwUid(), word: token.toLowerCase(), example: sentence, exampleTr: ruSentence || '' }} groups={groups}
+        <WordForm initial={{ id: lwUid(), word: token.toLowerCase(), example: sentence, exampleTr: ruSentence || '' }} groups={groups}
           onSave={(w) => { addWord(w, w.groupId).then(onClose, () => setManual(false)); }} onCancel={onClose} />
       </Modal>
     );
@@ -2876,7 +2920,7 @@ function WordSheet({ token, sentence, sentenceTr, wordIndex, progress, now, grou
           <span className="wsheet-meta">
             {own ? [own.ipa, own.pos].filter(Boolean).join(' · ') : d ? [d.ipa, d.pos].filter(Boolean).join(' · ') : ''}
           </span>
-          {own && <StatusBadge status={window.lwWordStatus(progress[own.id], now)} />}
+          {own && <StatusBadge status={lwWordStatus(progress[own.id], now)} />}
         </div>
 
         {own ? (
@@ -2932,7 +2976,7 @@ function WordSheet({ token, sentence, sentenceTr, wordIndex, progress, now, grou
 /* cover placeholder: gradient by level + the title's initials */
 function TextCover({ text }) {
   const band = (text.level || 'B')[0];
-  const initials = (text.title || '?').split(/\s+/).filter((w) => new RegExp('[' + window.LW_LETTERS + ']').test(w)).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+  const initials = (text.title || '?').split(/\s+/).filter((w) => new RegExp('[' + LW_LETTERS + ']').test(w)).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
   return <span className={'tcover tcover-' + band}>{initials}</span>;
 }
 
@@ -3050,9 +3094,9 @@ function AddTextModal({ isAdmin, onSave, onClose }) {
   const fileRef = useRef(null);
 
   const isGutenberg = /\*\*\*\s*START OF (THE|THIS) PROJECT GUTENBERG/i.test(raw);
-  const clean = useMemo(() => (isGutenberg ? window.lwCleanGutenberg(raw) : raw.trim()), [raw, isGutenberg]);
-  const chapters = useMemo(() => (clean ? window.lwSplitChapters(clean, { dropFrontMatter: isGutenberg }) : []), [clean, isGutenberg]);
-  const wordCount = chapters.reduce((n, c) => n + c.paragraphs.reduce((m, p) => m + window.lwWordCount(p), 0), 0);
+  const clean = useMemo(() => (isGutenberg ? lwCleanGutenberg(raw) : raw.trim()), [raw, isGutenberg]);
+  const chapters = useMemo(() => (clean ? lwSplitChapters(clean, { dropFrontMatter: isGutenberg }) : []), [clean, isGutenberg]);
+  const wordCount = chapters.reduce((n, c) => n + c.paragraphs.reduce((m, p) => m + lwWordCount(p), 0), 0);
 
   const onFile = (e) => {
     const file = e.target.files && e.target.files[0];
@@ -3119,7 +3163,7 @@ function AddTextModal({ isAdmin, onSave, onClose }) {
         <div className="field">
           <span className="field-label">Level</span>
           <div className="cefr-pills">
-            {window.LW_CEFR_ALL.map((lv) => (
+            {LW_CEFR_ALL.map((lv) => (
               <button key={lv} type="button" className={'cefr-pill' + (level === lv ? ' on' : '')} onClick={() => setLevel(lv)}>{lv}</button>
             ))}
           </div>
@@ -3159,16 +3203,16 @@ function ReaderView({ text, prog, uid, words, wordIndex, progress, now, groups, 
     setChapter(cache.current[at.chapter] || null);
     setLoadError(false);
     if (cache.current[at.chapter]) return;
-    window.lwGetChapter(text.id, at.chapter)
+    lwGetChapter(text.id, at.chapter)
       .then((c) => { if (!alive) return; cache.current[at.chapter] = c; setChapter(c); if (!c) setLoadError(true); })
       .catch(() => { if (alive) setLoadError(true); });
     return () => { alive = false; };
   }, [text.id, at.chapter]);
 
-  const pages = useMemo(() => (chapter ? window.lwPaginate(chapter.paragraphs) : []), [chapter]);
+  const pages = useMemo(() => (chapter ? lwPaginate(chapter.paragraphs) : []), [chapter]);
   const page = Math.min(at.page, Math.max(0, pages.length - 1));
   const paragraphs = pages[page] || [];
-  const sentences = useMemo(() => paragraphs.map((p) => window.lwSplitSentences(p)), [paragraphs]);
+  const sentences = useMemo(() => paragraphs.map((p) => lwSplitSentences(p)), [paragraphs]);
   const paraKey = (p) => text.id + '|' + at.chapter + '|' + lwHash(p);
 
   /* remember where we are (debounced); pct is over the whole text by word count */
@@ -3178,7 +3222,7 @@ function ReaderView({ text, prog, uid, words, wordIndex, progress, now, groups, 
       const before = chapters.slice(0, at.chapter).reduce((n, c) => n + (c.words || 0), 0);
       const inChapter = ((chapters[at.chapter] && chapters[at.chapter].words) || 0) * ((page + 1) / pages.length);
       const pct = Math.min(100, Math.round(((before + inChapter) / Math.max(1, text.wordCount || 1)) * 100));
-      window.lwSaveReadingProgress(uid, text.id, { chapter: at.chapter, page, pct }).catch((e) => console.error('reading progress', e));
+      lwSaveReadingProgress(uid, text.id, { chapter: at.chapter, page, pct }).catch((e) => console.error('reading progress', e));
     }, 800);
     return () => clearTimeout(t);
     // eslint-disable-next-line
@@ -3216,7 +3260,7 @@ function ReaderView({ text, prog, uid, words, wordIndex, progress, now, groups, 
     if (speaking && speaking.para === pi) { setSpeaking(null); return; }
     const list = sentences[pi];
     list.forEach((s, si) => {
-      const u = window.lwUtterance(s, 0.9); // chosen voice, a bit slower for reading along
+      const u = lwUtterance(s, 0.9); // chosen voice, a bit slower for reading along
       u.onstart = () => setSpeaking({ para: pi, sent: si });
       if (si === list.length - 1) u.onend = () => setSpeaking((cur) => (cur && cur.para === pi && cur.sent === si ? null : cur));
       window.speechSynthesis.speak(u);
@@ -3229,9 +3273,9 @@ function ReaderView({ text, prog, uid, words, wordIndex, progress, now, groups, 
     if (cur && cur.status === 'done') { setTr((t) => ({ ...t, [key]: { ...cur, open: !cur.open } })); return; }
     const cached = lwReadTrCache()[key];
     if (cached) { setTr((t) => ({ ...t, [key]: { status: 'done', ru: cached, open: true } })); return; }
-    if (!window.lwHasGeminiKey()) { setTr((t) => ({ ...t, [key]: { status: 'no-key', open: true } })); return; }
+    if (!lwHasGeminiKey()) { setTr((t) => ({ ...t, [key]: { status: 'no-key', open: true } })); return; }
     setTr((t) => ({ ...t, [key]: { status: 'loading', open: true } }));
-    window.lwAiTranslateSentences(sentences[pi])
+    lwAiTranslateSentences(sentences[pi])
       .then((ru) => { lwWriteTrCache(key, ru); setTr((t) => ({ ...t, [key]: { status: 'done', ru, open: true } })); })
       .catch((e) => setTr((t) => ({ ...t, [key]: { status: (e && e.code) || 'error', open: true } })));
   };
@@ -3245,8 +3289,8 @@ function ReaderView({ text, prog, uid, words, wordIndex, progress, now, groups, 
   /* how many of the user's words appear on this page */
   const known = useMemo(() => {
     const ids = new Set();
-    paragraphs.forEach((p) => window.lwTokenize(p).forEach((tok, i) => {
-      if (i % 2) { const w = window.lwMatchOwnWord(tok, wordIndex); if (w) ids.add(w.id); }
+    paragraphs.forEach((p) => lwTokenize(p).forEach((tok, i) => {
+      if (i % 2) { const w = lwMatchOwnWord(tok, wordIndex); if (w) ids.add(w.id); }
     }));
     return ids.size;
   }, [paragraphs, wordIndex]);
@@ -3256,10 +3300,10 @@ function ReaderView({ text, prog, uid, words, wordIndex, progress, now, groups, 
   const practiceScores = prog && prog.practice && prog.practice[at.chapter];
   /* an exercise answer: to the user's card for that word, else activity only */
   const practiceAnswer = (target, ok) => {
-    const card = target ? window.lwFindCardForClip({ word: target }, words) : null;
+    const card = target ? lwFindCardForClip({ word: target }, words) : null;
     recordAnswer(card ? card.id : null, ok, 'reading');
   };
-  const savePractice = (kind, pct) => window.lwSaveReadingProgress(uid, text.id, { practice: { [at.chapter]: { [kind]: pct } } })
+  const savePractice = (kind, pct) => lwSaveReadingProgress(uid, text.id, { practice: { [at.chapter]: { [kind]: pct } } })
     .catch((e) => console.error('practice score', e));
   return (
     <div className="reader">
@@ -3326,7 +3370,7 @@ function ReaderView({ text, prog, uid, words, wordIndex, progress, now, groups, 
                     <button type="button" className="rtool" onClick={() => translate(pi)} aria-pressed={!!(t && t.open)}>
                       {t && t.status === 'loading' ? <span className="spinner" /> : <Ic.Translate width="15" height="15" />} Translate
                     </button>
-                    {window.lwCanRecognize() && (
+                    {lwCanRecognize() && (
                       <button type="button" className="rtool" onClick={() => setPracticePara((cur) => (cur === pi ? -1 : pi))} aria-pressed={practicePara === pi}>
                         <Ic.Mic width="15" height="15" /> Read aloud
                       </button>
@@ -3448,7 +3492,7 @@ function PracticeDone({ right, total, onAgain, onBack }) {
 
 /* sentence with its [[gap]] shown as a blank, or filled in after the answer */
 function GapSentence({ text, shown, ok }) {
-  const q = window.lwSplitQuote(text);
+  const q = lwSplitQuote(text);
   return (
     <>{q.before}{shown
       ? <mark className={'cp-gap-filled' + (ok ? ' ok' : ' bad')}>{q.target}</mark>
@@ -3517,7 +3561,7 @@ function PracticeFill({ items, onAnswer, onFinish }) {
   const inputRef = useRef(null);
   useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, [idx]);
   const task = tasks[idx];
-  const target = window.lwSplitQuote(task.s).target;
+  const target = lwSplitQuote(task.s).target;
   const settle = (ok, extra) => {
     setState({ ok, ...extra });
     setResults((r) => [...r, ok]);
@@ -3525,10 +3569,10 @@ function PracticeFill({ items, onAnswer, onFinish }) {
   };
   const check = () => {
     if (state || !typed.trim()) return;
-    const ok = window.lwCheckFill(typed, [target]);
+    const ok = lwCheckFill(typed, [target]);
     /* the right word in another form (hire for hired) is still a miss, but say so */
-    const form = !ok && window.lwSpeechTokens(typed).length === window.lwSpeechTokens(target).length
-      && window.lwSpeechTokens(typed).every((t, i) => window.readingTokensMatch(t, window.lwSpeechTokens(target)[i]));
+    const form = !ok && lwSpeechTokens(typed).length === lwSpeechTokens(target).length
+      && lwSpeechTokens(typed).every((t, i) => readingTokensMatch(t, lwSpeechTokens(target)[i]));
     settle(ok, { form });
   };
   const next = () => {
@@ -3650,7 +3694,7 @@ function PracticeBank({ bank, onAnswer, onFinish }) {
 function PracticeDialogue({ dialogue, onAnswer, onFinish }) {
   const lines = dialogue.lines || [];
   const you = dialogue.you;
-  const canSpeak = window.lwCanRecognize();
+  const canSpeak = lwCanRecognize();
   const [idx, setIdx] = useState(0);
   const [done, setDone] = useState({}); // line index -> { ok, score, heard, typed, shown, tokensOk }
   const [listening, setListening] = useState(false);
@@ -3664,27 +3708,27 @@ function PracticeDialogue({ dialogue, onAnswer, onFinish }) {
   const line = lines[idx];
   const isMine = line && line.who === you;
 
-  const say = (text) => { if ('speechSynthesis' in window) { window.speechSynthesis.cancel(); window.speechSynthesis.speak(window.lwUtterance(window.lwUnmark(text), 1)); } };
+  const say = (text) => { if ('speechSynthesis' in window) { window.speechSynthesis.cancel(); window.speechSynthesis.speak(lwUtterance(lwUnmark(text), 1)); } };
   useEffect(() => { if (line && !isMine) say(line.text); }, [idx]); // eslint-disable-line
   useEffect(() => { if (endRef.current) endRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [idx, done]);
   useEffect(() => () => { if (recRef.current) recRef.current.abort(); if ('speechSynthesis' in window) window.speechSynthesis.cancel(); }, []);
 
   const settle = (res) => {
     setDone((d) => ({ ...d, [idx]: res }));
-    onAnswer(window.lwSplitQuote(line.text).target, res.ok);
+    onAnswer(lwSplitQuote(line.text).target, res.ok);
   };
   /* the gap is right when every one of its words was heard in place */
   const judge = (heard) => {
-    const q = window.lwSplitQuote(line.text);
-    const m = window.lwMatchSpoken(window.lwUnmark(line.text), heard);
-    const from = window.lwSpeechTokens(q.before).length;
-    const n = window.lwSpeechTokens(q.target).length;
+    const q = lwSplitQuote(line.text);
+    const m = lwMatchSpoken(lwUnmark(line.text), heard);
+    const from = lwSpeechTokens(q.before).length;
+    const n = lwSpeechTokens(q.target).length;
     return { ok: m.ok.slice(from, from + n).every(Boolean), score: m.score, heard, tokensOk: m.ok };
   };
   const listen = () => {
     setError('');
     setListening(true);
-    recRef.current = window.lwListenOnce({
+    recRef.current = lwListenOnce({
       onEnd: (alts) => {
         recRef.current = null;
         setListening(false);
@@ -3697,7 +3741,7 @@ function PracticeDialogue({ dialogue, onAnswer, onFinish }) {
   };
   const checkTyped = () => {
     if (!typed.trim()) return;
-    settle({ ok: window.lwCheckFill(typed, [window.lwSplitQuote(line.text).target]), typed });
+    settle({ ok: lwCheckFill(typed, [lwSplitQuote(line.text).target]), typed });
   };
   const next = () => {
     setTyped(''); setError('');
@@ -3708,11 +3752,11 @@ function PracticeDialogue({ dialogue, onAnswer, onFinish }) {
   /* the learner's line once answered: words heard in green, missed in red */
   const answeredLine = (l, r) => {
     if (!r.tokensOk) return <GapSentence text={l.text} shown ok={r.ok} />;
-    const words = window.lwUnmark(l.text).split(/(\s+)/);
+    const words = lwUnmark(l.text).split(/(\s+)/);
     let k = -1;
     return words.map((w, i) => {
-      if (/^\s+$/.test(w) || !window.lwSpeechTokens(w).length) return w;
-      k += window.lwSpeechTokens(w).length;
+      if (/^\s+$/.test(w) || !lwSpeechTokens(w).length) return w;
+      k += lwSpeechTokens(w).length;
       return <span key={i} className={r.tokensOk[k] ? 'pron-ok' : 'pron-miss'}>{w}</span>;
     });
   };
@@ -3736,7 +3780,7 @@ function PracticeDialogue({ dialogue, onAnswer, onFinish }) {
                 {l.tr && <p className="cp-tr">{l.tr}</p>}
                 {me && r && (
                   <p className={'cp-verdict' + (r.ok ? ' ok' : ' bad')}>
-                    {r.ok ? 'Correct' : 'The word is “' + window.lwSplitQuote(l.text).target + '”'}
+                    {r.ok ? 'Correct' : 'The word is “' + lwSplitQuote(l.text).target + '”'}
                     {r.score != null ? ' · ' + r.score + '% of the line heard' : ''}
                     {r.heard && !r.ok ? ' · heard: “' + r.heard + '”' : ''}
                   </p>
@@ -3803,7 +3847,7 @@ function ChapterPractice({ kind, ex, onAnswer, onSave, onBack }) {
 
 /* ---------------- Category view ---------------- */
 function CategoryView({ groups, selected, setSelected, countByGroup, goStudy, ctaLabel = 'Start studying' }) {
-  const leafGroups = (window.lwLeafGroups ? window.lwLeafGroups(groups) : groups)
+  const leafGroups = (lwLeafGroups ? lwLeafGroups(groups) : groups)
     .filter((g) => countByGroup[g.id] > 0);
   const toggle = (id) => {
     setSelected((sel) => sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]);
@@ -3846,14 +3890,14 @@ function AdminView({ currentUid }) {
 
   const loadUsers = useCallback(() => {
     setError('');
-    window.lwAdminFetchUsers()
+    lwAdminFetchUsers()
       .then(setUsers)
       .catch(() => setError('Could not load users.'));
   }, []);
 
   const loadAllData = useCallback(() => {
     setError('');
-    window.lwAdminFetchAllData()
+    lwAdminFetchAllData()
       .then(setAllData)
       .catch(() => setError('Could not load words and groups.'));
   }, []);
@@ -3864,7 +3908,7 @@ function AdminView({ currentUid }) {
   const changeRole = async (uid, role) => {
     setSavingId(uid);
     try {
-      await window.lwAdminSetRole(uid, role);
+      await lwAdminSetRole(uid, role);
       setUsers((list) => list.map((u) => (u.id === uid ? { ...u, role } : u)));
     } catch (e) {
       setError('Could not change the role.');
@@ -3945,25 +3989,25 @@ function AdminAllDataView({ data, onChanged }) {
   const ownerLabel = (item) => item.username || item.userId || '—';
 
   const saveWord = (w) => {
-    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId: wordModal.initial.userId, username: wordModal.initial.username, shared: wordModal.initial.shared,
-      lang: window.lwDocLang(groups.find((g) => g.id === w.groupId) || wordModal.initial) });
+    lwSetDoc(LW_COLLECTIONS.words, { ...w, userId: wordModal.initial.userId, username: wordModal.initial.username, shared: wordModal.initial.shared,
+      lang: lwDocLang(groups.find((g) => g.id === w.groupId) || wordModal.initial) });
     setWordModal(null);
     onChanged();
   };
   const saveGroup = (g) => {
-    window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, userId: groupModal.initial.userId, username: groupModal.initial.username, shared: groupModal.initial.shared,
-      lang: window.lwDocLang(groups.find((x) => x.id === (g.parentId || g.id)) || groupModal.initial) });
+    lwSetDoc(LW_COLLECTIONS.groups, { ...g, userId: groupModal.initial.userId, username: groupModal.initial.username, shared: groupModal.initial.shared,
+      lang: lwDocLang(groups.find((x) => x.id === (g.parentId || g.id)) || groupModal.initial) });
     setGroupModal(null);
     onChanged();
   };
   const doDelete = () => {
     if (!confirm) return;
-    if (confirm.kind === 'word') window.lwDeleteDoc(window.LW_COLLECTIONS.words, confirm.id);
+    if (confirm.kind === 'word') lwDeleteDoc(LW_COLLECTIONS.words, confirm.id);
     if (confirm.kind === 'group') {
       const subGroupIds = groups.filter((sg) => sg.parentId === confirm.id).map((sg) => sg.id);
       [confirm.id, ...subGroupIds].forEach((id) => {
-        window.lwDeleteDoc(window.LW_COLLECTIONS.groups, id);
-        window.lwDeleteWordsByGroup(id);
+        lwDeleteDoc(LW_COLLECTIONS.groups, id);
+        lwDeleteWordsByGroup(id);
       });
     }
     setConfirm(null);
@@ -3972,17 +4016,17 @@ function AdminAllDataView({ data, onChanged }) {
 
   /* admins see every language here: writes keep each doc's own (legacy docs: English) */
   const makeWordShared = (w) => {
-    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, shared: true, lang: window.lwDocLang(w) });
+    lwSetDoc(LW_COLLECTIONS.words, { ...w, shared: true, lang: lwDocLang(w) });
     onChanged();
   };
   const makeGroupShared = (g) => {
     const subGroupIds = groups.filter((sg) => sg.parentId === g.id).map((sg) => sg.id);
     [g, ...groups.filter((sg) => subGroupIds.includes(sg.id))].forEach((grp) => {
-      window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...grp, shared: true, lang: window.lwDocLang(grp) });
+      lwSetDoc(LW_COLLECTIONS.groups, { ...grp, shared: true, lang: lwDocLang(grp) });
     });
     [g.id, ...subGroupIds].forEach((groupId) => {
       (wordsByGroup[groupId] || []).forEach((w) => {
-        window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, shared: true, lang: window.lwDocLang(w) });
+        lwSetDoc(LW_COLLECTIONS.words, { ...w, shared: true, lang: lwDocLang(w) });
       });
     });
     onChanged();
@@ -4072,8 +4116,8 @@ function StatusBadge({ status }) {
 
 /* Mastery = the word's FSRS stability on a log scale, full at 30 days (lwWordMastery); new words are 0%. */
 function WordCard({ word, group, prog, now, canEdit, onEdit, onDelete, clip, onClip }) {
-  const status = window.lwWordStatus(prog, now);
-  const pct = Math.round(window.lwWordMastery(prog) * 100);
+  const status = lwWordStatus(prog, now);
+  const pct = Math.round(lwWordMastery(prog) * 100);
   return (
     <article className="wcard">
       <div className="wcard-top">
@@ -4166,7 +4210,7 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
   /* a card's clip (Learn → Video), for the ▶ on word cards */
   const clipByWord = useMemo(() => {
     const m = {};
-    (clips || []).forEach((c) => { const w = window.lwFindCardForClip(c, words); if (w && !m[w.id]) m[w.id] = c; });
+    (clips || []).forEach((c) => { const w = lwFindCardForClip(c, words); if (w && !m[w.id]) m[w.id] = c; });
     return m;
   }, [clips, words]);
   const [clipOpen, setClipOpen] = useState(null);
@@ -4178,10 +4222,10 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
   /* Words view filters; remembered on this device */
   const [lib, setLib] = useState(() => ({
     view: 'words', status: 'all', groupId: '', sort: 'recent', collocOwner: 'all', collocSort: 'az',
-    ...(window.lwLoad(LW_KEYS.library, null) || {}),
+    ...(lwLoad(LW_KEYS.library, null) || {}),
   }));
   const setLibField = (k, v) => { setLib((l) => ({ ...l, [k]: v })); setLimit(LW_LIB_PAGE); };
-  useEffect(() => { window.lwSave(LW_KEYS.library, lib); }, [lib]);
+  useEffect(() => { lwSave(LW_KEYS.library, lib); }, [lib]);
   const [limit, setLimit] = useState(LW_LIB_PAGE);
   const [practice, setPractice] = useState(null); // word being practised from the word of the day
   const [tagState, setTagState] = useState({ busy: false, done: 0, error: null });
@@ -4212,7 +4256,7 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
   const canEdit = (item) => item.userId === userId || isAdmin;
 
   /* ---- Words view: group + search + status filters, sort, paging ---- */
-  const statusOf = (w) => window.lwWordStatus(progress[w.id], now);
+  const statusOf = (w) => lwWordStatus(progress[w.id], now);
   const groupScope = lib.groupId ? [lib.groupId, ...subGroupsOf(lib.groupId).map((g) => g.id)] : null;
   const scoped = words.filter((w) => (!groupScope || groupScope.includes(w.groupId))
     && (!q || w.word.toLowerCase().includes(q) || (w.tr && w.tr.toLowerCase().includes(q)) || (w.pos && w.pos.includes(q))));
@@ -4221,7 +4265,7 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
   const dueKey = (w) => {
     const p = progress[w.id];
     if (!p) return now + 1e12; // new: after everything scheduled
-    if (p.due > now && window.lwWordStatus(p, now) === 'mastered') return now + 2e12; // mastered and not due: last
+    if (p.due > now && lwWordStatus(p, now) === 'mastered') return now + 2e12; // mastered and not due: last
     return p.due;
   };
   const filtered = scoped.filter((w) => lib.status === 'all' || statusOf(w) === lib.status).sort(
@@ -4232,13 +4276,13 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
   const filtersOn = lib.status !== 'all' || !!lib.groupId || !!q;
 
   /* word of the day: chosen once per day and remembered, so it doesn't change while you study */
-  const today = window.lwLocalDate(now);
+  const today = lwLocalDate(now);
   const wotd = useMemo(() => {
-    const saved = window.lwLoad(LW_KEYS.wotd, null);
+    const saved = lwLoad(LW_KEYS.wotd, null);
     const keep = saved && saved.date === today && words.find((w) => w.id === saved.wordId);
     if (keep) return keep;
-    const w = window.lwWordOfTheDay(words, progress, today, now);
-    if (w) window.lwSave(LW_KEYS.wotd, { date: today, wordId: w.id });
+    const w = lwWordOfTheDay(words, progress, today, now);
+    if (w) lwSave(LW_KEYS.wotd, { date: today, wordId: w.id });
     return w;
     // eslint-disable-next-line
   }, [words, today]);
@@ -4246,17 +4290,17 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
   /* tag parts of speech for words without one (only words this user may edit) */
   const untagged = words.filter((w) => !w.pos && canEdit(w));
   const tagPos = async () => {
-    if (!window.lwHasGeminiKey()) { setKeyModal(true); return; }
+    if (!lwHasGeminiKey()) { setKeyModal(true); return; }
     const todo = untagged.slice();
     setTagState({ busy: true, done: 0, error: null });
     try {
       for (let i = 0; i < todo.length; i += 50) {
         const batch = todo.slice(i, i + 50);
-        const tags = await window.lwAiTagPos(batch.map((w) => w.word));
+        const tags = await lwAiTagPos(batch.map((w) => w.word));
         const byWord = {};
         tags.forEach((t) => { byWord[t.word.toLowerCase()] = t.pos; });
         await Promise.all(batch.filter((w) => byWord[w.word.toLowerCase()])
-          .map((w) => window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, pos: byWord[w.word.toLowerCase()] })));
+          .map((w) => lwSetDoc(LW_COLLECTIONS.words, { ...w, pos: byWord[w.word.toLowerCase()] })));
         setTagState({ busy: true, done: Math.min(i + 50, todo.length), error: null });
       }
       setTagState({ busy: false, done: todo.length, error: null });
@@ -4272,14 +4316,14 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
     const shared = existing ? existing.shared : isAdmin;
     // legacy-документы могут не иметь userId/username — тогда назначаем владельцем
     // текущего пользователя, иначе слово выпадет из выборки where('userId','==',uid).
-    window.lwSetDoc(window.LW_COLLECTIONS.words, { ...w, userId: (existing && existing.userId) || userId, username: (existing && existing.username) || username, shared })
+    lwSetDoc(LW_COLLECTIONS.words, { ...w, userId: (existing && existing.userId) || userId, username: (existing && existing.username) || username, shared })
       .catch((e) => { console.error('saveWord failed', e); alert('Could not save the word: ' + (e && e.message || e)); });
     setWordModal(null);
   };
   const saveGroup = (g) => {
     const existing = groups.find((x) => x.id === g.id);
     const shared = existing ? existing.shared : isAdmin;
-    window.lwSetDoc(window.LW_COLLECTIONS.groups, { ...g, userId: (existing && existing.userId) || userId, username: (existing && existing.username) || username, shared })
+    lwSetDoc(LW_COLLECTIONS.groups, { ...g, userId: (existing && existing.userId) || userId, username: (existing && existing.username) || username, shared })
       .catch((e) => { console.error('saveGroup failed', e); alert('Could not save the group: ' + (e && e.message || e)); });
     if (!openGroups.includes(g.id)) setOpenGroups((o) => [...o, g.id]);
     if (g.parentId && !openGroups.includes(g.parentId)) setOpenGroups((o) => [...o, g.parentId]);
@@ -4289,14 +4333,14 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
     if (!confirm) return;
     let deletedWordIds = [];
     if (confirm.kind === 'word') {
-      window.lwDeleteDoc(window.LW_COLLECTIONS.words, confirm.id);
+      lwDeleteDoc(LW_COLLECTIONS.words, confirm.id);
       deletedWordIds = [confirm.id];
     }
     if (confirm.kind === 'group') {
       const ids = [confirm.id, ...subGroupsOf(confirm.id).map((sg) => sg.id)];
       ids.forEach((id) => {
-        window.lwDeleteDoc(window.LW_COLLECTIONS.groups, id);
-        window.lwDeleteWordsByGroup(id, isAdmin ? null : userId);
+        lwDeleteDoc(LW_COLLECTIONS.groups, id);
+        lwDeleteWordsByGroup(id, isAdmin ? null : userId);
       });
       deletedWordIds = words.filter((w) => ids.includes(w.groupId)).map((w) => w.id);
     }
@@ -4304,7 +4348,7 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
        deleted shared word is left as orphans that the app ignores) */
     const withProgress = deletedWordIds.filter((id) => progress[id]);
     if (withProgress.length) {
-      window.lwDeleteProgressForWords(userId, withProgress)
+      lwDeleteProgressForWords(userId, withProgress)
         .catch((e) => console.error('delete progress failed', e));
     }
     setConfirm(null);
@@ -4315,7 +4359,7 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
     return parent ? parent.name + ' / ' + g.name : g.name;
   };
   const orderedGroups = topGroups.flatMap((g) => [g, ...subGroupsOf(g.id)]);
-  const hasLeafGroup = window.lwLeafGroups(groups).length > 0;
+  const hasLeafGroup = lwLeafGroups(groups).length > 0;
 
   const renderWords = (items, hue, showEmptyHint = true, showGroup = false) => (
     <div className="word-rows">
@@ -4543,7 +4587,7 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
             <button className="btn btn-danger" onClick={() => {
               const e = collocDelete;
               setCollocDelete(null);
-              window.lwDeleteDoc(window.LW_COLLECTIONS.collocations, e.id)
+              lwDeleteDoc(LW_COLLECTIONS.collocations, e.id)
                 .catch((err) => pushToast({ kind: 'error', title: 'Could not delete', msg: (err && err.message) || String(err) }));
             }}>Delete</button>
           </>}>
@@ -4592,10 +4636,10 @@ const LW_LESSON_STATUS = {
 
 function GrammarScreen({ nav, setGrammar, lessons, progressBy, isAdmin, userLevel, recordAnswer,
   saveLesson, moveLesson, saveProgress, finishTest, deleteLesson }) {
-  const topics = useMemo(() => window.lwLessonTopics(lessons), [lessons]);
+  const topics = useMemo(() => lwLessonTopics(lessons), [lessons]);
   const [attempt, setAttempt] = useState(0); // bumps on "Retake test" to restart the quiz
   const topicOf = (l) => topics.find((t) => t.lessons.some((x) => x.id === l.id)) || { lessons: [l] };
-  const statusOf = (l) => window.lwLessonStatus(l, topicOf(l).lessons, progressBy, isAdmin);
+  const statusOf = (l) => lwLessonStatus(l, topicOf(l).lessons, progressBy, isAdmin);
   const lesson = nav.lessonId && lessons.find((l) => l.id === nav.lessonId);
   const home = () => setGrammar({ view: 'home' });
   /* a locked lesson (e.g. a saved link) sends the user back to the list */
@@ -4651,8 +4695,8 @@ function GrammarScreen({ nav, setGrammar, lessons, progressBy, isAdmin, userLeve
 }
 
 function GrammarHome({ topics, progressBy, isAdmin, userLevel, statusOf, onOpen, onNew, onMove, onToggleSave }) {
-  const [f, setF] = useState(() => ({ level: 'all', saved: false, ...(window.lwLoad(LW_KEYS.grammar, null) || {}) }));
-  useEffect(() => { window.lwSave(LW_KEYS.grammar, f); }, [f]);
+  const [f, setF] = useState(() => ({ level: 'all', saved: false, ...(lwLoad(LW_KEYS.grammar, null) || {}) }));
+  useEffect(() => { lwSave(LW_KEYS.grammar, f); }, [f]);
   const levels = [...new Set(topics.flatMap((t) => t.lessons.map((l) => l.level)).filter(Boolean))].sort();
   const all = topics.flatMap((t) => t.lessons);
   const done = all.filter((l) => statusOf(l) === 'completed').length;
@@ -4719,7 +4763,7 @@ function GrammarHome({ topics, progressBy, isAdmin, userLevel, statusOf, onOpen,
                           {l.level && <span className="gr-level">{l.level}</span>}
                           <span>{l.minutes || 10} min</span>
                           <span>{(l.quiz || []).length} tasks</span>
-                          {p.best != null && <span>Best {p.best}/{window.LW_LESSON_TASKS}</span>}
+                          {p.best != null && <span>Best {p.best}/{LW_LESSON_TASKS}</span>}
                           {isAdmin && !l.published && <span className="gr-draft">Draft</span>}
                         </span>
                         {st === 'locked' && prev && <span className="gr-lock-hint">Complete “{prev.title}” first</span>}
@@ -4763,13 +4807,13 @@ function LessonView({ lesson, prog, status, isAdmin, position, total, onBack, on
         <div className="ls-badges">
           {lesson.level && <span className="ls-badge ls-badge-level">{lesson.level}</span>}
           <span className="ls-badge"><Ic.Clock width="14" height="14" /> {lesson.minutes || 10} min</span>
-          <span className="ls-badge">{window.LW_LESSON_TASKS} tasks</span>
+          <span className="ls-badge">{LW_LESSON_TASKS} tasks</span>
           {isAdmin && !lesson.published && <span className="ls-badge gr-draft">Draft</span>}
           <button type="button" className={'icon-btn sm ls-save' + (prog.saved ? ' on' : '')} aria-pressed={!!prog.saved}
             aria-label={prog.saved ? 'Remove bookmark' : 'Save lesson'} onClick={onToggleSave}><Ic.Bookmark width="17" height="17" /></button>
         </div>
         <h1 className="ls-title">{lesson.title}</h1>
-        {status === 'completed' && <p className="ls-done"><Ic.Check width="16" height="16" /> Completed · best {prog.best}/{window.LW_LESSON_TASKS}</p>}
+        {status === 'completed' && <p className="ls-done"><Ic.Check width="16" height="16" /> Completed · best {prog.best}/{LW_LESSON_TASKS}</p>}
         {isAdmin && (
           <div className="ls-admin">
             <button type="button" className="btn btn-soft sm" onClick={onEdit}><Ic.Edit width="15" height="15" /> Edit</button>
@@ -4786,12 +4830,12 @@ function LessonView({ lesson, prog, status, isAdmin, position, total, onBack, on
         <p className="ls-cta-sub">
           {status === 'completed'
             ? 'You can retake the test any time to refresh the rule.'
-            : 'Answer all ' + window.LW_LESSON_TASKS + ' tasks correctly to complete the lesson' + (position < total ? ' and unlock the next one.' : '.')}
+            : 'Answer all ' + LW_LESSON_TASKS + ' tasks correctly to complete the lesson' + (position < total ? ' and unlock the next one.' : '.')}
         </p>
         <button type="button" className="btn btn-primary ls-cta-btn" onClick={onStartTest}>
           {status === 'completed' ? 'Retake test' : status === 'studied' ? 'Start test' : "I've studied this — start test"} <Ic.Arrow width="16" height="16" />
         </button>
-        {prog.attempts > 0 && status !== 'completed' && <p className="ls-cta-note">Last attempt: {prog.last}/{window.LW_LESSON_TASKS}</p>}
+        {prog.attempts > 0 && status !== 'completed' && <p className="ls-cta-note">Last attempt: {prog.last}/{LW_LESSON_TASKS}</p>}
       </section>
     </div>
   );
@@ -4816,7 +4860,7 @@ function LessonQuiz({ lesson, recordAnswer, finishTest, next, onRetake, onReview
   const task = tasks[idx];
   const answer = (value) => {
     if (given != null || !task) return;
-    const ok = task.type === 'choice' ? value === task.answer : window.lwCheckFill(value, task.answers);
+    const ok = task.type === 'choice' ? value === task.answer : lwCheckFill(value, task.answers);
     if (task.type === 'fill' && !String(value).trim()) return;
     setGiven(value);
     setResults((r) => [...r, { task, given: value, ok }]);
@@ -4829,7 +4873,7 @@ function LessonQuiz({ lesson, recordAnswer, finishTest, next, onRetake, onReview
   };
 
   if (finished) {
-    const passed = finished.score >= window.LW_LESSON_TASKS;
+    const passed = finished.score >= LW_LESSON_TASKS;
     const wrong = results.filter((r) => !r.ok);
     return (
       <div className="grammar quiz">
@@ -4839,7 +4883,7 @@ function LessonQuiz({ lesson, recordAnswer, finishTest, next, onRetake, onReview
           <h2 className="quiz-result-title">{passed ? 'Lesson completed!' : 'Not passed yet'}</h2>
           <p className="quiz-result-sub">
             {passed
-              ? (finished.firstPass ? '+' + window.LW_XP_LESSON_BONUS + ' XP bonus. ' : '') + (next ? 'The next lesson is unlocked.' : 'You finished this topic.')
+              ? (finished.firstPass ? '+' + LW_XP_LESSON_BONUS + ' XP bonus. ' : '') + (next ? 'The next lesson is unlocked.' : 'You finished this topic.')
               : 'You need ' + tasks.length + ' of ' + tasks.length + ' to complete the lesson. Review the mistakes and try again.'}
           </p>
           <div className="quiz-result-btns">
@@ -4938,7 +4982,7 @@ const LW_VIDEO_RATES = [1, 0.75, 0.5];
 
 /* the quote as a subtitle: the word or phrase highlighted, or hidden */
 function ClipQuote({ clip, masked, plain }) {
-  const q = window.lwSplitQuote(clip.quote);
+  const q = lwSplitQuote(clip.quote);
   return (
     <span className={plain ? 'clip-quote' : 'yt-sub'}>
       “{q.before}{masked ? <span className="clip-gap">___</span> : <mark>{q.target}</mark>}{q.after}”
@@ -4952,28 +4996,28 @@ function lwVideoAnswerOk(input, clip) {
   const toks = (x) => String(x || '').toLowerCase().replace(/[’]/g, "'").match(/[\p{L}\p{N}']+/gu) || [];
   const got = toks(input);
   if (!got.length) return false;
-  return [window.lwSplitQuote(clip.quote).target, clip.word].some((t) => {
+  return [lwSplitQuote(clip.quote).target, clip.word].some((t) => {
     const want = toks(t);
-    return want.length === got.length && want.every((w, i) => w === got[i] || window.readingTokensMatch(w, got[i]));
+    return want.length === got.length && want.every((w, i) => w === got[i] || readingTokensMatch(w, got[i]));
   });
 }
 const lwPlainQuote = (q) => String(q || '').replace(/\[\[|\]\]/g, '');
 
 function VideoView({ clips, words, progress, now, online, recordAnswer, addWord, isAdmin, uid, lang, pushToast }) {
   const [manage, setManage] = useState(false);
-  const [mode, setMode] = useState(() => (window.lwLoad(LW_KEYS.videoMode, 'flip') === 'type' ? 'type' : 'flip'));
-  useEffect(() => { window.lwSave(LW_KEYS.videoMode, mode); }, [mode]);
+  const [mode, setMode] = useState(() => (lwLoad(LW_KEYS.videoMode, 'flip') === 'type' ? 'type' : 'flip'));
+  useEffect(() => { lwSave(LW_KEYS.videoMode, mode); }, [mode]);
   const [rate, setRate] = useState(1);
   const [broken, setBroken] = useState([]); // clips whose video failed to load this session
   const [session, setSession] = useState(null); // { ids, idx, done, stats: { right, wrong, xp } }
   const blank = { flipped: false, hint: false, typed: '', answered: null, added: false };
   const [st, setSt] = useState(blank); // the current clip's card state
   const apiRef = useRef(null);
-  const cardOf = (c) => window.lwFindCardForClip(c, words);
+  const cardOf = (c) => lwFindCardForClip(c, words);
   const playable = clips.filter((c) => !broken.includes(c.id));
 
   const start = (exclude = []) => {
-    const ids = window.lwClipPick(playable, cardOf, progress, Date.now(), LW_VIDEO_SESSION, exclude).map((c) => c.id);
+    const ids = lwClipPick(playable, cardOf, progress, Date.now(), LW_VIDEO_SESSION, exclude).map((c) => c.id);
     setSession(ids.length ? { ids, idx: 0, done: false, stats: { right: 0, wrong: 0, xp: 0 } } : null);
     setSt(blank);
   };
@@ -5036,11 +5080,11 @@ function VideoView({ clips, words, progress, now, online, recordAnswer, addWord,
   if (!clip) return null;
 
   const card = cardOf(clip);
-  const q = window.lwSplitQuote(clip.quote);
+  const q = lwSplitQuote(clip.quote);
   const answer = (known) => {
     recordAnswer(card ? card.id : null, known, 'video'); // no card: XP and the daily goal only
     setSession((s) => ({ ...s, stats: { ...s.stats, right: s.stats.right + (known ? 1 : 0), wrong: s.stats.wrong + (known ? 0 : 1),
-      xp: s.stats.xp + (known ? window.LW_XP_CORRECT : window.LW_XP_WRONG) } }));
+      xp: s.stats.xp + (known ? LW_XP_CORRECT : LW_XP_WRONG) } }));
     if (card && mode === 'flip') next();
     else setSt((x) => ({ ...x, answered: known ? 'known' : 'unknown', flipped: true }));
   };
@@ -5167,7 +5211,7 @@ function ClipModal({ clip, onClose }) {
 }
 
 function ClipsAdmin({ clips, lang, uid, pushToast, onBack }) {
-  const info = window.lwLangInfo(lang);
+  const info = lwLangInfo(lang);
   const [form, setForm] = useState(null);
   const [confirm, setConfirm] = useState(null);
   const [query, setQuery] = useState('');
@@ -5177,8 +5221,8 @@ function ClipsAdmin({ clips, lang, uid, pushToast, onBack }) {
   const fail = (title) => (e) => pushToast({ kind: 'error', title, msg: (e && e.message) || String(e) });
   const save = (c) => {
     const t = Date.now();
-    window.lwSetDoc(window.LW_COLLECTIONS.clips, {
-      ...c, id: c.id || window.lwUid() + window.lwUid(), lang, key: c.word.toLowerCase(),
+    lwSetDoc(LW_COLLECTIONS.clips, {
+      ...c, id: c.id || lwUid() + lwUid(), lang, key: c.word.toLowerCase(),
       userId: c.userId || uid, shared: true, createdAt: c.createdAt || t, updatedAt: t,
     }).catch(fail('Could not save the clip'));
     setForm(null);
@@ -5229,7 +5273,7 @@ function ClipsAdmin({ clips, lang, uid, pushToast, onBack }) {
             <button className="btn btn-danger" onClick={() => {
               const c = confirm;
               setConfirm(null);
-              window.lwDeleteDoc(window.LW_COLLECTIONS.clips, c.id).catch(fail('Could not delete the clip'));
+              lwDeleteDoc(LW_COLLECTIONS.clips, c.id).catch(fail('Could not delete the clip'));
             }}>Delete</button>
           </>}>
           <p className="confirm-text">Delete the clip for <strong>{confirm.word}</strong>? Cards made from it stay.</p>
@@ -5250,14 +5294,14 @@ function ClipForm({ initial, onSave, onCancel }) {
   const [tried, setTried] = useState(false);
   const pickRef = useRef(null);
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
-  const yt = window.lwParseYouTube(url);
-  const startS = window.lwParseTime(startTxt);
-  const endS = window.lwParseTime(endTxt);
+  const yt = lwParseYouTube(url);
+  const startS = lwParseTime(startTxt);
+  const endS = lwParseTime(endTxt);
   const marks = (f.quote.match(/\[\[(.+?)\]\]/g) || []).length;
   /* a new link with ?t= sets the start */
   const onUrl = (v) => {
     setUrl(v);
-    const p = window.lwParseYouTube(v);
+    const p = lwParseYouTube(v);
     if (p && p.t != null && !startTxt) setStartTxt(lwFormatTime(p.t));
   };
   const onQuote = (v) => {
@@ -5355,7 +5399,7 @@ function ClipForm({ initial, onSave, onCancel }) {
           <span className="field-label">Part of speech</span>
           <select className="input" value={f.pos || ''} onChange={(e) => set('pos', e.target.value)}>
             <option value="">—</option>
-            {window.LW_POS.map((p) => <option key={p} value={p}>{p}</option>)}
+            {LW_POS.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </label>
       </div>
@@ -5390,7 +5434,7 @@ const LW_COLLOC_SORTS = [
 const lwCollocAuthor = (e) => (e.shared ? 'Admin' : 'You');
 
 function CollocCatalog({ entries, wordsById, userId, query, owner, sort, setLibField, limit, setLimit, onOpen, onNew }) {
-  const liveCards = (e) => window.lwCollocLive(e, wordsById).map((p) => wordsById[p.wordId]);
+  const liveCards = (e) => lwCollocLive(e, wordsById).map((p) => wordsById[p.wordId]);
   const ownerOk = (e, o) => o === 'all' || (o === 'mine' ? e.userId === userId : !!e.shared);
   const matches = (e) => !query || e.word.includes(query)
     || liveCards(e).some((w) => w.word.toLowerCase().includes(query) || (w.tr || '').toLowerCase().includes(query));
@@ -5459,7 +5503,7 @@ function CollocCatalog({ entries, wordsById, userId, query, owner, sort, setLibF
 }
 
 function CollocSheet({ entry, wordsById, canEdit, onEdit, onDelete, onClose }) {
-  const live = window.lwCollocLive(entry, wordsById);
+  const live = lwCollocLive(entry, wordsById);
   const meta = [entry.pattern, entry.pos].filter(Boolean).join(' · ');
   return (
     <Modal title={entry.word} sheet onClose={onClose}
@@ -5517,7 +5561,7 @@ const LW_COLLOC_SESSION = 5;
 const LW_COLLOC_SLOTS = [[22, 30], [78, 30], [22, 70], [78, 70], [27, 8], [73, 8], [27, 92], [73, 92]];
 
 function lwBuildCollocRound(entry, progress, wordsById) {
-  const phrases = window.lwCollocRoundPhrases(entry, progress, wordsById, Date.now(), 5);
+  const phrases = lwCollocRoundPhrases(entry, progress, wordsById, Date.now(), 5);
   const wrongs = shuffle(entry.wrong || []).slice(0, Math.min(3, 8 - phrases.length));
   const chips = shuffle([
     ...phrases.map((p) => ({ id: 'p' + p.wordId, ok: true, wordId: p.wordId, text: p.partner })),
@@ -5530,11 +5574,11 @@ function CollocView({ entries, words, progress, now, recordAnswer, goCatalog, go
   const wordsById = useMemo(() => Object.fromEntries(words.map((w) => [w.id, w])), [words]);
   const [session, setSession] = useState(null); // { ids, idx, done, stats: { found, mistakes, xp } }
   const [round, setRound] = useState(null);
-  const playable = entries.filter((e) => window.lwCollocPlayable(e, wordsById));
+  const playable = entries.filter((e) => lwCollocPlayable(e, wordsById));
   const byId = (id) => entries.find((e) => e.id === id);
 
   const start = (exclude = []) => {
-    const ids = window.lwCollocPick(entries, progress, wordsById, Date.now(), LW_COLLOC_SESSION, exclude).map((e) => e.id);
+    const ids = lwCollocPick(entries, progress, wordsById, Date.now(), LW_COLLOC_SESSION, exclude).map((e) => e.id);
     if (!ids.length) { setSession(null); setRound(null); return; }
     setSession({ ids, idx: 0, done: false, stats: { found: 0, mistakes: 0, xp: 0 } });
     setRound(lwBuildCollocRound(byId(ids[0]), progress, wordsById));
@@ -5545,7 +5589,7 @@ function CollocView({ entries, words, progress, now, recordAnswer, goCatalog, go
   const goNext = () => {
     const s = session;
     let idx = s.idx + 1;
-    while (idx < s.ids.length && !(byId(s.ids[idx]) && window.lwCollocPlayable(byId(s.ids[idx]), wordsById))) idx++;
+    while (idx < s.ids.length && !(byId(s.ids[idx]) && lwCollocPlayable(byId(s.ids[idx]), wordsById))) idx++;
     if (idx >= s.ids.length) { setSession({ ...s, idx, done: true }); setRound(null); return; }
     setSession({ ...s, idx });
     setRound(lwBuildCollocRound(byId(s.ids[idx]), progress, wordsById));
@@ -5556,7 +5600,7 @@ function CollocView({ entries, words, progress, now, recordAnswer, goCatalog, go
 
   const answer = (wordId, known) => {
     recordAnswer(wordId, known, 'colloc');
-    const xp = known ? window.LW_XP_CORRECT : window.LW_XP_WRONG;
+    const xp = known ? LW_XP_CORRECT : LW_XP_WRONG;
     setSession((s) => ({ ...s, stats: { ...s.stats, xp: s.stats.xp + xp } }));
   };
   const okChips = round ? round.chips.filter((c) => c.ok) : [];
@@ -5708,7 +5752,7 @@ function GroupForm({ initial, parentGroup, onSave, onCancel }) {
     if (!canSave) return;
     const parentId = initial ? initial.parentId : (parentGroup ? parentGroup.id : undefined);
     onSave({
-      id: initial ? initial.id : window.lwUid(),
+      id: initial ? initial.id : lwUid(),
       name: name.trim(),
       color,
       ...(parentId ? { parentId } : {}),
@@ -5782,10 +5826,15 @@ class LwErrorBoundary extends React.Component {
   componentDidCatch(error, info) { console.error('App crashed:', error, info && info.componentStack); }
   render() {
     if (!this.state.error) return this.props.children;
-    return window.lwRenderFatal(this.state.error);
+    return window.lwRenderFatal(this.state.error, React.createElement);
   }
 }
 
+export {
+  App, GroupForm,
+};
+
+/* Console API: scripts/*.mjs and books run in the browser console and call these as window.lwX. */
 Object.assign(window, { App, GroupForm });
-ReactDOM.createRoot(document.getElementById('root')).render(<LwErrorBoundary><App /></LwErrorBoundary>);
+createRoot(document.getElementById('root')).render(<LwErrorBoundary><App /></LwErrorBoundary>);
 window.lwAppStarted = true;

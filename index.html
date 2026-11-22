@@ -1737,7 +1737,7 @@ html[data-theme="dark"] .lt-level { color: var(--on-primary); }
 <body>
 <div id="root"></div>
 <script>
-/* Startup watchdog: a failed CDN script or a Babel/JS error before React mounts
+/* Startup watchdog: a failed script load or a JS error before React mounts
    leaves an empty #root. Collect errors and, if the app hasn't started, show them. */
 (function () {
   var errors = [];
@@ -1764,10 +1764,10 @@ html[data-theme="dark"] .lt-level { color: var(--on-primary); }
     if (document.readyState === 'complete') setTimeout(show, 500);
   }, true);
   window.addEventListener('load', function () { setTimeout(show, 15000); });
-  /* used by LwErrorBoundary in app.jsx once React is running */
-  window.lwRenderFatal = function (error) {
+  /* used by LwErrorBoundary in app.jsx once React is running; h is React.createElement */
+  window.lwRenderFatal = function (error, h) {
     var lines = [(error && error.message) || String(error), String((error && error.stack) || '').split('\n').slice(1, 6).join('\n')];
-    return React.createElement('div', {
+    return h('div', {
       dangerouslySetInnerHTML: { __html: html(lines) },
       onClick: function (e) { if (e.target.id === 'lw-fatal-reload') reload(); },
     });
@@ -1775,18 +1775,6 @@ html[data-theme="dark"] .lt-level { color: var(--on-primary); }
 })();
 </script>
 
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-<script type="text/babel" src="firebase.jsx"></script>
-<script type="text/babel" src="data.jsx"></script>
-<script type="text/babel" src="progress.jsx"></script>
-<script type="text/babel" src="reading.jsx"></script>
-<script type="text/babel" src="components.jsx"></script>
-<script type="text/babel" src="auth.jsx"></script>
-<script type="text/babel" src="app.jsx"></script>
+<script type="module" src="/app.jsx"></script>
 </body>
 </html>

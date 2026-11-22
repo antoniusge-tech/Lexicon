@@ -15,3 +15,4 @@ words/*/*
 books/*/*
 !books/*/.gitkeep
 !books/inbox/example.txt
+dist/

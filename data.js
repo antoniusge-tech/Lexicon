@@ -1,4 +1,7 @@
-/* data.jsx — local (per-device) keys + helpers for AppLearnWords */
+/* data.js — local (per-device) keys + helpers for AppLearnWords */
+
+import { lwWordStatus } from './progress.js';
+import { lwNormLetters } from './reading.js';
 
 const LW_KEYS = {
   theme: 'lw_theme_v1',
@@ -694,7 +697,7 @@ async function lwAiRegenerateTask(lesson, type) {
    mastered — using a hash of the date, so it needs no storage. */
 function lwWordOfTheDay(words, progress, date, now) {
   if (!words.length) return null;
-  const status = (w) => window.lwWordStatus(progress[w.id], now);
+  const status = (w) => lwWordStatus(progress[w.id], now);
   const pools = [
     words.filter((w) => ['review', 'learning'].includes(status(w))),
     words.filter((w) => status(w) === 'new'),
@@ -950,7 +953,7 @@ const LW_RO_IPA_WORDS = {
 };
 const LW_RO_IPA_SIMPLE = { ă: 'ə', â: 'ɨ', î: 'ɨ', ș: 'ʃ', ț: 't͡s', j: 'ʒ', x: 'ks', y: 'j', q: 'k', c: 'k', g: 'ɡ' };
 function lwRoIpaWord(word, verb) {
-  const w = window.lwNormLetters ? window.lwNormLetters(word) : word;
+  const w = lwNormLetters ? lwNormLetters(word) : word;
   if (LW_RO_IPA_WORDS[w]) return LW_RO_IPA_WORDS[w];
   const isV = (ch) => !!ch && 'aeiouăâî'.includes(ch);
   const vowels = [...w].filter(isV).length;
@@ -1071,6 +1074,19 @@ function lwUtterance(text, rateMul = 1) {
 }
 if ('speechSynthesis' in window) window.speechSynthesis.getVoices(); // starts loading the list early
 
+export {
+  lwLangVoices, lwRoIpa, lwVoiceAccent, lwVoiceScore, lwVoiceSettings,
+  lwSaveVoiceSettings, lwPickVoice, lwOnVoicesChanged, lwUtterance, LW_KEYS,
+  LW_READING_BATCH, LW_LANGUAGES, LW_LANG_CODES, lwDocLang, lwUserLangs,
+  lwSetCurrentLang, lwCurrentLang, lwLangInfo, lwCefrField, lwLangField, LW_CEFR_LEVELS,
+  LW_TEXT_TOPICS, LW_TEXT_LENGTHS, lwUid, LW_POS, lwNormPos, lwAiTagPos, lwAiLookupWord,
+  lwAiTranslateSentences, lwAiSuggestCollocations, lwAiGenerateLesson,
+  lwAiRegenerateTask, lwNormTask, lwWordOfTheDay, lwLoad, lwSave, lwFileToPhoto,
+  lwAutoFindPhoto, lwGetGeminiKey, lwSetGeminiKey, lwHasGeminiKey, lwAiFillWord,
+  lwAiFillWords, lwAiGenerateText, lwAiGenerateBatch, lwShuffle,
+};
+
+/* Console API: scripts/*.mjs and books run in the browser console and call these as window.lwX. */
 Object.assign(window, {
   lwLangVoices,
   lwRoIpa,

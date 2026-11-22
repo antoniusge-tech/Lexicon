@@ -1,5 +1,11 @@
 /* auth.jsx — sign up / log in / password reset screen */
 
+import React from 'react';
+import {
+  lwCreateProfile, lwLogin, lwLogout, lwRegister, lwResetPassword, lwSignInWithGoogle,
+} from './firebase.js';
+import { Ic } from './components.jsx';
+
 function lwAuthErrorMessage(err) {
   if (err && err.code === 'lw/username-taken') return err.message;
   switch (err && err.code) {
@@ -59,14 +65,14 @@ function AuthView() {
     setInfo('');
     try {
       if (mode === 'register') {
-        await window.lwRegister(username, email, password);
+        await lwRegister(username, email, password);
         /* onAuthStateChanged in App picks up the signed-in user from here */
       } else if (mode === 'reset') {
-        await window.lwResetPassword(email);
+        await lwResetPassword(email);
         setInfo('A password reset link has been sent to ' + email.trim() + '.');
         setBusy(false);
       } else {
-        await window.lwLogin(username, password);
+        await lwLogin(username, password);
         /* onAuthStateChanged in App picks up the signed-in user from here */
       }
     } catch (err) {
@@ -84,7 +90,7 @@ function AuthView() {
     setError('');
     setInfo('');
     try {
-      await window.lwSignInWithGoogle();
+      await lwSignInWithGoogle();
       /* App takes over: existing profile -> the app, new Google user -> pick a username */
     } catch (err) {
       const code = err && err.code;
@@ -197,7 +203,7 @@ function ChooseUsernameView({ email }) {
     setBusy(true);
     setError('');
     try {
-      await window.lwCreateProfile(username);
+      await lwCreateProfile(username);
       /* the profile snapshot in App moves on to the language picker */
     } catch (err) {
       setError(err && err.code === 'lw/username-taken' ? err.message
@@ -225,11 +231,16 @@ function ChooseUsernameView({ email }) {
           <button className="btn btn-primary lg" type="submit" disabled={busy}>{busy ? 'Please wait…' : 'Continue'}</button>
         </form>
         <p className="lang-select-sub" style={{ marginTop: 14 }}>
-          <button type="button" className="btn btn-ghost sm" onClick={() => window.lwLogout()}>Use another account</button>
+          <button type="button" className="btn btn-ghost sm" onClick={() => lwLogout()}>Use another account</button>
         </p>
       </div>
     </div>
   );
 }
 
+export {
+  AuthView, ChooseUsernameView,
+};
+
+/* Console API: scripts/*.mjs and books run in the browser console and call these as window.lwX. */
 Object.assign(window, { AuthView, ChooseUsernameView });
