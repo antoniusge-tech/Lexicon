@@ -1,0 +1,23 @@
+{
+  // Type-checks the .ts files only (npm run typecheck); Vite and Node strip the
+  // types themselves, so nothing is emitted. JS/JSX files are read for their
+  // inferred types but not checked yet; they move to TypeScript step by step.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["*.ts", "test/**/*.ts"]
+}

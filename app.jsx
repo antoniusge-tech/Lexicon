@@ -29,12 +29,12 @@ import {
   lwLevelTestResult, lwLocalDate, lwNextProgress, lwPracticeMs, lwReviewQueue,
   lwSetSrsSettings, lwSrsSettings, lwStatusCounts, lwStreak, lwTotalMs, lwTotalXp,
   lwWordMastery, lwWordStatus,
-} from './progress.js';
+} from './progress.ts';
 import {
   LW_LETTERS, lwCleanGutenberg, lwFindCardForClip, lwMatchOwnWord, lwPaginate,
   lwSplitChapters, lwSplitQuote, lwSplitSentences, lwTokenize, lwWordCount, lwWordsIndex,
   readingTokensMatch,
-} from './reading.js';
+} from './reading.ts';
 import {
   ActionsMenu, CollocForm, FillCard, Flashcard, GeminiKeyModal, GroupChip, Ic,
   ImportView, LessonBody, LessonForm, Modal, PhotoFill, PronunciationCheck, SpeakButton,

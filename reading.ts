@@ -1,10 +1,16 @@
-/* reading.js — pure text helpers for the reader (no React, no Firestore):
+/* reading.ts — pure text helpers for the reader (no React, no Firestore):
    Gutenberg cleanup, chapter/page splitting, sentences, tokens, word matching. */
 
 import { lwCurrentLang } from './data.js';
+import type { Word } from './types.ts';
+
+/** a chapter split from raw text: its heading ('' if none) and paragraphs */
+export interface SplitChapter { title: string; paragraphs: string[] }
+/** anything with a word text (cards, clips) */
+type HasWord = { word?: string };
 
 /* Strip the Project Gutenberg header/licence and footer, normalise line breaks. */
-function lwCleanGutenberg(raw) {
+function lwCleanGutenberg(raw: string | null | undefined): string {
   let t = String(raw || '').replace(/\r\n?/g, '\n').replace(/﻿/g, '');
   const start = t.search(/\*\*\*\s*START OF (THE|THIS) PROJECT GUTENBERG E-?BOOK[^\n]*\*\*\*/i);
   if (start !== -1) t = t.slice(t.indexOf('\n', start) + 1);
@@ -17,14 +23,14 @@ function lwCleanGutenberg(raw) {
    which cover Romanian ă â î ș ț (and the older cedilla forms ş ţ). */
 const LW_LETTERS = 'A-Za-zÀ-ÖØ-öø-ɏ';
 /* Romanian has two spellings of ș/ț (comma and the legacy cedilla): compare as one */
-const lwNormLetters = (s) => String(s).replace(/ş/g, 'ș').replace(/ţ/g, 'ț').replace(/Ş/g, 'Ș').replace(/Ţ/g, 'Ț');
+const lwNormLetters = (s: unknown): string => String(s).replace(/ş/g, 'ș').replace(/ţ/g, 'ț').replace(/Ş/g, 'Ș').replace(/Ţ/g, 'Ț');
 
-const lwWordCount = (s) => (String(s).match(new RegExp('[' + LW_LETTERS + '0-9’\']+', 'g')) || []).length;
+const lwWordCount = (s: unknown): number => (String(s).match(new RegExp('[' + LW_LETTERS + '0-9’\']+', 'g')) || []).length;
 
 /* blank-line separated paragraphs; hard-wrapped lines inside are joined.
    Drops illustration placeholders ("[Illustration]", "[Picture: …]") and
    Gutenberg's _italic_ underscores. */
-function lwParagraphs(text) {
+function lwParagraphs(text: unknown): string[] {
   return String(text).split(/\n\s*\n/)
     .map((p) => p.replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim())
     .map((p) => p.replace(/\[(?:Illustration|Picture)[^\]]*\]/gi, '').replace(/(^|[\s(“"'‘])_([^_]+)_(?=[\s.,;:!?)”"'’]|$)/g, '$1$2').trim())
@@ -39,13 +45,13 @@ const LW_NUMBERED_RE = /^(?:chapter|book|part|capitolul|capitol|cartea|partea)\s
 const LW_ROMAN_RE = /^([IVXLC]+)\.(?:\s+([A-ZĂÂÎȘȚŞŢ][A-ZĂÂÎȘȚŞŢ0-9’' ,.:;!?-]*))?$/;
 const LW_CHUNK_WORDS = 1500;
 
-const lwShortLine = (p) => p.length <= 80 && lwWordCount(p) <= 12;
-const lwIsNumberedHeading = (p) => lwShortLine(p) && (LW_NUMBERED_RE.test(p) || LW_ROMAN_RE.test(p));
-const lwNormTitle = (t) => t.toLowerCase().replace(new RegExp('[^' + LW_LETTERS + '0-9’\' ]', 'g'), '').replace(/\s+/g, ' ').trim();
+const lwShortLine = (p: string) => p.length <= 80 && lwWordCount(p) <= 12;
+const lwIsNumberedHeading = (p: string) => lwShortLine(p) && (LW_NUMBERED_RE.test(p) || LW_ROMAN_RE.test(p));
+const lwNormTitle = (t: string) => t.toLowerCase().replace(new RegExp('[^' + LW_LETTERS + '0-9’\' ]', 'g'), '').replace(/\s+/g, ' ').trim();
 
 /* titles from a table of contents: lines "Title   12" (title, gap, page number) */
-function lwTocTitles(text) {
-  const titles = new Set();
+function lwTocTitles(text: unknown): Set<string> {
+  const titles = new Set<string>();
   String(text).split('\n').forEach((line) => {
     const m = line.match(/^\s*(.{3,70}?)\s{2,}(?:\.+\s*)?(\d{1,4})\s*$/);
     if (m && new RegExp('[' + LW_LETTERS + ']').test(m[1])) titles.add(lwNormTitle(m[1]));
@@ -59,7 +65,7 @@ function lwTocTitles(text) {
    roman section ("II.") inside a titled story becomes "Story title · II".
    Without headings the text is cut into ~1500-word parts at paragraph
    boundaries. dropFrontMatter: drop a short untitled lead-in (Gutenberg title page). */
-function lwSplitChapters(text, { dropFrontMatter = false } = {}) {
+function lwSplitChapters(text: unknown, { dropFrontMatter = false }: { dropFrontMatter?: boolean } = {}): SplitChapter[] {
   const paras = lwParagraphs(text);
   let isHeading = lwIsNumberedHeading;
   if (paras.filter(isHeading).length < 2) {
@@ -68,9 +74,9 @@ function lwSplitChapters(text, { dropFrontMatter = false } = {}) {
   }
   const headingCount = paras.filter(isHeading).length;
 
-  let chapters = [];
+  let chapters: SplitChapter[] = [];
   if (headingCount >= 2) {
-    let cur = { title: '', paragraphs: [] };
+    let cur: SplitChapter = { title: '', paragraphs: [] };
     let story = '';
     paras.forEach((p) => {
       if (isHeading(p)) {
@@ -86,8 +92,8 @@ function lwSplitChapters(text, { dropFrontMatter = false } = {}) {
       }
     });
     chapters.push(cur);
-    const merged = [];
-    let carry = [];
+    const merged: SplitChapter[] = [];
+    let carry: string[] = [];
     chapters.forEach((c) => {
       const words = c.paragraphs.reduce((n, p) => n + lwWordCount(p), 0);
       const looksLikeToc = c.paragraphs.every((p) => lwWordCount(p) < 12);
@@ -103,16 +109,16 @@ function lwSplitChapters(text, { dropFrontMatter = false } = {}) {
   }
 
   if (chapters.length < 2) {
-    chapters = [];
-    let cur = [];
+    const parts: string[][] = [];
+    let cur: string[] = [];
     let n = 0;
     paras.forEach((p) => {
       cur.push(p);
       n += lwWordCount(p);
-      if (n >= LW_CHUNK_WORDS) { chapters.push(cur); cur = []; n = 0; }
+      if (n >= LW_CHUNK_WORDS) { parts.push(cur); cur = []; n = 0; }
     });
-    if (cur.length) chapters.push(cur);
-    chapters = chapters.map((ps, i) => ({ title: chapters.length > 1 ? 'Part ' + (i + 1) : '', paragraphs: ps }));
+    if (cur.length) parts.push(cur);
+    chapters = parts.map((ps, i) => ({ title: parts.length > 1 ? 'Part ' + (i + 1) : '', paragraphs: ps }));
   }
   return chapters.filter((c) => c.paragraphs.length);
 }
@@ -120,9 +126,9 @@ function lwSplitChapters(text, { dropFrontMatter = false } = {}) {
 /* abbreviations that end with a dot but don't end a sentence */
 const LW_ABBR = /(?:\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|Prof|Capt|Col|Gen|Lt|Mt|vs|etc|e\.g|i\.e|No)|\b[A-Z])\.$/;
 
-function lwSplitSentences(paragraph) {
+function lwSplitSentences(paragraph: unknown): string[] {
   const raw = String(paragraph).match(/[^.!?]+(?:[.!?]+["'’”)\]]*|$)\s*/g) || [String(paragraph)];
-  const out = [];
+  const out: string[] = [];
   raw.forEach((piece) => {
     const prev = out[out.length - 1];
     if (prev && LW_ABBR.test(prev.trim())) out[out.length - 1] = prev + piece;
@@ -133,8 +139,8 @@ function lwSplitSentences(paragraph) {
 
 /* Pages of ~size words: a page is a list of paragraphs; a very long paragraph is
    cut at sentence boundaries so a page never grows past ~1.6x the target. */
-function lwPaginate(paragraphs, size = 250) {
-  const pieces = [];
+function lwPaginate(paragraphs: string[], size = 250): string[][] {
+  const pieces: string[] = [];
   paragraphs.forEach((p) => {
     if (lwWordCount(p) <= size * 1.6) { pieces.push(p); return; }
     let buf = '';
@@ -144,8 +150,8 @@ function lwPaginate(paragraphs, size = 250) {
     });
     if (buf) pieces.push(buf);
   });
-  const pages = [];
-  let cur = [];
+  const pages: string[][] = [];
+  let cur: string[] = [];
   let n = 0;
   pieces.forEach((p) => {
     const w = lwWordCount(p);
@@ -160,7 +166,7 @@ function lwPaginate(paragraphs, size = 250) {
 /* "word" parts at odd indices, separators at even ones: ["", "Hello", ", ", "world", "!"] */
 const LW_L = LW_LETTERS;
 const LW_TOKEN_RE = new RegExp('([' + LW_L + '][' + LW_L + '’\'-]*[' + LW_L + ']|[' + LW_L + '])');
-function lwTokenize(text) {
+function lwTokenize(text: unknown): string[] {
   return String(text).split(LW_TOKEN_RE);
 }
 
@@ -169,13 +175,13 @@ function lwTokenize(text) {
    at least three letters. Rough, like the English stemmer below. */
 const LW_RO_ENDINGS = ['urilor', 'ilor', 'elor', 'ului', 'urile', 'ează', 'ește', 'esc', 'uri', 'ul', 'ele', 'lor', 'lui',
   'le', 'ii', 'ea', 'ua', 'ez', 'ăm', 'ați', 'at', 'it', 'ut', 'a', 'ă', 'e', 'i', 'u'];
-function lwRoStem(w) {
+function lwRoStem(w: string): string {
   for (const e of LW_RO_ENDINGS) if (w.length - e.length >= 3 && w.endsWith(e)) return w.slice(0, -e.length);
   return w;
 }
 
 /* reduce a token to a rough stem so grader↔graders, plan↔planning etc. match */
-function readingStem(token) {
+function readingStem(token: unknown): string {
   let w = lwNormLetters(String(token || '').toLowerCase()).replace(/[’']/g, '');
   if (!w) return '';
   if (lwCurrentLang() === 'ro') return lwRoStem(w);
@@ -192,7 +198,7 @@ function readingStem(token) {
 }
 
 /* two tokens match if they share a stem (either direction of inflection) */
-function readingTokensMatch(a, b) {
+function readingTokensMatch(a: unknown, b: unknown): boolean {
   const la = lwNormLetters(String(a).toLowerCase()).replace(/[’']/g, '');
   const lb = lwNormLetters(String(b).toLowerCase()).replace(/[’']/g, '');
   if (la === lb) return true;
@@ -206,8 +212,8 @@ function readingTokensMatch(a, b) {
 
 /* Index of the user's single-word cards for instant lookup while reading:
    by exact lowercase form and by stem (silent-e variants too). */
-function lwWordsIndex(words) {
-  const idx = new Map();
+function lwWordsIndex<W extends HasWord>(words: W[]): Map<string, W> {
+  const idx = new Map<string, W>();
   words.forEach((w) => {
     const lw = lwNormLetters(String(w.word || '').trim().toLowerCase());
     if (!lw || /\s/.test(lw)) return; // phrases are not matched token by token
@@ -216,7 +222,7 @@ function lwWordsIndex(words) {
   return idx;
 }
 
-function lwMatchOwnWord(token, index) {
+function lwMatchOwnWord<W>(token: unknown, index: Map<string, W>): W | null {
   const lw = lwNormLetters(String(token || '').toLowerCase()).replace(/[’]/g, "'");
   if (!lw) return null;
   const st = readingStem(lw);
@@ -225,12 +231,12 @@ function lwMatchOwnWord(token, index) {
 
 /* ---------------- Collocations ---------------- */
 
-const lwCollocKey = (word) => String(word || '').trim().toLowerCase().replace(/\s+/g, ' ');
+const lwCollocKey = (word: unknown): string => String(word || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
 /* Phrase cards for a collocation word: multi-word cards with a token that
    matches the word (heavy → "heavy rain"; decision → "make a decision").
    Matching is by stem, so irregular forms (made → make) are not found. */
-function lwFindPhraseCards(word, words) {
+function lwFindPhraseCards<W extends HasWord>(word: unknown, words: W[]): W[] {
   const key = lwCollocKey(word);
   if (!key || /\s/.test(key)) return [];
   return words.filter((w) => {
@@ -244,7 +250,7 @@ function lwFindPhraseCards(word, words) {
 /* Default chip text for a phrase: the phrase without the main word and
    articles ("make a decision" + make → "decision"). */
 const LW_COLLOC_SKIP = new Set(['a', 'an', 'the', 'un', 'o', 'niște']); // English and Romanian articles
-function lwCollocPartner(phrase, word) {
+function lwCollocPartner(phrase: unknown, word: unknown): string {
   const key = lwCollocKey(word);
   const parts = String(phrase || '').trim().split(/\s+/).filter(Boolean);
   const rest = parts.filter((p) => {
@@ -258,8 +264,8 @@ function lwCollocPartner(phrase, word) {
 
 /* the user's card for a clip's word or phrase: same text (ignoring case and
    punctuation), or for a single word any form of it (got → get is not found) */
-function lwFindCardForClip(clip, words) {
-  const norm = (s) => lwNormLetters(String(s || '').toLowerCase()).replace(/[^\p{L}\p{N}' ]/gu, ' ').replace(/\s+/g, ' ').trim();
+function lwFindCardForClip<W extends HasWord>(clip: Pick<Word, 'word'> | HasWord, words: W[]): W | null {
+  const norm = (s: unknown) => lwNormLetters(String(s || '').toLowerCase()).replace(/[^\p{L}\p{N}' ]/gu, ' ').replace(/\s+/g, ' ').trim();
   const key = norm(clip.word);
   if (!key) return null;
   const exact = words.find((w) => norm(w.word) === key);
@@ -268,7 +274,7 @@ function lwFindCardForClip(clip, words) {
 }
 
 /* quote "Once you [[get the hang of it]], …" → parts for rendering */
-function lwSplitQuote(quote) {
+function lwSplitQuote(quote: unknown): { before: string; target: string; after: string } {
   const m = String(quote || '').match(/^(.*?)\[\[(.+?)\]\](.*)$/s);
   return m ? { before: m[1], target: m[2], after: m[3] } : { before: String(quote || ''), target: '', after: '' };
 }

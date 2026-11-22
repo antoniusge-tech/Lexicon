@@ -1,7 +1,7 @@
 /* data.js — local (per-device) keys + helpers for AppLearnWords */
 
-import { lwWordStatus } from './progress.js';
-import { lwNormLetters } from './reading.js';
+import { lwWordStatus } from './progress.ts';
+import { lwNormLetters } from './reading.ts';
 
 const LW_KEYS = {
   theme: 'lw_theme_v1',

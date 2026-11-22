@@ -1,7 +1,20 @@
-/* progress.js — pure FSRS / streak / XP logic (no Firestore, no React).
+/* progress.ts — pure FSRS / streak / XP logic (no Firestore, no React).
    Storage lives in firebase.js (lwRecordAnswer); App wires the two together. */
 
+import type {
+  Activity, AnswerMode, CefrLevel, Collocation, LevelQuestion, Lesson, LessonProgress, LocalDate,
+  Ms, Progress, ReadingProgress, SrsSettings, UserDoc, Word,
+} from './types.ts';
 
+/** FSRS grade: 1 Again, 2 Hard, 3 Good, 4 Easy */
+type Grade = 1 | 2 | 3 | 4;
+/** activity docs of the current language by date */
+type ActivityByDate = Record<LocalDate, Partial<Activity>>;
+/** progress docs by word id */
+type ProgressById = Record<string, MemoryDoc>;
+type WordStatus = 'new' | 'learning' | 'review' | 'mastered';
+/** the memory fields of a progress doc, enough to judge a word's state */
+type MemoryDoc = Partial<Progress>;
 
 const LW_MIN_MS = 60 * 1000;
 const LW_DAY_MS = 24 * 60 * LW_MIN_MS;
@@ -11,7 +24,7 @@ const LW_XP_CORRECT = 10;
 const LW_XP_WRONG = 5;
 const LW_XP_GOAL_BONUS = 50;
 const LW_GOAL_OPTIONS = [10, 20, 30, 50]; // daily goal choices, in answers
-const LW_CEFR_ALL = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+const LW_CEFR_ALL: CefrLevel[] = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 const LW_PRACTICE_GAP_MS = 60 * 1000; // longer pauses between answers don't count as practice
 
 /* ---------------- FSRS-6 scheduler ----------------
@@ -33,8 +46,8 @@ const LW_DAY_START_MS = 4 * 60 * LW_MIN_MS; // a study day starts at 04:00 local
 /* Grade per answer: 1 Again, 2 Hard, 3 Good, 4 Easy. Picking the right option
    (choice) only proves recognition, so it is Hard; recall is Good; a word typed
    quickly with no mistake or hint (fill) is Easy. */
-const LW_MODE_GRADE = { choice: 2 };
-function lwAnswerGrade(known, mode, easy) {
+const LW_MODE_GRADE: Partial<Record<string, Grade>> = { choice: 2 };
+function lwAnswerGrade(known: boolean, mode: AnswerMode | string, easy?: boolean): Grade {
   if (!known) return 1;
   if (mode === 'fill' && easy) return 4;
   return LW_MODE_GRADE[mode] || 3;
@@ -43,34 +56,34 @@ function lwAnswerGrade(known, mode, easy) {
 /* Review settings, stored as users/{uid}.srs (one set for every language).
    session: words per Review session (0 = no limit); background: share of a
    Focus session given to the most at-risk due words outside the focus groups. */
-const LW_SRS_DEFAULTS = { retention: 0.9, session: 50, background: 0.1 };
+const LW_SRS_DEFAULTS: SrsSettings = { retention: 0.9, session: 50, background: 0.1 };
 const LW_RETENTION_OPTIONS = [0.85, 0.9, 0.95];
 const LW_SESSION_OPTIONS = [20, 50, 100, 0];
 const LW_BACKGROUND_OPTIONS = [0, 0.1, 0.2];
-function lwSrsSettings(userDoc) {
+function lwSrsSettings(userDoc: Pick<UserDoc, 'srs'> | null | undefined): SrsSettings {
   return { ...LW_SRS_DEFAULTS, ...((userDoc && userDoc.srs) || {}) };
 }
 /* App sets the current settings while rendering, like lwSetCurrentLang, so
    every lwNextProgress call (answers, button labels) uses the same retention */
-let lwSrsCurrent = LW_SRS_DEFAULTS;
-function lwSetSrsSettings(s) { lwSrsCurrent = s || LW_SRS_DEFAULTS; }
+let lwSrsCurrent: SrsSettings = LW_SRS_DEFAULTS;
+function lwSetSrsSettings(s: SrsSettings | null | undefined): void { lwSrsCurrent = s || LW_SRS_DEFAULTS; }
 
-const lwClampD = (d) => Math.min(10, Math.max(1, d));
-const lwClampS = (s) => Math.min(LW_FSRS_S_MAX, Math.max(LW_FSRS_S_MIN, s));
-const lwFsrsInitDRaw = (g) => LW_FSRS_W[4] - Math.exp((g - 1) * LW_FSRS_W[5]) + 1;
-const lwFsrsInitS = (g) => Math.max(LW_FSRS_W[g - 1], 0.1);
+const lwClampD = (d: number) => Math.min(10, Math.max(1, d));
+const lwClampS = (s: number) => Math.min(LW_FSRS_S_MAX, Math.max(LW_FSRS_S_MIN, s));
+const lwFsrsInitDRaw = (g: Grade) => LW_FSRS_W[4] - Math.exp((g - 1) * LW_FSRS_W[5]) + 1;
+const lwFsrsInitS = (g: Grade) => Math.max(LW_FSRS_W[g - 1], 0.1);
 
 /* chance to recall after t days at stability s */
-function lwFsrsRecall(t, s) {
+function lwFsrsRecall(t: number, s: number): number {
   return Math.pow(1 + LW_FSRS_FACTOR * t / s, LW_FSRS_DECAY);
 }
-function lwFsrsNextD(d, g) {
+function lwFsrsNextD(d: number, g: Grade): number {
   const w = LW_FSRS_W;
   const next = d + (-w[6] * (g - 3)) * (10 - d) / 9;
   return lwClampD(w[7] * lwFsrsInitDRaw(4) + (1 - w[7]) * next);
 }
 /* new stability: t whole days since the last review, r the chance to recall now */
-function lwFsrsNextS(d, s, t, r, g) {
+function lwFsrsNextS(d: number, s: number, t: number, r: number, g: Grade): number {
   const w = LW_FSRS_W;
   if (t === 0) { // again on the same day
     const inc = Math.pow(s, -w[19]) * Math.exp(w[17] * (g - 3 + w[18]));
@@ -86,12 +99,12 @@ function lwFsrsNextS(d, s, t, r, g) {
 }
 
 /* study-day number of a timestamp (local date, days start at 04:00) */
-function lwSrsDay(t) {
+function lwSrsDay(t: Ms): number {
   const d = new Date(t - LW_DAY_START_MS);
   return Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / LW_DAY_MS);
 }
 /* 04:00 local time, `days` study days after the one containing `now` */
-function lwSrsDayStart(now, days) {
+function lwSrsDayStart(now: Ms, days: number): Ms {
   const d = new Date(now - LW_DAY_START_MS);
   d.setHours(0, 0, 0, 0);
   d.setDate(d.getDate() + days);
@@ -99,7 +112,7 @@ function lwSrsDayStart(now, days) {
 }
 
 /* stable pseudo-random number in [0, 1) for a string (interval fuzz) */
-function lwHash01(str) {
+function lwHash01(str: string): number {
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
   return (h >>> 0) / 4294967296;
@@ -107,12 +120,12 @@ function lwHash01(str) {
 
 /* days until the next review for stability s, with ts-fsrs' fuzz so words
    learnt together don't all come back on the same day */
-function lwFsrsInterval(s, elapsed, seed, retention) {
+function lwFsrsInterval(s: number, elapsed: number, seed: string, retention: number): number {
   const modifier = (Math.pow(retention, 1 / LW_FSRS_DECAY) - 1) / LW_FSRS_FACTOR;
   const ivl = Math.min(LW_FSRS_S_MAX, Math.max(1, Math.round(s * modifier)));
   if (ivl < 2.5) return ivl;
   let delta = 1;
-  [[2.5, 7, 0.15], [7, 20, 0.1], [20, Infinity, 0.05]].forEach(([from, to, f]) => {
+  ([[2.5, 7, 0.15], [7, 20, 0.1], [20, Infinity, 0.05]] as const).forEach(([from, to, f]) => {
     delta += f * Math.max(Math.min(ivl, to) - from, 0);
   });
   let lo = Math.max(2, Math.round(ivl - delta));
@@ -126,7 +139,8 @@ function lwFsrsInterval(s, elapsed, seed, retention) {
    `box` (10 min, 1, 3, 7, 14, 30 days): the box interval becomes the stability
    and each lapse (up to 3) raises the difficulty, as FSRS would after Again. */
 const LW_LEGACY_BOX_DAYS = [LW_FSRS_W[0], 1, 3, 7, 14, 30];
-function lwCardMemory(prog) {
+interface CardMemory { s: number; d: number; last: Ms }
+function lwCardMemory(prog: MemoryDoc): CardMemory {
   if (prog.stability) return { s: prog.stability, d: prog.difficulty || lwClampD(lwFsrsInitDRaw(3)), last: prog.lastReview || prog.lastSeen || 0 };
   let d = lwClampD(lwFsrsInitDRaw(3));
   for (let i = 0; i < Math.min(prog.lapses || 0, 3); i++) d = lwFsrsNextD(d, 1);
@@ -135,25 +149,28 @@ function lwCardMemory(prog) {
 }
 
 /* chance (0..1) that the word is recalled now; 0 for a word never studied */
-function lwRetrievability(prog, now) {
+function lwRetrievability(prog: MemoryDoc | null | undefined, now: Ms): number {
   if (!prog) return 0;
   const m = lwCardMemory(prog);
   return lwFsrsRecall(Math.max(0, (now - m.last) / LW_DAY_MS), m.s);
 }
 
-const lwRound4 = (x) => Math.round(x * 1e4) / 1e4;
+const lwRound4 = (x: number) => Math.round(x * 1e4) / 1e4;
 
 /* Next progress doc for a word after one answer. `prev` is the stored doc or
    null for a word never studied. `opts.easy`: a fill answer typed quickly with
    no mistake. Know on a word that isn't due yet, on the same study day as its
    last review, changes nothing, so a word can't be ground to Mastered in one
    evening. Again always counts as a lapse and brings the word back in 10 min. */
-function lwNextProgress(prev, wordId, known, mode, now, opts = {}) {
+function lwNextProgress(prev: Progress | null | undefined, wordId: string, known: boolean, mode: AnswerMode | string,
+  now: Ms, opts: { easy?: boolean } = {}): Progress {
   const g = lwAnswerGrade(known, mode, opts.easy);
   const base = prev || { wordId, reps: 0, lapses: 0 };
-  const next = { ...base, wordId, reps: (base.reps || 0) + 1, lastSeen: now, lastMode: mode };
+  const next: Progress = { due: 0, ...base, wordId, reps: (base.reps || 0) + 1, lastSeen: now, lastMode: mode }; // due is always set below
   delete next.box; // legacy Leitner field
-  let s, d, t = 0;
+  let s: number;
+  let d: number;
+  let t = 0;
   if (!prev) {
     s = lwFsrsInitS(g);
     d = lwClampD(lwFsrsInitDRaw(g));
@@ -181,14 +198,14 @@ function lwNextProgress(prev, wordId, known, mode, now, opts = {}) {
 }
 
 /* 'new' | 'learning' | 'review' (due now) | 'mastered' */
-function lwWordStatus(prog, now) {
+function lwWordStatus(prog: MemoryDoc | null | undefined, now: Ms): WordStatus {
   if (!prog) return 'new';
-  if (prog.due <= now) return 'review';
+  if ((prog.due ?? Infinity) <= now) return 'review';
   return lwCardMemory(prog).s >= LW_MASTERED_DAYS ? 'mastered' : 'learning';
 }
 
 /* 0..1 for the Mastery bar: stability on a log scale, full at LW_MASTERED_DAYS */
-function lwWordMastery(prog) {
+function lwWordMastery(prog: MemoryDoc | null | undefined): number {
   if (!prog) return 0;
   return Math.min(1, Math.log(1 + lwCardMemory(prog).s) / Math.log(1 + LW_MASTERED_DAYS));
 }
@@ -198,9 +215,27 @@ function lwWordMastery(prog) {
    scope 'all': every due word. scope 'focus': due words of the focus groups,
    with `background` of the first session given to the most at-risk due words
    from other groups (mixed in by risk). Returns the ordered ids plus counts. */
-function lwReviewQueue({ words, progress, now, focus, scope, isPaused, srs }) {
-  const due = [];
-  let nextDue = null; // soonest upcoming review in this scope, for the empty state
+interface ReviewQueueArgs {
+  words: Pick<Word, 'id' | 'groupId'>[];
+  progress: Record<string, MemoryDoc & Pick<Progress, 'due'>>;
+  now: Ms;
+  /** ids of the groups selected in Learn */
+  focus: string[];
+  scope: 'focus' | 'all';
+  isPaused: (groupId: string) => boolean;
+  srs: SrsSettings;
+}
+interface ReviewQueue {
+  /** word ids in play order */
+  ids: string[];
+  focusDue: number;
+  allDue: number;
+  /** soonest upcoming review in this scope, for the empty state */
+  nextDue: Ms | null;
+}
+function lwReviewQueue({ words, progress, now, focus, scope, isPaused, srs }: ReviewQueueArgs): ReviewQueue {
+  const due: { id: string; focus: boolean; r: number }[] = [];
+  let nextDue: Ms | null = null;
   words.forEach((w) => {
     const p = progress[w.id];
     if (!p || isPaused(w.groupId)) return;
@@ -224,30 +259,31 @@ function lwReviewQueue({ words, progress, now, focus, scope, isPaused, srs }) {
 }
 
 /* a group's words skip Review while it, or its parent group, is paused */
-function lwGroupPaused(groupId, groupById, groupState) {
+function lwGroupPaused(groupId: string, groupById: Record<string, { id?: string; parentId?: string | null }>,
+  groupState: Record<string, string> | null | undefined): boolean {
   if (!groupState) return false;
   const g = groupById[groupId];
   return groupState[groupId] === 'paused' || !!(g && g.parentId && groupState[g.parentId] === 'paused');
 }
 
 /* compact duration for button labels: 10m, 5h, 3d */
-function lwFormatInterval(ms) {
+function lwFormatInterval(ms: number): string {
   if (ms < 60 * LW_MIN_MS) return Math.max(1, Math.round(ms / LW_MIN_MS)) + 'm';
   if (ms < LW_DAY_MS) return Math.round(ms / (60 * LW_MIN_MS)) + 'h';
   return Math.round(ms / LW_DAY_MS) + 'd';
 }
 
 /* local calendar date of the device, 'YYYY-MM-DD' */
-function lwLocalDate(now) {
+function lwLocalDate(now: Ms): LocalDate {
   const d = new Date(now);
-  const pad = (n) => String(n).padStart(2, '0');
+  const pad = (n: number) => String(n).padStart(2, '0');
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
 }
 
 /* Consecutive days (ending today, or yesterday if nothing answered yet today)
    with at least one answer. `activityByDate` maps 'YYYY-MM-DD' -> activity doc. */
-function lwStreak(activityByDate, now) {
-  const active = (date) => activityByDate[date] && activityByDate[date].answers > 0;
+function lwStreak(activityByDate: ActivityByDate, now: Ms): number {
+  const active = (date: LocalDate) => (activityByDate[date]?.answers ?? 0) > 0;
   const d = new Date(now);
   if (!active(lwLocalDate(d.getTime()))) d.setDate(d.getDate() - 1);
   let streak = 0;
@@ -258,49 +294,50 @@ function lwStreak(activityByDate, now) {
   return streak;
 }
 
-function lwTotalXp(activityByDate) {
+function lwTotalXp(activityByDate: ActivityByDate): number {
   return Object.values(activityByDate).reduce((sum, a) => sum + (a.xp || 0), 0);
 }
 
 /* 50 XP -> level 2, 200 -> 3, 450 -> 4, ... */
-function lwLevel(xp) {
+function lwLevel(xp: number): number {
   return Math.floor(Math.sqrt(xp / 50)) + 1;
 }
 
 /* Practice time credited for one answer: time since the previous answer,
    capped so that breaks don't count. 0 for the first answer of a visit. */
-function lwPracticeMs(prevAt, now) {
+function lwPracticeMs(prevAt: Ms | null | undefined, now: Ms): number {
   if (!prevAt) return 0;
   return Math.max(0, Math.min(now - prevAt, LW_PRACTICE_GAP_MS));
 }
 
 /* how many of the given words are in each status */
-function lwStatusCounts(progress, words, now) {
-  const counts = { new: 0, learning: 0, review: 0, mastered: 0 };
+function lwStatusCounts(progress: ProgressById, words: Pick<Word, 'id'>[], now: Ms): Record<WordStatus, number> {
+  const counts: Record<WordStatus, number> = { new: 0, learning: 0, review: 0, mastered: 0 };
   words.forEach((w) => { counts[lwWordStatus(progress[w.id], now)]++; });
   return counts;
 }
 
 /* the last n calendar days (oldest first) with their activity */
-function lwLastDays(activityByDate, now, n) {
-  const out = [];
+interface DaySummary { date: LocalDate; weekday: number; answers: number; goalMet: boolean }
+function lwLastDays(activityByDate: ActivityByDate, now: Ms, n: number): DaySummary[] {
+  const out: DaySummary[] = [];
   const d = new Date(now);
   d.setDate(d.getDate() - (n - 1));
   for (let i = 0; i < n; i++) {
     const date = lwLocalDate(d.getTime());
-    const a = activityByDate[date] || {};
+    const a: Partial<Activity> = activityByDate[date] || {};
     out.push({ date, weekday: d.getDay(), answers: a.answers || 0, goalMet: !!a.goalMet });
     d.setDate(d.getDate() + 1);
   }
   return out;
 }
 
-function lwTotalMs(activityByDate) {
+function lwTotalMs(activityByDate: ActivityByDate): number {
   return Object.values(activityByDate).reduce((sum, a) => sum + (a.ms || 0), 0);
 }
 
 /* 95 min -> "1h 35m", 12 min -> "12m" */
-function lwFormatDuration(ms) {
+function lwFormatDuration(ms: number): string {
   const min = Math.round(ms / LW_MIN_MS);
   if (min < 60) return min + 'm';
   const h = Math.floor(min / 60);
@@ -310,16 +347,20 @@ function lwFormatDuration(ms) {
 /* ---------------- Collocations game ---------------- */
 
 /* phrases of an entry whose word cards still exist */
-function lwCollocLive(entry, wordsById) {
+type CollocEntry = Pick<Collocation, 'id'> & Partial<Pick<Collocation, 'phrases' | 'wrong'>>;
+type Phrase = Collocation['phrases'][number];
+type WordsById = Record<string, unknown>;
+function lwCollocLive(entry: CollocEntry, wordsById: WordsById): Phrase[] {
   return (entry.phrases || []).filter((p) => wordsById[p.wordId]);
 }
-function lwCollocPlayable(entry, wordsById) {
+function lwCollocPlayable(entry: CollocEntry, wordsById: WordsById): boolean {
   return lwCollocLive(entry, wordsById).length >= 2 && (entry.wrong || []).length >= 1;
 }
 
 /* Entries for one session: playable ones with the most phrase cards due or new
    first, then the least recently practised. `exclude` (ids just played) go last. */
-function lwCollocPick(entries, progress, wordsById, now, n, exclude = []) {
+function lwCollocPick<E extends CollocEntry>(entries: E[], progress: Record<string, Pick<Progress, 'due'> & Partial<Progress>>,
+  wordsById: WordsById, now: Ms, n: number, exclude: string[] = []): E[] {
   const scored = entries.filter((e) => lwCollocPlayable(e, wordsById)).map((e) => {
     const live = lwCollocLive(e, wordsById);
     const due = live.filter((p) => { const pr = progress[p.wordId]; return !pr || pr.due <= now; }).length;
@@ -331,9 +372,10 @@ function lwCollocPick(entries, progress, wordsById, now, n, exclude = []) {
 }
 
 /* Up to `max` phrases for a round, due or new ones first. */
-function lwCollocRoundPhrases(entry, progress, wordsById, now, max = 5) {
-  const isDue = (p) => { const pr = progress[p.wordId]; return !pr || pr.due <= now; };
-  return lwCollocLive(entry, wordsById).slice().sort((a, b) => isDue(b) - isDue(a)).slice(0, max);
+function lwCollocRoundPhrases(entry: CollocEntry, progress: Record<string, Pick<Progress, 'due'>>,
+  wordsById: WordsById, now: Ms, max = 5): Phrase[] {
+  const isDue = (p: Phrase) => { const pr = progress[p.wordId]; return !pr || pr.due <= now; };
+  return lwCollocLive(entry, wordsById).slice().sort((a, b) => Number(isDue(b)) - Number(isDue(a))).slice(0, max);
 }
 
 /* ---------------- Grammar lessons ---------------- */
@@ -342,12 +384,13 @@ const LW_LESSON_TASKS = 10; // every lesson test has exactly 10 tasks; 10/10 pas
 const LW_XP_LESSON_BONUS = 50; // first completion of a lesson
 
 /* lessons grouped by topic, each topic in `order` (then title), topics A–Z */
-function lwLessonTopics(lessons) {
-  const by = new Map();
+type LessonLike = Pick<Lesson, 'id'> & Partial<Pick<Lesson, 'topic' | 'order' | 'title'>>;
+function lwLessonTopics<L extends LessonLike>(lessons: L[]): { topic: string; lessons: L[] }[] {
+  const by = new Map<string, L[]>();
   lessons.forEach((l) => {
     const t = (l.topic || 'Other').trim() || 'Other';
     if (!by.has(t)) by.set(t, []);
-    by.get(t).push(l);
+    by.get(t)!.push(l);
   });
   return [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([topic, list]) => ({
     topic,
@@ -358,8 +401,10 @@ function lwLessonTopics(lessons) {
 /* 'locked' | 'new' | 'studied' | 'completed'. A lesson opens once the previous
    lesson of its topic is completed; one the user already studied or completed
    stays open even if an earlier lesson is added later. Admins see all open. */
-function lwLessonStatus(lesson, topicLessons, progressByLesson, isAdmin) {
-  const p = progressByLesson[lesson.id] || {};
+type LessonStatus = 'locked' | 'new' | 'studied' | 'completed';
+function lwLessonStatus(lesson: Pick<Lesson, 'id'>, topicLessons: Pick<Lesson, 'id'>[],
+  progressByLesson: Record<string, LessonProgress>, isAdmin: boolean): LessonStatus {
+  const p: LessonProgress = progressByLesson[lesson.id] || {};
   if (p.completedAt) return 'completed';
   if (p.studiedAt) return 'studied';
   const i = topicLessons.findIndex((l) => l.id === lesson.id);
@@ -370,9 +415,9 @@ function lwLessonStatus(lesson, topicLessons, progressByLesson, isAdmin) {
 
 /* a typed answer matches when equal ignoring case, extra spaces, apostrophe
    style and trailing punctuation */
-const lwNormAnswer = (s) => String(s || '').toLowerCase().replace(/[’‘`´]/g, "'")
+const lwNormAnswer = (s: unknown) => String(s || '').toLowerCase().replace(/[’‘`´]/g, "'")
   .replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '').trim();
-function lwCheckFill(input, answers) {
+function lwCheckFill(input: string, answers: string[] | null | undefined): boolean {
   const v = lwNormAnswer(input);
   return !!v && (answers || []).some((a) => lwNormAnswer(a) === v);
 }
@@ -382,11 +427,11 @@ function lwCheckFill(input, answers) {
    only remembers when each one was earned, so it stays earned. */
 
 /* longest run of consecutive active days ever */
-function lwBestStreak(activityByDate) {
-  const days = Object.values(activityByDate).filter((a) => a.answers > 0).map((a) => a.date).sort();
+function lwBestStreak(activityByDate: ActivityByDate): number {
+  const days = Object.values(activityByDate).filter((a) => (a.answers ?? 0) > 0).map((a) => a.date).sort();
   let best = 0;
   let run = 0;
-  let prev = null;
+  let prev: number | null = null;
   days.forEach((d) => {
     const t = Date.parse(d + 'T12:00:00');
     run = prev != null && Math.round((t - prev) / LW_DAY_MS) === 1 ? run + 1 : 1;
@@ -396,8 +441,21 @@ function lwBestStreak(activityByDate) {
   return best;
 }
 
-const lwBadge = (id, group, icon, title, text, metric, target, unit) => ({ id, group, icon, title, text, metric, target, unit });
-const LW_BADGES = [
+type BadgeMetric = 'bestStreak' | 'goalDays' | 'answers' | 'ownWords' | 'mastered' | 'hours' | 'level'
+  | 'booksDone' | 'lessonsDone' | 'topicsDone' | 'ownCollocs' | 'levelTests';
+interface Badge {
+  id: string;
+  group: string;
+  icon: string;
+  title: string;
+  text: string;
+  metric: BadgeMetric;
+  target: number;
+  unit: string;
+}
+const lwBadge = (id: string, group: string, icon: string, title: string, text: string, metric: BadgeMetric,
+  target: number, unit: string): Badge => ({ id, group, icon, title, text, metric, target, unit });
+const LW_BADGES: Badge[] = [
   lwBadge('streak-3', 'Streak', '🔥', '3-day streak', 'Study 3 days in a row', 'bestStreak', 3, 'days'),
   lwBadge('streak-7', 'Streak', '🔥', 'Week streak', 'Study 7 days in a row', 'bestStreak', 7, 'days'),
   lwBadge('streak-30', 'Streak', '🔥', 'Month streak', 'Study 30 days in a row', 'bestStreak', 30, 'days'),
@@ -425,10 +483,22 @@ const LW_BADGES = [
 ];
 
 /* metric values from the app's data */
-function lwBadgeMetrics({ uid, activity, progress, words, readingProgress, lessons, lessonProgress, collocations, levelTest, now }) {
+interface BadgeMetricsArgs {
+  uid: string;
+  activity: ActivityByDate;
+  progress: ProgressById;
+  words: Pick<Word, 'id' | 'userId'>[];
+  readingProgress: Record<string, Pick<ReadingProgress, 'pct'>>;
+  lessons: LessonLike[];
+  lessonProgress: Record<string, LessonProgress>;
+  collocations: Pick<Collocation, 'userId'>[];
+  levelTest: unknown;
+  now: Ms;
+}
+function lwBadgeMetrics({ uid, activity, progress, words, readingProgress, lessons, lessonProgress, collocations, levelTest, now }: BadgeMetricsArgs): Record<BadgeMetric, number> {
   const acts = Object.values(activity);
   const xp = lwTotalXp(activity);
-  const done = (l) => (lessonProgress[l.id] || {}).completedAt;
+  const done = (l: LessonLike) => (lessonProgress[l.id] || {}).completedAt;
   const topics = lwLessonTopics(lessons);
   return {
     bestStreak: lwBestStreak(activity),
@@ -447,7 +517,8 @@ function lwBadgeMetrics({ uid, activity, progress, words, readingProgress, lesso
 }
 
 /* every badge with its progress; earned = stored, or reached right now */
-function lwBadgeStates(metrics, earned) {
+interface BadgeState { badge: Badge; value: number; target: number; reached: boolean; earnedAt: Ms | null }
+function lwBadgeStates(metrics: Partial<Record<BadgeMetric, number>>, earned: Record<string, Ms> | null | undefined): BadgeState[] {
   return LW_BADGES.map((b) => {
     const value = metrics[b.metric] || 0;
     const at = (earned || {})[b.id] || null;
@@ -461,10 +532,10 @@ function lwBadgeStates(metrics, earned) {
    a level runs out the nearest level with questions is used. */
 const LW_LEVEL_TEST_LEN = 20;
 const LW_LEVEL_TEST_MIN_BANK = 30; // fewer questions in a language → the test isn't offered
-const LW_CEFR_NAMES = { A1: 'Beginner', A2: 'Elementary', B1: 'Intermediate', B2: 'Upper-intermediate', C1: 'Advanced', C2: 'Proficient' };
+const LW_CEFR_NAMES: Record<CefrLevel, string> = { A1: 'Beginner', A2: 'Elementary', B1: 'Intermediate', B2: 'Upper-intermediate', C1: 'Advanced', C2: 'Proficient' };
 
 /* next question at `level` (index 0–5) or the nearest one, from questions not asked yet */
-function lwLevelTestPick(bank, askedIds, level) {
+function lwLevelTestPick<Q extends Pick<LevelQuestion, 'id' | 'level'>>(bank: Q[], askedIds: string[], level: number): Q | null {
   const left = bank.filter((q) => !askedIds.includes(q.id));
   for (let d = 0; d < LW_CEFR_ALL.length; d++) {
     for (const i of d === 0 ? [level] : [level + d, level - d]) {
@@ -474,16 +545,17 @@ function lwLevelTestPick(bank, askedIds, level) {
   }
   return null;
 }
-const lwLevelIndex = (lv) => Math.max(0, LW_CEFR_ALL.indexOf(lv));
+const lwLevelIndex = (lv: string): number => Math.max(0, LW_CEFR_ALL.indexOf(lv as CefrLevel));
 
 /* answers: [{ level, target, ok }] in order — `level` of the question asked,
    `target` the staircase step it was asked for (they differ when a level ran
    out of questions). Result: the mean target of the last 10 answers
    (rounded), one step lower if fewer than half of the answers at that level were
    right. Plus the per-level tally for the result screen. */
-function lwLevelTestResult(answers) {
+interface LevelTestAnswer { level: string; target?: number | null; ok: boolean }
+function lwLevelTestResult(answers: LevelTestAnswer[]) {
   const tail = answers.slice(-10);
-  const step = (a) => (a.target != null ? a.target : lwLevelIndex(a.level));
+  const step = (a: LevelTestAnswer) => (a.target != null ? a.target : lwLevelIndex(a.level));
   let idx = tail.length ? Math.round(tail.reduce((n, a) => n + step(a), 0) / tail.length) : 0;
   const at = answers.filter((a) => a.level === LW_CEFR_ALL[idx]);
   if (idx > 0 && at.length && at.filter((a) => a.ok).length * 2 < at.length) idx--;
@@ -498,8 +570,9 @@ function lwLevelTestResult(answers) {
    Clips whose card is due first, then the ones that are new to the user (no
    card, or a card never studied), then the rest; random within each group.
    `cardOf(clip)` → the user's card or null. `exclude`: ids just played go last. */
-function lwClipPick(clips, cardOf, progress, now, n, exclude = []) {
-  const rank = (c) => {
+function lwClipPick<C extends { id: string }>(clips: C[], cardOf: (clip: C) => { id: string } | null | undefined,
+  progress: Record<string, Pick<Progress, 'due'>>, now: Ms, n: number, exclude: string[] = []): C[] {
+  const rank = (c: C) => {
     if (exclude.includes(c.id)) return 9;
     const card = cardOf(c);
     const p = card && progress[card.id];

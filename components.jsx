@@ -9,11 +9,11 @@ import {
   lwSaveVoiceSettings, lwSetGeminiKey, lwUid, lwUtterance, lwVoiceAccent, lwVoiceScore,
   lwVoiceSettings,
 } from './data.js';
-import { LW_LESSON_TASKS } from './progress.js';
+import { LW_LESSON_TASKS } from './progress.ts';
 import {
   LW_LETTERS, lwCollocKey, lwCollocPartner, lwFindPhraseCards, lwNormLetters,
   readingTokensMatch,
-} from './reading.js';
+} from './reading.ts';
 
 /* ---------------- Icons ---------------- */
 const Ic = {
