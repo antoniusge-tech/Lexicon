@@ -1,0 +1,77 @@
+/* Pronunciation check, bottom sheet, language select. */
+
+/* ---------- Pronunciation check ---------- */
+.pron { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.pron-btn {
+  display: inline-flex; align-items: center; gap: 8px; border: 0; cursor: pointer; padding: 8px 14px; border-radius: 999px;
+  background: var(--surface-high); color: var(--on-surface); font-size: 13.5px; font-weight: 700;
+}
+.pron-btn:hover { background: var(--surface-highest); }
+.pron-btn.on { background: var(--error); color: #fff; animation: pronPulse 1.2s ease-in-out infinite; }
+@keyframes pronPulse { 50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--error) 18%, transparent); } }
+.pron-result { display: flex; align-items: flex-start; gap: 10px; width: 100%; }
+.pron-score { flex: 0 0 auto; padding: 3px 10px; border-radius: 999px; font-weight: 800; font-size: 13px; }
+.pron-score.good { background: var(--secondary-container); color: var(--on-secondary-container); }
+.pron-score.ok { background: var(--primary-soft); color: var(--primary); }
+.pron-score.low { background: color-mix(in srgb, var(--error) 14%, transparent); color: var(--error); }
+.pron-heard { font-size: 14px; color: var(--on-surface-variant); }
+.pron-text { margin: 0; font-size: 15px; line-height: 1.7; }
+.pron-ok { color: var(--on-surface); }
+.pron-miss { color: var(--error); text-decoration: underline wavy 1px; text-underline-offset: 4px; }
+.pron-error { font-size: 13px; color: var(--error); }
+.rpara-practice { margin-top: 10px; padding: 12px 14px; border-radius: var(--radius-lg); background: var(--surface-low); display: flex; flex-direction: column; gap: 8px; }
+.rpara-practice .field-hint { margin: 0; }
+
+/* ---------- Bottom sheet (Modal sheet) ---------- */
+@media (max-width: 1023.98px) {
+  .modal-scrim.modal-sheet { align-items: flex-end; padding: 0; }
+  .modal-sheet .modal {
+    max-width: none; border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    padding-bottom: env(safe-area-inset-bottom); animation: sheetUp .26s cubic-bezier(.2,.8,.2,1);
+  }
+}
+@keyframes sheetUp { from { transform: translateY(100%); } }
+
+/* ---------- Language select (first launch) ---------- */
+.lang-select {
+  min-height: 100dvh; display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.lang-select-card {
+  width: 100%; max-width: 420px; text-align: center;
+}
+.lang-select-title { font-family: var(--font-display); font-size: 28px; font-weight: 800; margin: 0 0 6px; color: var(--on-surface); }
+.lang-select-sub { color: var(--on-surface-variant); font-size: 14px; margin: 0 0 28px; }
+.auth-card { background: var(--surface-lowest); border-radius: var(--radius-xl); box-shadow: var(--shadow-card); padding: 32px 24px 24px; }
+.auth-card .form { text-align: left; }
+.auth-brand { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 22px; }
+.lang-select-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.lang-opt {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  border: 0; background: var(--surface-lowest); box-shadow: var(--shadow-ambient);
+  border-radius: var(--radius-xl); padding: 22px 14px; transition: all .16s ease;
+}
+.lang-opt:hover { transform: translateY(-2px); box-shadow: var(--shadow-card); }
+.lang-opt-flag { font-size: 32px; }
+.lang-opt-name { font-weight: 600; font-size: 14.5px; color: var(--on-surface); }
+.lang-opt { position: relative; cursor: pointer; }
+.lang-opt.on { background: var(--primary-soft); box-shadow: 0 0 0 2px var(--primary); }
+.lang-opt-native { font-size: 12.5px; color: var(--on-surface-variant); margin-top: -4px; }
+.lang-opt-check {
+  position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; border-radius: 999px;
+  display: grid; place-items: center; background: var(--primary); color: var(--on-primary);
+}
+.lang-select-go { width: 100%; margin-top: 20px; justify-content: center; }
+.drawer-langs { margin: 0 0 12px; }
+.drawer-langs .seg-btn { flex: 1; }
+
+.icon-btn {
+  display: grid; place-items: center;
+  width: 40px; height: 40px; border-radius: 999px;
+  border: 0; background: transparent;
+  color: var(--on-surface); transition: all .16s ease;
+}
+.icon-btn:hover { background: var(--surface-low); }
+.icon-btn.sm { width: 32px; height: 32px; border-color: transparent; background: transparent; }
+.icon-btn.sm:hover { background: var(--surface-low); }
+.icon-btn.danger:hover { color: var(--error); background: color-mix(in srgb, var(--error) 10%, transparent); }

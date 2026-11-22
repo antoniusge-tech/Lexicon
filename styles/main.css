@@ -1,0 +1,18 @@
+/* main.css — all styles, linked from index.html. Vite inlines the @imports into one
+   file. The order is the original cascade order: keep it, and put a new rule in
+   the file of its area (a later file wins over an earlier one at equal specificity).
+   No 1px borders ("no-line" rule): use background shifts, shadows or var(--ghost). */
+
+@import './tokens.css';
+@import './shell.css';
+@import './learn.css';
+@import './profile.css';
+@import './library-words.css';
+@import './reading.css';
+@import './widgets.css';
+@import './cards.css';
+@import './controls.css';
+@import './responsive.css';
+@import './collocations.css';
+@import './grammar.css';
+@import './extras.css';

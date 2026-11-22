@@ -1,0 +1,19 @@
+/* Responsive layout: from 1024px the drawer becomes a permanent sidebar. */
+
+/* ---------- Responsive ---------- */
+@media (max-width: 560px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .lib-title { font-size: 28px; }
+  .card-word { font-size: 40px; }
+  .card-tr { font-size: 32px; }
+  .lib-head .btn span { display: inline; }
+}
+/* desktop: the drawer becomes a permanent sidebar; app bar and tab bar go away */
+@media (min-width: 1024px) {
+  .drawer { transform: none; width: 280px; border-radius: 0; box-shadow: none; background: var(--surface-low); }
+  .drawer-profile { background: var(--surface-lowest); }
+  .drawer-streak { background: var(--surface-low); }
+  .drawer-close, .drawer-scrim, .appbar, .tabbar { display: none; }
+  .app-main { margin-left: 280px; }
+  .content { padding: 40px clamp(24px, 4vw, 56px); }
+}

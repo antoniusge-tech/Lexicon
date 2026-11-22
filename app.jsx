@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
+import { registerSW } from 'virtual:pwa-register';
 import {
   LW_COLLECTIONS, lwAddBonusXp, lwAddPracticeTime, lwAuthInfo, lwDeleteDoc,
   lwDeleteReadingProgress, lwDeleteText, lwLogout, lwRecordAnswer, lwSaveLessonProgress,
@@ -127,6 +128,18 @@ function App() {
     setToasts((list) => [...list, { id, ...toast }]);
     return id;
   }, []);
+
+  /* Service worker (vite-plugin-pwa): the app installs and starts offline. When a
+     new deploy has downloaded, offer a reload instead of swapping the app under
+     the user's hands; until then the old version keeps working. */
+  useEffect(() => {
+    const updateSW = registerSW({
+      onNeedRefresh() {
+        pushToast({ kind: 'info', title: 'A new version of Lexicon is ready', msg: 'Reload to update.',
+          action: { label: 'Reload', run: () => updateSW(true) } });
+      },
+    });
+  }, [pushToast]);
 
   /* speech had no voice for the language studied (lwUtterance): say so once
      per language and session, instead of letting it sound like English */
@@ -895,7 +908,7 @@ function App() {
       {geminiKeyOpen && <GeminiKeyModal onClose={() => setGeminiKeyOpen(false)} />}
       <ToastStack toasts={toasts}
         onDismiss={dismissToast}
-        onAction={(action) => { if (action && action.view) goTo(action.view); }} />
+        onAction={(action) => { if (action && action.run) action.run(); else if (action && action.view) goTo(action.view); }} />
     </div>
   );
 }

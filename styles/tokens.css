@@ -1,0 +1,81 @@
+/* Design tokens (Lucid Mentor, stitch_/lingoflow/DESIGN.md), the dark theme and base element styles. */
+
+:root {
+  /* Lucid Mentor (stitch_/lingoflow/DESIGN.md). Light values come from the design system. */
+  --surface: #f5f7f9;            /* page background */
+  --surface-low: #eef1f3;        /* sections, secondary fills */
+  --surface-lowest: #ffffff;     /* cards, primary interactive surfaces */
+  --surface-high: #dfe3e6;       /* secondary buttons */
+  --surface-highest: #d9dde0;    /* progress tracks */
+  --on-surface: #2c2f31;
+  --on-surface-variant: #595c5e;
+  --faint: #8a8d90;
+  --outline-variant: #abadaf;
+  --ghost: color-mix(in srgb, var(--outline-variant) 30%, transparent); /* "ghost border" fallback */
+  --primary: #005da7;
+  --primary-container: #68abff;
+  --on-primary: #eef3ff;
+  --primary-soft: #e6f0fc;
+  --secondary: #7f5200;          /* success / correct / mastered */
+  --secondary-container: #ffc87f;
+  --on-secondary-container: #644000;
+  --tertiary: #006571;
+  --tertiary-fixed: #58e7fb;
+  --error: #b31b25;
+  --gradient-cta: linear-gradient(135deg, var(--primary), var(--primary-container));
+  --gradient-progress: linear-gradient(90deg, var(--tertiary), var(--tertiary-fixed));
+  --glass: rgb(255 255 255 / 80%);
+  --scrim: rgb(11 15 16 / 45%);
+  --shadow-ambient: 0 12px 32px -8px rgb(44 47 49 / 8%);
+  --shadow-card: 0 2px 6px rgb(44 47 49 / 4%), 0 24px 48px -12px rgb(44 47 49 / 12%);
+  --radius-xl: 24px;
+  --radius-lg: 16px;
+  --radius: 16px;
+  --font-display: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  color-scheme: light;
+}
+/* Dark theme: not defined by DESIGN.md — our own tonal ladder in the same blue family */
+html[data-theme="dark"] {
+  --surface: #0f1417;
+  --surface-low: #151b1f;
+  --surface-lowest: #1b2228;
+  --surface-high: #262f36;
+  --surface-highest: #2f3941;
+  --on-surface: #e3e8ec;
+  --on-surface-variant: #a3abb2;
+  --faint: #6f7881;
+  --outline-variant: #5a646c;
+  --primary: #68abff;
+  --primary-container: #2f7fd0;
+  --on-primary: #001d38;
+  --primary-soft: #16283a;
+  --secondary: #ffb548;
+  --secondary-container: #4a3200;
+  --on-secondary-container: #ffd9a3;
+  --tertiary: #0097a7;
+  --tertiary-fixed: #45d8ed;
+  --error: #ff6b6b;
+  --gradient-cta: linear-gradient(135deg, #2f7fd0, #68abff);
+  --glass: rgb(27 34 40 / 80%);
+  --scrim: rgb(0 0 0 / 55%);
+  --shadow-ambient: 0 12px 32px -8px rgb(0 0 0 / 45%);
+  --shadow-card: 0 2px 8px rgb(0 0 0 / 30%), 0 24px 48px -12px rgb(0 0 0 / 55%);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+/* clip, not hidden: hidden on both makes body the scroller and window.scrollTo stops working */
+html, body { margin: 0; height: 100%; overflow-x: hidden; overflow-x: clip; }
+body {
+  background: var(--surface);
+  color: var(--on-surface);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, .brand-name, .empty-title, .lib-title, .reading-title, .grp-name, .modal-head h3, .lang-select-title { font-family: var(--font-display); }
+.app, .appbar, .card-face, .grp, .chip, .btn, .input, .modal { transition: background-color .3s ease, border-color .3s ease; }
+#root { min-height: 100%; }
+button { font-family: inherit; cursor: pointer; }
+::selection { background: var(--primary); color: var(--on-primary); }
+
+.app { min-height: 100dvh; display: flex; flex-direction: column; }

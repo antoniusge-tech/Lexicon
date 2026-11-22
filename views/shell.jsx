@@ -21,7 +21,7 @@ function Toast({ toast, onDismiss, onAction }) {
     setTimeout(() => onDismiss(toast.id), 220); // matches toastOut animation
   }, [toast.id, onDismiss]);
 
-  /* auto-dismiss success toasts; keep errors until the user closes them */
+  /* auto-dismiss success toasts; keep errors and info (e.g. "new version") until closed */
   useEffect(() => {
     if (toast.kind !== 'success') return;
     const t = setTimeout(close, 7000);
@@ -32,8 +32,8 @@ function Toast({ toast, onDismiss, onAction }) {
     <div className={'toast toast-' + (toast.kind === 'error' ? 'error' : 'success') + (leaving ? ' is-out' : '')}
       role="status" aria-live="polite">
       <span className="toast-icon">
-        {toast.kind === 'error'
-          ? <Ic.Close width="18" height="18" />
+        {toast.kind === 'error' ? <Ic.Close width="18" height="18" />
+          : toast.kind === 'info' ? <Ic.Sparkle width="18" height="18" />
           : <Ic.Check width="18" height="18" />}
       </span>
       <div className="toast-body">
