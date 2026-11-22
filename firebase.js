@@ -1,9 +1,19 @@
 /* firebase.js — Firebase init + per-user Firestore data layer + auth */
 
-import firebase from 'firebase/compat/app';
-import 'firebase/compat/auth';
-import 'firebase/compat/firestore';
+import { getApp, getApps, initializeApp } from 'firebase/app';
+import {
+  EmailAuthProvider, GoogleAuthProvider, createUserWithEmailAndPassword, deleteUser, getAuth,
+  linkWithPopup, onAuthStateChanged, reauthenticateWithCredential, reauthenticateWithPopup,
+  sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup, signInWithRedirect, signOut,
+  unlink,
+} from 'firebase/auth';
+import {
+  collection, deleteDoc, doc, getDoc, getDocs, getFirestore, increment, initializeFirestore, onSnapshot,
+  persistentLocalCache, persistentMultipleTabManager, query, serverTimestamp, setDoc, updateDoc,
+  where, writeBatch,
+} from 'firebase/firestore';
 import { lwCurrentLang, lwRoIpa } from './data.js';
+import { lwConsoleFirebase } from './firebase-console.js';
 
 const LW_FIREBASE_CONFIG = {
   apiKey: 'AIzaSyAFNfL2zqb5jqhEzTHVYzQx0DLQfCHpt14',
@@ -14,15 +24,28 @@ const LW_FIREBASE_CONFIG = {
   appId: '1:1004533576564:web:3033728131c095ce0cb221',
 };
 
-firebase.initializeApp(LW_FIREBASE_CONFIG);
-const lwDb = firebase.firestore();
+/* getApps() and the getFirestore() fallback are only for Vite hot updates in dev,
+   which re-run this module in a page where Firebase is already initialised. */
+const lwApp = getApps().length ? getApp() : initializeApp(LW_FIREBASE_CONFIG);
 /* Offline cache: reads come from IndexedDB and writes queue up while the network
-   is gone, then sync. Must run before any other Firestore call. Fails harmlessly
-   in browsers without IndexedDB (unimplemented) or when another tab holds it. */
-lwDb.enablePersistence({ synchronizeTabs: true })
-  .catch((e) => console.warn('Firestore offline cache unavailable:', e.code));
-const lwAuth = firebase.auth();
-lwAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+   is gone, then sync; open tabs share it. Where IndexedDB is unavailable the SDK
+   logs a warning and keeps working with a memory cache. */
+const lwDb = (() => {
+  try {
+    return initializeFirestore(lwApp, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    });
+  } catch {
+    return getFirestore(lwApp);
+  }
+})();
+/* getAuth keeps the session in IndexedDB (falls back to localStorage), the same
+   place the compat SDK used, so signed-in users stay signed in. */
+const lwAuth = getAuth(lwApp);
+
+/* references by path: col('words'), ref('users', uid), ref('texts', id, 'chapters', '0') */
+const col = (...path) => collection(lwDb, ...path);
+const ref = (...path) => doc(lwDb, ...path);
 
 const LW_COLLECTIONS = {
   groups: 'groups',
@@ -49,21 +72,21 @@ function lwUsernameToEmail(username) {
 async function lwRegister(username, email, password) {
   const name = username.trim();
   const nameLower = name.toLowerCase();
-  const existing = await lwDb.collection(LW_COLLECTIONS.usernames).doc(nameLower).get();
-  if (existing.exists) {
+  const existing = await getDoc(ref(LW_COLLECTIONS.usernames, nameLower));
+  if (existing.exists()) {
     const err = new Error('This username is taken.');
     err.code = 'lw/username-taken';
     throw err;
   }
-  const cred = await lwAuth.createUserWithEmailAndPassword(email.trim(), password);
+  const cred = await createUserWithEmailAndPassword(lwAuth, email.trim(), password);
   const uid = cred.user.uid;
-  await lwDb.collection(LW_COLLECTIONS.users).doc(uid).set({
+  await setDoc(ref(LW_COLLECTIONS.users, uid), {
     username: name,
     role: 'user',
     lang: null,
-    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    createdAt: serverTimestamp(),
   });
-  await lwDb.collection(LW_COLLECTIONS.usernames).doc(nameLower).set({ uid });
+  await setDoc(ref(LW_COLLECTIONS.usernames, nameLower), { uid });
   return cred.user;
 }
 
@@ -71,12 +94,12 @@ async function lwRegister(username, email, password) {
 async function lwLogin(identifier, password) {
   const id = identifier.trim();
   const email = id.includes('@') ? id : lwUsernameToEmail(id);
-  const cred = await lwAuth.signInWithEmailAndPassword(email, password);
+  const cred = await signInWithEmailAndPassword(lwAuth, email, password);
   return cred.user;
 }
 
 function lwResetPassword(email) {
-  return lwAuth.sendPasswordResetEmail(email.trim());
+  return sendPasswordResetEmail(lwAuth, email.trim());
 }
 
 /* Permanently delete the signed-in user's account: re-auth (Firebase requires a
@@ -92,41 +115,41 @@ async function lwDeleteAccount(password) {
   /* Firebase wants a recent sign-in: password accounts confirm with the
      password, Google-only accounts with a Google popup. */
   if (lwHasPassword(user)) {
-    const cred = firebase.auth.EmailAuthProvider.credential(user.email, password);
-    await user.reauthenticateWithCredential(cred);
+    const cred = EmailAuthProvider.credential(user.email, password);
+    await reauthenticateWithCredential(user, cred);
   } else {
-    await user.reauthenticateWithPopup(lwGoogleProvider());
+    await reauthenticateWithPopup(user, lwGoogleProvider());
   }
 
   const uid = user.uid;
   /* own reading texts: chapters live in a subcollection and must go first */
-  const ownTexts = await lwDb.collection(LW_COLLECTIONS.texts).where('userId', '==', uid).get();
+  const ownTexts = await getDocs(query(col(LW_COLLECTIONS.texts), where('userId', '==', uid)));
   for (const t of ownTexts.docs) await lwDeleteText(t.id, (t.data().chapters || []).length);
   for (const coll of [LW_COLLECTIONS.words, LW_COLLECTIONS.groups, LW_COLLECTIONS.progress, LW_COLLECTIONS.activity, LW_COLLECTIONS.readingProgress, LW_COLLECTIONS.collocations, LW_COLLECTIONS.lessonProgress]) {
-    const snap = await lwDb.collection(coll).where('userId', '==', uid).get();
+    const snap = await getDocs(query(col(coll), where('userId', '==', uid)));
     for (let i = 0; i < snap.docs.length; i += 400) {
-      const batch = lwDb.batch();
-      snap.docs.slice(i, i + 400).forEach((doc) => batch.delete(doc.ref));
+      const batch = writeBatch(lwDb);
+      snap.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
       await batch.commit();
     }
   }
 
-  const profile = await lwDb.collection(LW_COLLECTIONS.users).doc(uid).get();
-  const username = profile.exists ? profile.data().username : null;
+  const profile = await getDoc(ref(LW_COLLECTIONS.users, uid));
+  const username = profile.exists() ? profile.data().username : null;
   if (username) {
-    await lwDb.collection(LW_COLLECTIONS.usernames).doc(username.toLowerCase()).delete();
+    await deleteDoc(ref(LW_COLLECTIONS.usernames, username.toLowerCase()));
   }
-  await lwDb.collection(LW_COLLECTIONS.users).doc(uid).delete();
-  await user.delete();
+  await deleteDoc(ref(LW_COLLECTIONS.users, uid));
+  await deleteUser(user);
 }
 
 function lwLogout() {
-  return lwAuth.signOut();
+  return signOut(lwAuth);
 }
 
 /* Subscribe to auth state changes. Returns an unsubscribe function. */
 function lwWatchAuth(onChange) {
-  return lwAuth.onAuthStateChanged(onChange);
+  return onAuthStateChanged(lwAuth, onChange);
 }
 
 /* Subscribe to the current user's profile doc. Calls onChange(profile) or
@@ -134,9 +157,9 @@ function lwWatchAuth(onChange) {
    A "missing" answer from the offline cache alone is ignored — the doc may just
    not be cached on this device yet. Returns an unsubscribe function. */
 function lwWatchUserDoc(uid, onChange) {
-  return lwDb.collection(LW_COLLECTIONS.users).doc(uid).onSnapshot({ includeMetadataChanges: true }, (doc) => {
-    if (!doc.exists && doc.metadata.fromCache) return;
-    onChange(doc.exists ? { id: doc.id, ...doc.data() } : null);
+  return onSnapshot(ref(LW_COLLECTIONS.users, uid), { includeMetadataChanges: true }, (d) => {
+    if (!d.exists() && d.metadata.fromCache) return;
+    onChange(d.exists() ? { id: d.id, ...d.data() } : null);
   });
 }
 
@@ -144,13 +167,13 @@ function lwWatchUserDoc(uid, onChange) {
 function lwUpdateUser(uid, fields) {
   const data = { ...fields };
   Object.keys(data).forEach((k) => { if (data[k] === undefined) delete data[k]; });
-  return lwDb.collection(LW_COLLECTIONS.users).doc(uid).update(data);
+  return updateDoc(ref(LW_COLLECTIONS.users, uid), data);
 }
 
 /* ---------------- Google sign-in ---------------- */
 
 function lwGoogleProvider() {
-  const p = new firebase.auth.GoogleAuthProvider();
+  const p = new GoogleAuthProvider();
   p.setCustomParameters({ prompt: 'select_account' });
   return p;
 }
@@ -171,10 +194,10 @@ function lwAuthInfo() {
    A first-time Google user has no profile yet — App then asks for a username. */
 async function lwSignInWithGoogle() {
   try {
-    return (await lwAuth.signInWithPopup(lwGoogleProvider())).user;
+    return (await signInWithPopup(lwAuth, lwGoogleProvider())).user;
   } catch (e) {
     if (e && e.code === 'auth/popup-blocked') {
-      await lwAuth.signInWithRedirect(lwGoogleProvider());
+      await signInWithRedirect(lwAuth, lwGoogleProvider());
       return null;
     }
     throw e;
@@ -188,27 +211,27 @@ async function lwCreateProfile(username) {
   const user = lwAuth.currentUser;
   const name = username.trim();
   const nameLower = name.toLowerCase();
-  const existing = await lwDb.collection(LW_COLLECTIONS.usernames).doc(nameLower).get();
-  if (existing.exists) {
+  const existing = await getDoc(ref(LW_COLLECTIONS.usernames, nameLower));
+  if (existing.exists()) {
     const err = new Error('This username is taken.');
     err.code = 'lw/username-taken';
     throw err;
   }
-  await lwDb.collection(LW_COLLECTIONS.usernames).doc(nameLower).set({ uid: user.uid });
-  await lwDb.collection(LW_COLLECTIONS.users).doc(user.uid).set({
+  await setDoc(ref(LW_COLLECTIONS.usernames, nameLower), { uid: user.uid });
+  await setDoc(ref(LW_COLLECTIONS.users, user.uid), {
     username: name,
     role: 'user',
     lang: null,
-    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    createdAt: serverTimestamp(),
   });
 }
 
 function lwLinkGoogle() {
-  return lwAuth.currentUser.linkWithPopup(lwGoogleProvider());
+  return linkWithPopup(lwAuth.currentUser, lwGoogleProvider());
 }
 
 function lwUnlinkGoogle() {
-  return lwAuth.currentUser.unlink('google.com');
+  return unlink(lwAuth.currentUser, 'google.com');
 }
 
 /* ---------------- Read meter ----------------
@@ -237,33 +260,33 @@ function lwReadReport() {
 /* Listen to a query and pass every snapshot with a data change to onSnap.
    Metadata changes are listened to only so the meter sees the server answer
    that follows a cached one (the listener's data stays the same then). */
-function lwListen(query, label, onSnap) {
+function lwListen(q, label, onSnap) {
   let first = true;
   let synced = false;
-  return query.onSnapshot({ includeMetadataChanges: true }, (snap) => {
+  return onSnapshot(q, { includeMetadataChanges: true }, (snap) => {
     lwMeter(label, snap, !synced && !snap.metadata.fromCache);
     if (!snap.metadata.fromCache) synced = true;
     if (first || snap.docChanges().length) { first = false; onSnap(snap); }
   });
 }
 /* A one-off query, metered. */
-async function lwFetch(query, label) {
-  const snap = await query.get();
+async function lwFetch(q, label) {
+  const snap = await getDocs(q);
   lwMeter(label, snap, true);
   return snap;
 }
 
-const lwSnapItems = (snap) => snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+const lwSnapItems = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
 /* Subscribe to a collection, calling onChange(items) on every update.
    Returns an unsubscribe function. */
 function lwWatchCollection(name, onChange) {
-  return lwListen(lwDb.collection(name), name + ' (all)', (snap) => onChange(lwSnapItems(snap)));
+  return lwListen(col(name), name + ' (all)', (snap) => onChange(lwSnapItems(snap)));
 }
 
 /* Subscribe to a collection scoped to the given user. Returns an unsubscribe function. */
 function lwWatchUserCollection(name, uid, onChange) {
-  return lwListen(lwDb.collection(name).where('userId', '==', uid), name, (snap) => onChange(lwSnapItems(snap)));
+  return lwListen(query(col(name), where('userId', '==', uid)), name, (snap) => onChange(lwSnapItems(snap)));
 }
 
 /* Subscribe to a user's own docs PLUS admin-authored shared:true docs in the same collection.
@@ -275,15 +298,16 @@ function lwWatchUserAndSharedCollection(name, uid, onChange, isAdmin) {
   let own = null;
   let shared = null;
   const emit = () => { if (own && shared) onChange([...own, ...shared]); };
-  let ownQuery = lwDb.collection(name).where('userId', '==', uid);
-  if (isAdmin) ownQuery = ownQuery.where('shared', '==', false);
+  const ownQuery = isAdmin
+    ? query(col(name), where('userId', '==', uid), where('shared', '==', false))
+    : query(col(name), where('userId', '==', uid));
   const unsubOwn = lwListen(ownQuery, name + ' (own)', (snap) => {
     own = lwSnapItems(snap);
     emit();
   });
-  const unsubShared = lwListen(lwDb.collection(name).where('shared', '==', true), name + ' (shared)', (snap) => {
+  const unsubShared = lwListen(query(col(name), where('shared', '==', true)), name + ' (shared)', (snap) => {
     shared = isAdmin ? lwSnapItems(snap)
-      : snap.docs.filter((doc) => doc.data().userId !== uid).map((doc) => ({ id: doc.id, ...doc.data() }));
+      : snap.docs.filter((d) => d.data().userId !== uid).map((d) => ({ id: d.id, ...d.data() }));
     emit();
   });
   return () => { unsubOwn(); unsubShared(); };
@@ -303,21 +327,22 @@ function lwSetDoc(collectionName, item) {
   if (LW_LANG_COLLECTIONS.includes(collectionName) && !data.lang) data.lang = lwCurrentLang();
   // Romanian is read as written: a word saved without a transcription gets one by rule.
   if (collectionName === LW_COLLECTIONS.words && data.lang === 'ro' && !data.ipa && data.word) data.ipa = lwRoIpa(data.word, data.pos);
-  return lwDb.collection(collectionName).doc(id).set(data);
+  return setDoc(ref(collectionName, id), data);
 }
 
 function lwDeleteDoc(collectionName, id) {
-  return lwDb.collection(collectionName).doc(id).delete();
+  return deleteDoc(ref(collectionName, id));
 }
 
 /* Delete all words belonging to a group (cascade). Pass the owner's userId for
    non-admin callers — the rules only allow listing docs the query provably owns. */
 async function lwDeleteWordsByGroup(groupId, userId) {
-  let query = lwDb.collection(LW_COLLECTIONS.words).where('groupId', '==', groupId);
-  if (userId) query = query.where('userId', '==', userId);
-  const snap = await lwFetch(query, 'words (delete group)');
-  const batch = lwDb.batch();
-  snap.docs.forEach((doc) => batch.delete(doc.ref));
+  const q = userId
+    ? query(col(LW_COLLECTIONS.words), where('groupId', '==', groupId), where('userId', '==', userId))
+    : query(col(LW_COLLECTIONS.words), where('groupId', '==', groupId));
+  const snap = await lwFetch(q, 'words (delete group)');
+  const batch = writeBatch(lwDb);
+  snap.docs.forEach((d) => batch.delete(d.ref));
   return batch.commit();
 }
 
@@ -327,7 +352,7 @@ async function lwDeleteWordsByGroup(groupId, userId) {
    time of one language don't count for another. English keeps the original id
    `${uid}_${date}`, other languages use `${uid}_${lang}_${date}`. */
 function lwActivityRef(uid, lang, date) {
-  return lwDb.collection(LW_COLLECTIONS.activity).doc(uid + '_' + (lang && lang !== 'en' ? lang + '_' : '') + date);
+  return ref(LW_COLLECTIONS.activity, uid + '_' + (lang && lang !== 'en' ? lang + '_' : '') + date);
 }
 
 /* Record one answer in a single batch: the word's new progress doc plus the
@@ -335,10 +360,12 @@ function lwActivityRef(uid, lang, date) {
    works offline. `progress` is the full doc from lwNextProgress, or null for an
    answer that belongs to no word (grammar tests): then only activity is written. */
 function lwRecordAnswer({ uid, lang, progress, date, correct, xp, goalBonus, ms }) {
-  const inc = firebase.firestore.FieldValue.increment;
-  const batch = lwDb.batch();
-  if (progress) batch.set(lwDb.collection(LW_COLLECTIONS.progress).doc(uid + '_' + progress.wordId), { ...progress, userId: uid });
-  const day = { userId: uid, lang: lang || 'en', date, answers: inc(1), correct: inc(correct ? 1 : 0), xp: inc(xp + (goalBonus || 0)), ms: inc(ms || 0) };
+  const batch = writeBatch(lwDb);
+  if (progress) batch.set(ref(LW_COLLECTIONS.progress, uid + '_' + progress.wordId), { ...progress, userId: uid });
+  const day = {
+    userId: uid, lang: lang || 'en', date,
+    answers: increment(1), correct: increment(correct ? 1 : 0), xp: increment(xp + (goalBonus || 0)), ms: increment(ms || 0),
+  };
   if (goalBonus) day.goalMet = true;
   batch.set(lwActivityRef(uid, lang, date), day, { merge: true });
   return batch.commit();
@@ -346,15 +373,15 @@ function lwRecordAnswer({ uid, lang, progress, date, correct, xp, goalBonus, ms 
 
 /* Add practice time without an answer (reading): bumps activity.ms only. */
 function lwAddPracticeTime(uid, lang, date, ms) {
-  return lwActivityRef(uid, lang, date)
-    .set({ userId: uid, lang: lang || 'en', date, ms: firebase.firestore.FieldValue.increment(ms) }, { merge: true });
+  return setDoc(lwActivityRef(uid, lang, date),
+    { userId: uid, lang: lang || 'en', date, ms: increment(ms) }, { merge: true });
 }
 
 /* Delete this user's progress docs for the given words (e.g. after the words were deleted). */
 async function lwDeleteProgressForWords(uid, wordIds) {
   for (let i = 0; i < wordIds.length; i += 400) {
-    const batch = lwDb.batch();
-    wordIds.slice(i, i + 400).forEach((id) => batch.delete(lwDb.collection(LW_COLLECTIONS.progress).doc(uid + '_' + id)));
+    const batch = writeBatch(lwDb);
+    wordIds.slice(i, i + 400).forEach((id) => batch.delete(ref(LW_COLLECTIONS.progress, uid + '_' + id)));
     await batch.commit();
   }
 }
@@ -364,33 +391,33 @@ async function lwDeleteProgressForWords(uid, wordIds) {
 /* Admins see every lesson (drafts too); users only published ones — the
    query filter is what the rules require. */
 function lwWatchLessons(isAdmin, onChange) {
-  const q = isAdmin ? lwDb.collection(LW_COLLECTIONS.lessons)
-    : lwDb.collection(LW_COLLECTIONS.lessons).where('published', '==', true);
+  const q = isAdmin ? col(LW_COLLECTIONS.lessons)
+    : query(col(LW_COLLECTIONS.lessons), where('published', '==', true));
   return lwListen(q, 'lessons', (snap) => onChange(lwSnapItems(snap)));
 }
 
 /* level test question bank of one language (shared content, admins write it) */
 function lwWatchLevelQuestions(lang, onChange) {
-  return lwListen(lwDb.collection(LW_COLLECTIONS.levelQuestions).where('lang', '==', lang || 'en'),
+  return lwListen(query(col(LW_COLLECTIONS.levelQuestions), where('lang', '==', lang || 'en')),
     'level_questions', (snap) => onChange(lwSnapItems(snap)));
 }
 
 /* video clips of one language (shared content, admins write them) */
 function lwWatchClips(lang, onChange) {
-  return lwListen(lwDb.collection(LW_COLLECTIONS.clips).where('lang', '==', lang || 'en'),
+  return lwListen(query(col(LW_COLLECTIONS.clips), where('lang', '==', lang || 'en')),
     'clips', (snap) => onChange(lwSnapItems(snap)));
 }
 
 /* merge fields into this user's progress for a lesson */
 function lwSaveLessonProgress(uid, lessonId, fields) {
-  return lwDb.collection(LW_COLLECTIONS.lessonProgress).doc(uid + '_' + lessonId)
-    .set({ ...fields, userId: uid, lessonId }, { merge: true });
+  return setDoc(ref(LW_COLLECTIONS.lessonProgress, uid + '_' + lessonId),
+    { ...fields, userId: uid, lessonId }, { merge: true });
 }
 
 /* XP bonus for a first lesson completion: activity only, no answer counted */
 function lwAddBonusXp(uid, lang, date, xp) {
-  return lwActivityRef(uid, lang, date)
-    .set({ userId: uid, lang: lang || 'en', date, xp: firebase.firestore.FieldValue.increment(xp) }, { merge: true });
+  return setDoc(lwActivityRef(uid, lang, date),
+    { userId: uid, lang: lang || 'en', date, xp: increment(xp) }, { merge: true });
 }
 
 /* ---------------- Reading texts ---------------- */
@@ -399,44 +426,44 @@ function lwAddBonusXp(uid, lang, date, xp) {
    per chapter in texts/{id}/chapters/{n}. Chapters repeat userId/shared for the rules.
    A chapter may carry `exercises` (books from scripts/upload-book.mjs). */
 async function lwSaveText(meta, chapters) {
-  const ref = lwDb.collection(LW_COLLECTIONS.texts).doc(meta.id);
+  const textRef = ref(LW_COLLECTIONS.texts, meta.id);
   const { id, ...data } = meta;
   if (!data.lang) data.lang = lwCurrentLang();
   for (let i = 0; i < chapters.length; i += 400) {
-    const batch = lwDb.batch();
+    const batch = writeBatch(lwDb);
     chapters.slice(i, i + 400).forEach((c, k) => {
-      batch.set(ref.collection('chapters').doc(String(i + k)), {
+      batch.set(doc(textRef, 'chapters', String(i + k)), {
         userId: meta.userId, shared: meta.shared, title: c.title || '', paragraphs: c.paragraphs,
         ...(c.exercises ? { exercises: c.exercises } : {}),
       });
     });
     await batch.commit();
   }
-  await ref.set(data); // meta last: the text shows up only once its chapters exist
+  await setDoc(textRef, data); // meta last: the text shows up only once its chapters exist
 }
 
 async function lwDeleteText(id, chapterCount) {
-  const ref = lwDb.collection(LW_COLLECTIONS.texts).doc(id);
+  const textRef = ref(LW_COLLECTIONS.texts, id);
   for (let i = 0; i < chapterCount; i += 400) {
-    const batch = lwDb.batch();
-    for (let n = i; n < Math.min(i + 400, chapterCount); n++) batch.delete(ref.collection('chapters').doc(String(n)));
+    const batch = writeBatch(lwDb);
+    for (let n = i; n < Math.min(i + 400, chapterCount); n++) batch.delete(doc(textRef, 'chapters', String(n)));
     await batch.commit();
   }
-  await ref.delete();
+  await deleteDoc(textRef);
 }
 
 async function lwGetChapter(textId, n) {
-  const doc = await lwDb.collection(LW_COLLECTIONS.texts).doc(textId).collection('chapters').doc(String(n)).get();
-  return doc.exists ? doc.data() : null;
+  const d = await getDoc(ref(LW_COLLECTIONS.texts, textId, 'chapters', String(n)));
+  return d.exists() ? d.data() : null;
 }
 
 function lwSaveReadingProgress(uid, textId, fields) {
-  return lwDb.collection(LW_COLLECTIONS.readingProgress).doc(uid + '_' + textId)
-    .set({ ...fields, userId: uid, textId, updatedAt: Date.now() }, { merge: true });
+  return setDoc(ref(LW_COLLECTIONS.readingProgress, uid + '_' + textId),
+    { ...fields, userId: uid, textId, updatedAt: Date.now() }, { merge: true });
 }
 
 function lwDeleteReadingProgress(uid, textId) {
-  return lwDb.collection(LW_COLLECTIONS.readingProgress).doc(uid + '_' + textId).delete();
+  return deleteDoc(ref(LW_COLLECTIONS.readingProgress, uid + '_' + textId));
 }
 
 /* ---------------- Admin ---------------- */
@@ -444,41 +471,41 @@ function lwDeleteReadingProgress(uid, textId) {
 /* Fetch all users, plus a words/groups count per user, for the Admin screen. */
 async function lwAdminFetchUsers() {
   const [usersSnap, groupsSnap, wordsSnap] = await Promise.all([
-    lwFetch(lwDb.collection(LW_COLLECTIONS.users), 'users (admin)'),
-    lwFetch(lwDb.collection(LW_COLLECTIONS.groups), 'groups (admin)'),
-    lwFetch(lwDb.collection(LW_COLLECTIONS.words), 'words (admin)'),
+    lwFetch(col(LW_COLLECTIONS.users), 'users (admin)'),
+    lwFetch(col(LW_COLLECTIONS.groups), 'groups (admin)'),
+    lwFetch(col(LW_COLLECTIONS.words), 'words (admin)'),
   ]);
   const groupCountByUser = {};
-  groupsSnap.docs.forEach((doc) => {
-    const uid = doc.data().userId;
+  groupsSnap.docs.forEach((d) => {
+    const uid = d.data().userId;
     if (uid) groupCountByUser[uid] = (groupCountByUser[uid] || 0) + 1;
   });
   const wordCountByUser = {};
-  wordsSnap.docs.forEach((doc) => {
-    const uid = doc.data().userId;
+  wordsSnap.docs.forEach((d) => {
+    const uid = d.data().userId;
     if (uid) wordCountByUser[uid] = (wordCountByUser[uid] || 0) + 1;
   });
-  return usersSnap.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-    groupCount: groupCountByUser[doc.id] || 0,
-    wordCount: wordCountByUser[doc.id] || 0,
+  return usersSnap.docs.map((d) => ({
+    id: d.id,
+    ...d.data(),
+    groupCount: groupCountByUser[d.id] || 0,
+    wordCount: wordCountByUser[d.id] || 0,
   }));
 }
 
 function lwAdminSetRole(uid, role) {
-  return lwDb.collection(LW_COLLECTIONS.users).doc(uid).update({ role });
+  return updateDoc(ref(LW_COLLECTIONS.users, uid), { role });
 }
 
 /* Fetch every group and word across all users, for the Admin "all data" screen. */
 async function lwAdminFetchAllData() {
   const [groupsSnap, wordsSnap] = await Promise.all([
-    lwFetch(lwDb.collection(LW_COLLECTIONS.groups), 'groups (admin all data)'),
-    lwFetch(lwDb.collection(LW_COLLECTIONS.words), 'words (admin all data)'),
+    lwFetch(col(LW_COLLECTIONS.groups), 'groups (admin all data)'),
+    lwFetch(col(LW_COLLECTIONS.words), 'words (admin all data)'),
   ]);
   return {
-    groups: groupsSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
-    words: wordsSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
+    groups: lwSnapItems(groupsSnap),
+    words: lwSnapItems(wordsSnap),
   };
 }
 
@@ -494,10 +521,10 @@ export {
   lwAdminFetchAllData,
 };
 
-/* Console API: scripts/*.mjs and books run in the browser console and call these as window.lwX
-   (and the compat SDK as window.firebase, which the CDN build used to provide). */
+/* Console API: scripts/*.mjs and books run in the browser console and call these as window.lwX,
+   and Firestore/Auth through window.firebase: a small compat-style shim (firebase-console.js). */
 Object.assign(window, {
-  firebase,
+  firebase: lwConsoleFirebase(lwDb, lwAuth),
   LW_COLLECTIONS,
   lwReadReport,
   lwWatchCollection,
