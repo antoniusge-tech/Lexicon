@@ -1217,6 +1217,9 @@ html[data-theme="dark"] .btn-primary { color: var(--on-primary); }
   animation: spin .6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* placeholder while a lazily loaded screen downloads (lwLazy) */
+.lazy-loading { display: flex; justify-content: center; padding: 64px 16px; color: var(--on-surface-variant); }
+.lazy-loading .spinner { width: 24px; height: 24px; }
 
 /* ---------------- Toast (bottom-right notifications) ---------------- */
 .toast-stack {
