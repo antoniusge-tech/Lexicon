@@ -320,13 +320,16 @@ function App() {
     return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
   }, []);
 
-  /* live sync with this user's Firestore data */
+  /* live sync with this user's Firestore data. Waits for the profile: an admin's
+     own docs are mostly shared, and lwWatchUserAndSharedCollection then skips
+     them in the "own" query so they aren't read (and billed) twice. */
+  const ownerIsAdmin = userDoc ? userDoc.role === 'admin' : null;
   useEffect(() => {
-    if (!authUser) { setGroups([]); setWords([]); return; }
-    const unsubGroups = window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.groups, authUser.uid, setGroups);
-    const unsubWords = window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.words, authUser.uid, setWords);
+    if (!authUser || ownerIsAdmin === null) { setGroups([]); setWords([]); return; }
+    const unsubGroups = window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.groups, authUser.uid, setGroups, ownerIsAdmin);
+    const unsubWords = window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.words, authUser.uid, setWords, ownerIsAdmin);
     return () => { unsubGroups(); unsubWords(); };
-  }, [authUser]);
+  }, [authUser, ownerIsAdmin]);
 
   /* admins import into anyone's group: while Import is open they see every
      group and word (other users' private ones too; the rules allow admins). */
@@ -361,12 +364,12 @@ function App() {
 
   /* reading texts (own + shared) and where the user is in each */
   useEffect(() => {
-    if (!authUser) { setTexts([]); setReadingProgress({}); return; }
-    const unsubTexts = window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.texts, authUser.uid, setTexts);
+    if (!authUser || ownerIsAdmin === null) { setTexts([]); setReadingProgress({}); return; }
+    const unsubTexts = window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.texts, authUser.uid, setTexts, ownerIsAdmin);
     const unsubRp = window.lwWatchUserCollection(window.LW_COLLECTIONS.readingProgress, authUser.uid,
       (items) => setReadingProgress(Object.fromEntries(items.map((r) => [r.textId, r]))));
     return () => { unsubTexts(); unsubRp(); };
-  }, [authUser]);
+  }, [authUser, ownerIsAdmin]);
 
   /* grammar lessons and this user's progress in them */
   const roleForLessons = userDoc ? userDoc.role : null;
@@ -388,9 +391,9 @@ function App() {
 
   /* collocation entries (own + shared) */
   useEffect(() => {
-    if (!authUser) { setCollocations([]); return; }
-    return window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.collocations, authUser.uid, setCollocations);
-  }, [authUser]);
+    if (!authUser || ownerIsAdmin === null) { setCollocations([]); return; }
+    return window.lwWatchUserAndSharedCollection(window.LW_COLLECTIONS.collocations, authUser.uid, setCollocations, ownerIsAdmin);
+  }, [authUser, ownerIsAdmin]);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 60 * 1000);

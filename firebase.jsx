@@ -206,35 +206,79 @@ function lwUnlinkGoogle() {
   return lwAuth.currentUser.unlink('google.com');
 }
 
+/* ---------------- Read meter ----------------
+   Counts, per listener or fetch, how many docs came from the server (what
+   Firestore bills) and how many snapshots came only from the offline cache.
+   Type lwReadReport() in the browser console to see the table.
+   The first server snapshot of a listener is counted in full: an upper bound,
+   since a listener resumed within 30 min is billed only for changed docs. */
+const lwReadStats = {};
+function lwMeter(label, snap, full) {
+  const s = lwReadStats[label] || (lwReadStats[label] = { snapshots: 0, fromCache: 0, serverDocs: 0, docs: 0 });
+  s.snapshots++;
+  s.docs = snap.size;
+  if (snap.metadata.fromCache) { s.fromCache++; return; }
+  s.serverDocs += full ? snap.size : snap.docChanges().filter((c) => c.type !== 'removed').length;
+}
+function lwReadReport() {
+  const rows = Object.entries(lwReadStats).map(([label, s]) => ({ label, ...s }))
+    .sort((a, b) => b.serverDocs - a.serverDocs);
+  console.table(rows);
+  const total = rows.reduce((n, r) => n + r.serverDocs, 0);
+  console.log('Server docs (≈ billed reads) since page load: ' + total);
+  return total;
+}
+
+/* Listen to a query and pass every snapshot with a data change to onSnap.
+   Metadata changes are listened to only so the meter sees the server answer
+   that follows a cached one (the listener's data stays the same then). */
+function lwListen(query, label, onSnap) {
+  let first = true;
+  let synced = false;
+  return query.onSnapshot({ includeMetadataChanges: true }, (snap) => {
+    lwMeter(label, snap, !synced && !snap.metadata.fromCache);
+    if (!snap.metadata.fromCache) synced = true;
+    if (first || snap.docChanges().length) { first = false; onSnap(snap); }
+  });
+}
+/* A one-off query, metered. */
+async function lwFetch(query, label) {
+  const snap = await query.get();
+  lwMeter(label, snap, true);
+  return snap;
+}
+
+const lwSnapItems = (snap) => snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+
 /* Subscribe to a collection, calling onChange(items) on every update.
    Returns an unsubscribe function. */
 function lwWatchCollection(name, onChange) {
-  return lwDb.collection(name).onSnapshot((snap) => {
-    const items = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-    onChange(items);
-  });
+  return lwListen(lwDb.collection(name), name + ' (all)', (snap) => onChange(lwSnapItems(snap)));
 }
 
 /* Subscribe to a collection scoped to the given user. Returns an unsubscribe function. */
 function lwWatchUserCollection(name, uid, onChange) {
-  return lwDb.collection(name).where('userId', '==', uid).onSnapshot((snap) => {
-    const items = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-    onChange(items);
-  });
+  return lwListen(lwDb.collection(name).where('userId', '==', uid), name, (snap) => onChange(lwSnapItems(snap)));
 }
 
 /* Subscribe to a user's own docs PLUS admin-authored shared:true docs in the same collection.
-   Calls onChange(items) with the merged list on every update. Returns an unsubscribe function. */
-function lwWatchUserAndSharedCollection(name, uid, onChange) {
+   Calls onChange(items) with the merged list on every update. Returns an unsubscribe function.
+   An admin's own docs are mostly shared, so for an admin the "own" query asks only for
+   private ones (shared == false): the shared query already brings the rest, and Firestore
+   would otherwise bill every shared doc of theirs twice. */
+function lwWatchUserAndSharedCollection(name, uid, onChange, isAdmin) {
   let own = null;
   let shared = null;
   const emit = () => { if (own && shared) onChange([...own, ...shared]); };
-  const unsubOwn = lwDb.collection(name).where('userId', '==', uid).onSnapshot((snap) => {
-    own = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  let ownQuery = lwDb.collection(name).where('userId', '==', uid);
+  if (isAdmin) ownQuery = ownQuery.where('shared', '==', false);
+  const unsubOwn = lwListen(ownQuery, name + ' (own)', (snap) => {
+    own = lwSnapItems(snap);
     emit();
   });
-  const unsubShared = lwDb.collection(name).where('shared', '==', true).onSnapshot((snap) => {
-    shared = snap.docs.filter((doc) => doc.data().userId !== uid).map((doc) => ({ id: doc.id, ...doc.data() }));
+  const unsubShared = lwListen(lwDb.collection(name).where('shared', '==', true), name + ' (shared)', (snap) => {
+    shared = isAdmin ? lwSnapItems(snap)
+      : snap.docs.filter((doc) => doc.data().userId !== uid).map((doc) => ({ id: doc.id, ...doc.data() }));
     emit();
   });
   return () => { unsubOwn(); unsubShared(); };
@@ -266,7 +310,7 @@ function lwDeleteDoc(collectionName, id) {
 async function lwDeleteWordsByGroup(groupId, userId) {
   let query = lwDb.collection(LW_COLLECTIONS.words).where('groupId', '==', groupId);
   if (userId) query = query.where('userId', '==', userId);
-  const snap = await query.get();
+  const snap = await lwFetch(query, 'words (delete group)');
   const batch = lwDb.batch();
   snap.docs.forEach((doc) => batch.delete(doc.ref));
   return batch.commit();
@@ -317,19 +361,19 @@ async function lwDeleteProgressForWords(uid, wordIds) {
 function lwWatchLessons(isAdmin, onChange) {
   const q = isAdmin ? lwDb.collection(LW_COLLECTIONS.lessons)
     : lwDb.collection(LW_COLLECTIONS.lessons).where('published', '==', true);
-  return q.onSnapshot((snap) => onChange(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+  return lwListen(q, 'lessons', (snap) => onChange(lwSnapItems(snap)));
 }
 
 /* level test question bank of one language (shared content, admins write it) */
 function lwWatchLevelQuestions(lang, onChange) {
-  return lwDb.collection(LW_COLLECTIONS.levelQuestions).where('lang', '==', lang || 'en')
-    .onSnapshot((snap) => onChange(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+  return lwListen(lwDb.collection(LW_COLLECTIONS.levelQuestions).where('lang', '==', lang || 'en'),
+    'level_questions', (snap) => onChange(lwSnapItems(snap)));
 }
 
 /* video clips of one language (shared content, admins write them) */
 function lwWatchClips(lang, onChange) {
-  return lwDb.collection(LW_COLLECTIONS.clips).where('lang', '==', lang || 'en')
-    .onSnapshot((snap) => onChange(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+  return lwListen(lwDb.collection(LW_COLLECTIONS.clips).where('lang', '==', lang || 'en'),
+    'clips', (snap) => onChange(lwSnapItems(snap)));
 }
 
 /* merge fields into this user's progress for a lesson */
@@ -395,9 +439,9 @@ function lwDeleteReadingProgress(uid, textId) {
 /* Fetch all users, plus a words/groups count per user, for the Admin screen. */
 async function lwAdminFetchUsers() {
   const [usersSnap, groupsSnap, wordsSnap] = await Promise.all([
-    lwDb.collection(LW_COLLECTIONS.users).get(),
-    lwDb.collection(LW_COLLECTIONS.groups).get(),
-    lwDb.collection(LW_COLLECTIONS.words).get(),
+    lwFetch(lwDb.collection(LW_COLLECTIONS.users), 'users (admin)'),
+    lwFetch(lwDb.collection(LW_COLLECTIONS.groups), 'groups (admin)'),
+    lwFetch(lwDb.collection(LW_COLLECTIONS.words), 'words (admin)'),
   ]);
   const groupCountByUser = {};
   groupsSnap.docs.forEach((doc) => {
@@ -424,8 +468,8 @@ function lwAdminSetRole(uid, role) {
 /* Fetch every group and word across all users, for the Admin "all data" screen. */
 async function lwAdminFetchAllData() {
   const [groupsSnap, wordsSnap] = await Promise.all([
-    lwDb.collection(LW_COLLECTIONS.groups).get(),
-    lwDb.collection(LW_COLLECTIONS.words).get(),
+    lwFetch(lwDb.collection(LW_COLLECTIONS.groups), 'groups (admin all data)'),
+    lwFetch(lwDb.collection(LW_COLLECTIONS.words), 'words (admin all data)'),
   ]);
   return {
     groups: groupsSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
@@ -435,6 +479,7 @@ async function lwAdminFetchAllData() {
 
 Object.assign(window, {
   LW_COLLECTIONS,
+  lwReadReport,
   lwWatchCollection,
   lwWatchUserCollection,
   lwWatchUserAndSharedCollection,
