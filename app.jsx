@@ -326,14 +326,18 @@ function App() {
 
   /* live sync with this user's Firestore data. Waits for the profile: an admin's
      own docs are mostly shared, and lwWatchUserAndSharedCollection then skips
-     them in the "own" query so they aren't read (and billed) twice. */
+     them in the "own" query so they aren't read (and billed) twice. Content
+     (groups, words, texts, collocations, lessons) is queried for the language
+     studied now only; a switch re-subscribes. Until the new language's first
+     snapshot arrives the state still holds the old one, which the scoped lists
+     below (inLang) filter out. */
   const ownerIsAdmin = userDoc ? userDoc.role === 'admin' : null;
   useEffect(() => {
-    if (!authUser || ownerIsAdmin === null) { setGroups([]); setWords([]); return; }
-    const unsubGroups = lwWatchUserAndSharedCollection(LW_COLLECTIONS.groups, authUser.uid, setGroups, ownerIsAdmin);
-    const unsubWords = lwWatchUserAndSharedCollection(LW_COLLECTIONS.words, authUser.uid, setWords, ownerIsAdmin);
+    if (!authUser || ownerIsAdmin === null || !lang) { setGroups([]); setWords([]); return; }
+    const unsubGroups = lwWatchUserAndSharedCollection(LW_COLLECTIONS.groups, authUser.uid, setGroups, ownerIsAdmin, lang);
+    const unsubWords = lwWatchUserAndSharedCollection(LW_COLLECTIONS.words, authUser.uid, setWords, ownerIsAdmin, lang);
     return () => { unsubGroups(); unsubWords(); };
-  }, [authUser, ownerIsAdmin]);
+  }, [authUser, ownerIsAdmin, lang]);
 
   /* admins import into anyone's group: while Import is open they see every
      group and word (other users' private ones too; the rules allow admins). */
@@ -368,19 +372,21 @@ function App() {
 
   /* reading texts (own + shared) and where the user is in each */
   useEffect(() => {
-    if (!authUser || ownerIsAdmin === null) { setTexts([]); setReadingProgress({}); return; }
-    const unsubTexts = lwWatchUserAndSharedCollection(LW_COLLECTIONS.texts, authUser.uid, setTexts, ownerIsAdmin);
-    const unsubRp = lwWatchUserCollection(LW_COLLECTIONS.readingProgress, authUser.uid,
+    if (!authUser || ownerIsAdmin === null) { setReadingProgress({}); return; }
+    return lwWatchUserCollection(LW_COLLECTIONS.readingProgress, authUser.uid,
       (items) => setReadingProgress(Object.fromEntries(items.map((r) => [r.textId, r]))));
-    return () => { unsubTexts(); unsubRp(); };
   }, [authUser, ownerIsAdmin]);
+  useEffect(() => {
+    if (!authUser || ownerIsAdmin === null || !lang) { setTexts([]); return; }
+    return lwWatchUserAndSharedCollection(LW_COLLECTIONS.texts, authUser.uid, setTexts, ownerIsAdmin, lang);
+  }, [authUser, ownerIsAdmin, lang]);
 
   /* grammar lessons and this user's progress in them */
   const roleForLessons = userDoc ? userDoc.role : null;
   useEffect(() => {
-    if (!authUser || !roleForLessons) { setLessons([]); return; }
-    return lwWatchLessons(roleForLessons === 'admin', setLessons);
-  }, [authUser, roleForLessons]);
+    if (!authUser || !roleForLessons || !lang) { setLessons([]); return; }
+    return lwWatchLessons(roleForLessons === 'admin', setLessons, lang);
+  }, [authUser, roleForLessons, lang]);
   useEffect(() => {
     if (!authUser) { setLessonProgress({}); return; }
     return lwWatchUserCollection(LW_COLLECTIONS.lessonProgress, authUser.uid,
@@ -395,9 +401,9 @@ function App() {
 
   /* collocation entries (own + shared) */
   useEffect(() => {
-    if (!authUser || ownerIsAdmin === null) { setCollocations([]); return; }
-    return lwWatchUserAndSharedCollection(LW_COLLECTIONS.collocations, authUser.uid, setCollocations, ownerIsAdmin);
-  }, [authUser, ownerIsAdmin]);
+    if (!authUser || ownerIsAdmin === null || !lang) { setCollocations([]); return; }
+    return lwWatchUserAndSharedCollection(LW_COLLECTIONS.collocations, authUser.uid, setCollocations, ownerIsAdmin, lang);
+  }, [authUser, ownerIsAdmin, lang]);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 60 * 1000);
@@ -495,15 +501,17 @@ function App() {
     }
   }, [lang, selectedByLang, scopedGroups, setSelected]);
 
-  /* keep selections valid if a group is deleted (skip until groups have loaded) */
+  /* keep this language's selection valid if a group is deleted (skip until its
+     groups have loaded). Only the current language's groups are loaded, so the
+     other languages' selections are left as they are. */
   useEffect(() => {
-    if (!groups.length) return;
+    if (!lang || !scopedGroups.length) return;
     setSelectedByLang((m) => {
-      const out = {};
-      Object.keys(m).forEach((l) => { out[l] = (m[l] || []).filter((id) => groups.some((g) => g.id === id)); });
-      return out;
+      if (!m[lang]) return m;
+      const kept = m[lang].filter((id) => scopedGroups.some((g) => g.id === id));
+      return kept.length === m[lang].length ? m : { ...m, [lang]: kept };
     });
-  }, [groups]);
+  }, [lang, scopedGroups]);
 
   const groupById = useMemo(() => Object.fromEntries(groups.map((g) => [g.id, g])), [groups]);
   const countByGroup = useMemo(() => {

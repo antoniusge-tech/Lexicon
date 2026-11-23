@@ -293,19 +293,23 @@ function lwWatchUserCollection(name, uid, onChange) {
    Calls onChange(items) with the merged list on every update. Returns an unsubscribe function.
    An admin's own docs are mostly shared, so for an admin the "own" query asks only for
    private ones (shared == false): the shared query already brings the rest, and Firestore
-   would otherwise bill every shared doc of theirs twice. */
-function lwWatchUserAndSharedCollection(name, uid, onChange, isAdmin) {
+   would otherwise bill every shared doc of theirs twice.
+   With `lang`, both queries ask only for docs of that learning language, so the
+   other language's words aren't read at all (every content doc carries `lang`;
+   scripts/backfill-lang.mjs tagged the old ones). */
+function lwWatchUserAndSharedCollection(name, uid, onChange, isAdmin, lang) {
   let own = null;
   let shared = null;
   const emit = () => { if (own && shared) onChange([...own, ...shared]); };
+  const inLang = lang ? [where('lang', '==', lang)] : [];
   const ownQuery = isAdmin
-    ? query(col(name), where('userId', '==', uid), where('shared', '==', false))
-    : query(col(name), where('userId', '==', uid));
+    ? query(col(name), where('userId', '==', uid), where('shared', '==', false), ...inLang)
+    : query(col(name), where('userId', '==', uid), ...inLang);
   const unsubOwn = lwListen(ownQuery, name + ' (own)', (snap) => {
     own = lwSnapItems(snap);
     emit();
   });
-  const unsubShared = lwListen(query(col(name), where('shared', '==', true)), name + ' (shared)', (snap) => {
+  const unsubShared = lwListen(query(col(name), where('shared', '==', true), ...inLang), name + ' (shared)', (snap) => {
     shared = isAdmin ? lwSnapItems(snap)
       : snap.docs.filter((d) => d.data().userId !== uid).map((d) => ({ id: d.id, ...d.data() }));
     emit();
@@ -389,10 +393,11 @@ async function lwDeleteProgressForWords(uid, wordIds) {
 /* ---------------- Grammar lessons ---------------- */
 
 /* Admins see every lesson (drafts too); users only published ones — the
-   query filter is what the rules require. */
-function lwWatchLessons(isAdmin, onChange) {
-  const q = isAdmin ? col(LW_COLLECTIONS.lessons)
-    : query(col(LW_COLLECTIONS.lessons), where('published', '==', true));
+   query filter is what the rules require. With `lang`, only that language's lessons. */
+function lwWatchLessons(isAdmin, onChange, lang) {
+  const inLang = lang ? [where('lang', '==', lang)] : [];
+  const q = isAdmin ? query(col(LW_COLLECTIONS.lessons), ...inLang)
+    : query(col(LW_COLLECTIONS.lessons), where('published', '==', true), ...inLang);
   return lwListen(q, 'lessons', (snap) => onChange(lwSnapItems(snap)));
 }
 
