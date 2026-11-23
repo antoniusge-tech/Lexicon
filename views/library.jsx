@@ -4,7 +4,8 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   LW_COLLECTIONS, lwDeleteDoc, lwDeleteProgressForWords, lwDeleteWordsByGroup, lwSetDoc,
 } from '../firebase.js';
-import { LW_KEYS, lwAiTagPos, lwHasGeminiKey, lwLoad, lwSave, lwWordOfTheDay } from '../data.js';
+import { LW_KEYS, lwAiFillForms, lwAiTagPos, lwCurrentLang, lwHasGeminiKey, lwLoad, lwSave, lwWordOfTheDay } from '../data.js';
+import { lwFormSlots, lwFormsId, lwFormsLabel } from '../forms.ts';
 import { lwLocalDate, lwWordMastery, lwWordStatus } from '../progress.ts';
 import { lwFindCardForClip } from '../reading.ts';
 import {
@@ -44,6 +45,7 @@ function WordCard({ word, group, prog, now, canEdit, onEdit, onDelete, clip, onC
         {word.pos && <span className="wcard-pos">{word.pos}</span>}
       </div>
       <div className="wcard-tr">{word.tr}</div>
+      {lwFormsLabel(word, lwCurrentLang()) && <div className="wcard-forms">{lwFormsLabel(word, lwCurrentLang())}</div>}
       <div className="wcard-foot">
         <span className="wcard-mastery-label">Mastery</span>
         <span className="mastery-track"><span className={'mastery-fill status-' + status} style={{ width: pct + '%' }} /></span>
@@ -139,7 +141,8 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
   const [limit, setLimit] = useState(LW_LIB_PAGE);
   const [practice, setPractice] = useState(null); // word being practised from the word of the day
   const [tagState, setTagState] = useState({ busy: false, done: 0, error: null });
-  const [keyModal, setKeyModal] = useState(false);
+  const [formsState, setFormsState] = useState({ busy: false, done: 0, error: null });
+  const [keyModal, setKeyModal] = useState(null); // the AI job to run once a key is saved
   const [collocForm, setCollocForm] = useState(null); // { initial? } — create / edit form
   const [collocOpen, setCollocOpen] = useState(null); // id of the entry shown in the sheet
   const [collocDelete, setCollocDelete] = useState(null); // entry awaiting delete confirmation
@@ -200,7 +203,7 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
   /* tag parts of speech for words without one (only words this user may edit) */
   const untagged = words.filter((w) => !w.pos && canEdit(w));
   const tagPos = async () => {
-    if (!lwHasGeminiKey()) { setKeyModal(true); return; }
+    if (!lwHasGeminiKey()) { setKeyModal(() => tagPos); return; }
     const todo = untagged.slice();
     setTagState({ busy: true, done: 0, error: null });
     try {
@@ -216,6 +219,32 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
       setTagState({ busy: false, done: todo.length, error: null });
     } catch (e) {
       setTagState((t) => ({ ...t, busy: false, error: (e && e.code) || 'error' }));
+    }
+  };
+
+  /* principal forms (forms.ts) for verbs, nouns and adjectives that have none yet
+     (only words this user may edit; Romanian only — lwFormSlots is empty for other
+     languages). Learn → Forms drills them. A word the model gave no forms is saved
+     with an empty `forms`, so it isn't offered again. */
+  const lang = lwCurrentLang();
+  const noForms = words.filter((w) => !w.forms && lwFormSlots(lang, w.pos).length && canEdit(w));
+  const fillForms = async () => {
+    if (!lwHasGeminiKey()) { setKeyModal(() => fillForms); return; }
+    const todo = noForms.slice();
+    setFormsState({ busy: true, done: 0, error: null });
+    try {
+      for (let i = 0; i < todo.length; i += 25) {
+        const batch = todo.slice(i, i + 25);
+        const res = await lwAiFillForms(batch.map((w) => ({ word: w.word, pos: w.pos })));
+        await Promise.all(batch.map((w, j) => {
+          if (!res[j] || res[j].word.toLowerCase() !== w.word.toLowerCase()) return null;
+          return lwSetDoc(LW_COLLECTIONS.words, { ...w, forms: res[j].forms || {} });
+        }));
+        setFormsState({ busy: true, done: Math.min(i + 25, todo.length), error: null });
+      }
+      setFormsState({ busy: false, done: todo.length, error: null });
+    } catch (e) {
+      setFormsState((t) => ({ ...t, busy: false, error: (e && e.code) || 'error' }));
     }
   };
 
@@ -256,7 +285,7 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
     }
     /* drop this user's progress for the deleted words (others' progress on a
        deleted shared word is left as orphans that the app ignores) */
-    const withProgress = deletedWordIds.filter((id) => progress[id]);
+    const withProgress = deletedWordIds.flatMap((id) => [id, lwFormsId(id)]).filter((id) => progress[id]);
     if (withProgress.length) {
       lwDeleteProgressForWords(userId, withProgress)
         .catch((e) => console.error('delete progress failed', e));
@@ -363,6 +392,18 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
                 {tagState.busy ? <span className="spinner" /> : <Ic.Bulb width="15" height="15" />} Tag with AI
               </button>
               {tagState.error && <span className="tag-pos-error">{LW_IMPORT_ERROR_MSG[tagState.error] || LW_IMPORT_ERROR_MSG.error}</span>}
+            </div>
+          )}
+
+          {(noForms.length > 0 || formsState.busy) && (
+            <div className="tag-pos">
+              <span>{formsState.busy ? 'Filling in forms… ' + formsState.done + ' / ' + noForms.length
+                : noForms.length + (noForms.length === 1 ? ' verb, noun or adjective has' : ' verbs, nouns and adjectives have')
+                  + ' no forms.'}</span>
+              <button type="button" className="btn btn-soft sm" disabled={formsState.busy} onClick={fillForms}>
+                {formsState.busy ? <span className="spinner" /> : <Ic.Bulb width="15" height="15" />} Fill forms with AI
+              </button>
+              {formsState.error && <span className="tag-pos-error">{LW_IMPORT_ERROR_MSG[formsState.error] || LW_IMPORT_ERROR_MSG.error}</span>}
             </div>
           )}
 
@@ -509,7 +550,7 @@ function LibraryView({ groups, words, userId, username, isAdmin, progress, now, 
         <PracticeCardModal word={practice} group={groupById(practice.groupId)} prog={progress[practice.id]}
           direction={direction} recordAnswer={recordAnswer} onClose={() => setPractice(null)} />
       )}
-      {keyModal && <GeminiKeyModal onClose={() => setKeyModal(false)} onSaved={(ok) => { if (ok) tagPos(); }} />}
+      {keyModal && <GeminiKeyModal onClose={() => setKeyModal(null)} onSaved={(ok) => { if (ok) keyModal(); }} />}
       {wordModal && (
         <Modal title={wordModal.mode === 'edit' ? 'Edit word' : 'New word'} onClose={() => setWordModal(null)}>
           <WordForm initial={wordModal.initial} groups={groups} defaultGroupId={wordModal.groupId}

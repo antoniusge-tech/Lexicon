@@ -2,7 +2,7 @@
    Storage lives in firebase.js (lwRecordAnswer); App wires the two together. */
 
 import type {
-  Activity, AnswerMode, CefrLevel, Collocation, LevelQuestion, Lesson, LessonProgress, LocalDate,
+  Activity, AnswerMode, CefrLevel, Collocation, LevelQuestion, Lesson, LessonProgress, LessonSrs, LocalDate,
   Ms, Progress, ReadingProgress, SrsSettings, UserDoc, Word,
 } from './types.ts';
 
@@ -44,12 +44,12 @@ const LW_MASTERED_DAYS = 30; // stability from which a word counts as Mastered
 const LW_DAY_START_MS = 4 * 60 * LW_MIN_MS; // a study day starts at 04:00 local time
 
 /* Grade per answer: 1 Again, 2 Hard, 3 Good, 4 Easy. Picking the right option
-   (choice) only proves recognition, so it is Hard; recall is Good; a word typed
-   quickly with no mistake or hint (fill) is Easy. */
+   (choice) only proves recognition, so it is Hard; recall is Good; a word (or its
+   forms) typed quickly with no mistake or hint (fill, forms) is Easy. */
 const LW_MODE_GRADE: Partial<Record<string, Grade>> = { choice: 2 };
 function lwAnswerGrade(known: boolean, mode: AnswerMode | string, easy?: boolean): Grade {
   if (!known) return 1;
-  if (mode === 'fill' && easy) return 4;
+  if ((mode === 'fill' || mode === 'forms') && easy) return 4;
   return LW_MODE_GRADE[mode] || 3;
 }
 
@@ -161,10 +161,11 @@ const lwRound4 = (x: number) => Math.round(x * 1e4) / 1e4;
    null for a word never studied. `opts.easy`: a fill answer typed quickly with
    no mistake. Know on a word that isn't due yet, on the same study day as its
    last review, changes nothing, so a word can't be ground to Mastered in one
-   evening. Again always counts as a lapse and brings the word back in 10 min. */
+   evening. Again always counts as a lapse and brings the word back in 10 min.
+   `opts.grade` sets the grade directly (a grammar review scores several tasks). */
 function lwNextProgress(prev: Progress | null | undefined, wordId: string, known: boolean, mode: AnswerMode | string,
-  now: Ms, opts: { easy?: boolean } = {}): Progress {
-  const g = lwAnswerGrade(known, mode, opts.easy);
+  now: Ms, opts: { easy?: boolean; grade?: Grade } = {}): Progress {
+  const g = known ? (opts.grade && opts.grade > 1 ? opts.grade : lwAnswerGrade(known, mode, opts.easy)) : 1;
   const base = prev || { wordId, reps: 0, lapses: 0 };
   const next: Progress = { due: 0, ...base, wordId, reps: (base.reps || 0) + 1, lastSeen: now, lastMode: mode }; // due is always set below
   delete next.box; // legacy Leitner field
@@ -413,6 +414,54 @@ function lwLessonStatus(lesson: Pick<Lesson, 'id'>, topicLessons: Pick<Lesson, '
   return 'new';
 }
 
+/* ---------------- Grammar review (spaced repetition of lessons) ----------------
+   A completed lesson's rule gets an FSRS memory (lesson_progress.srs) like a word
+   card. When it comes due, Grammar → Review asks LW_GRAMMAR_REVIEW_TASKS of its
+   test tasks, mixed with other due lessons (at most LW_GRAMMAR_REVIEW_LESSONS per
+   session). All right = Good, some right = Hard, none = Again. Lessons completed
+   before reviews existed have no srs yet: they count as due, oldest first. */
+const LW_GRAMMAR_REVIEW_LESSONS = 5;
+const LW_GRAMMAR_REVIEW_TASKS = 2;
+
+function lwLessonReviewGrade(right: number, total: number): Grade {
+  if (total <= 0 || right <= 0) return 1;
+  return right >= total ? 3 : 2;
+}
+
+/* the lesson's next srs after `right` of `total` tasks right (prev null: the
+   lesson was just completed — 10 of 10 — or was completed before reviews existed) */
+function lwNextLessonSrs(prev: LessonSrs | null | undefined, lessonId: string, right: number, total: number, now: Ms): LessonSrs {
+  const g = lwLessonReviewGrade(right, total);
+  const p = lwNextProgress(prev ? { wordId: lessonId, ...prev } : null, lessonId, g > 1, 'lesson', now, { grade: g });
+  return {
+    stability: p.stability || 0, difficulty: p.difficulty || 0, due: p.due,
+    lastReview: p.lastReview || now, reps: p.reps, lapses: p.lapses,
+  };
+}
+
+interface LessonReviewQueue {
+  /** due lesson ids, most likely forgotten first */
+  ids: string[];
+  /** soonest upcoming review, for the empty state */
+  nextDue: Ms | null;
+}
+function lwLessonReviewQueue(lessons: Pick<Lesson, 'id'>[], progressByLesson: Record<string, LessonProgress>, now: Ms): LessonReviewQueue {
+  const due: { id: string; r: number; at: number }[] = [];
+  let nextDue: Ms | null = null;
+  lessons.forEach((l) => {
+    const p = progressByLesson[l.id];
+    if (!p || !p.completedAt) return;
+    if (!p.srs) { due.push({ id: l.id, r: -1, at: p.completedAt }); return; }
+    if (p.srs.due > now) {
+      if (nextDue === null || p.srs.due < nextDue) nextDue = p.srs.due;
+      return;
+    }
+    due.push({ id: l.id, r: lwRetrievability({ ...p.srs }, now), at: p.completedAt });
+  });
+  due.sort((a, b) => a.r - b.r || a.at - b.at);
+  return { ids: due.map((x) => x.id), nextDue };
+}
+
 /* a typed answer matches when equal ignoring case, extra spaces, apostrophe
    style and trailing punctuation */
 const lwNormAnswer = (s: unknown) => String(s || '').toLowerCase().replace(/[’‘`´]/g, "'")
@@ -585,6 +634,7 @@ function lwClipPick<C extends { id: string }>(clips: C[], cardOf: (clip: C) => {
 }
 
 export {
+  LW_GRAMMAR_REVIEW_LESSONS, LW_GRAMMAR_REVIEW_TASKS, lwLessonReviewGrade, lwNextLessonSrs, lwLessonReviewQueue,
   lwClipPick, LW_LEVEL_TEST_LEN, LW_LEVEL_TEST_MIN_BANK, LW_CEFR_NAMES, lwLevelTestPick,
   lwLevelIndex, lwLevelTestResult, LW_BADGES, lwBestStreak, lwBadgeMetrics,
   lwBadgeStates, LW_LESSON_TASKS, LW_XP_LESSON_BONUS, lwLessonTopics, lwLessonStatus,

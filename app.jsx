@@ -18,10 +18,11 @@ import {
 import {
   LW_DEFAULT_DAILY_GOAL, LW_LESSON_TASKS, LW_XP_CORRECT, LW_XP_GOAL_BONUS,
   LW_XP_LESSON_BONUS, LW_XP_WRONG, lwBadgeMetrics, lwBadgeStates, lwGroupPaused,
-  lwLastDays, lwLevel, lwLocalDate, lwNextProgress, lwPracticeMs, lwReviewQueue,
+  lwLastDays, lwLessonReviewQueue, lwLevel, lwLocalDate, lwNextLessonSrs, lwNextProgress, lwPracticeMs, lwReviewQueue,
   lwSetSrsSettings, lwSrsSettings, lwStatusCounts, lwStreak, lwTotalMs, lwTotalXp,
 } from './progress.ts';
 import { lwWordCount, lwWordsIndex } from './reading.ts';
+import { lwFormsDeck, lwFormsToText, lwHasForms } from './forms.ts';
 import {
   GeminiKeyModal, Ic, Modal, lwLeafGroups, lwParseImportLine,
 } from './components.jsx';
@@ -35,6 +36,7 @@ import {
   AppBar, CategoryView, GroupForm, LanguageSelectView, NavDrawer, TabBar, ToastStack,
 } from './views/shell.jsx';
 import { ChoiceView, FillView, LearnView, ReviewView, StudyView } from './views/learn.jsx';
+import { FormsView } from './views/forms.jsx';
 import { CollocView } from './views/collocations.jsx';
 import { VideoView } from './views/video.jsx';
 import { AddTextModal, ReaderView, ReadingHome, ReadingView } from './views/reader.jsx';
@@ -219,7 +221,8 @@ function App() {
             const w = (p && p.word) || (l.indexOf('|') === -1 ? l : '');
             const r = w && byWord[w.toLowerCase()];
             if (!r) return line; // leave lines AI didn't touch untouched
-            return [r.word, r.ipa, r.tr, r.example, r.exampleTr, r.pos].join(' | ');
+            const forms = lwFormsToText(r.forms, lwCurrentLang(), r.pos);
+            return [r.word, r.ipa, r.tr, r.example, r.exampleTr, r.pos, ...(forms ? [forms] : [])].join(' | ');
           });
           return { ...s, text: out.join('\n'), status: 'idle', error: null };
         });
@@ -529,6 +532,8 @@ function App() {
   const reviewPlan = useMemo(() => lwReviewQueue({
     words: scopedWords, progress, now, focus: selected, scope: reviewScope, isPaused, srs,
   }), [scopedWords, progress, now, selected, reviewScope, isPaused, srs]);
+  /* Grammar → Review: completed lessons whose rule is due again (lwLessonReviewQueue) */
+  const grammarPlan = useMemo(() => lwLessonReviewQueue(scopedLessons, lessonProgress, now), [scopedLessons, lessonProgress, now]);
   /* pause or resume reviews of a group (users.groupState, per language) */
   const setGroupPaused = useCallback((gid, paused) => {
     const next = { ...(groupState || {}) };
@@ -545,6 +550,9 @@ function App() {
     const xp = lwTotalXp(activity);
     const dueCount = srs.session > 0 ? Math.min(srs.session, reviewPlan.ids.length) : reviewPlan.ids.length;
     const statusCounts = lwStatusCounts(progress, scopedWords, now);
+    /* Learn → Forms: studied words of the chosen groups whose forms are new or due */
+    const formsDue = lwFormsDeck(scopedWords, selected, progress, lang, now).due.length;
+    const grammarDue = grammarPlan.ids.length;
     return {
       streak: lwStreak(activity, now),
       todayAnswers: today.answers || 0,
@@ -552,11 +560,13 @@ function App() {
       xp,
       level: lwLevel(xp),
       dueCount,
+      formsDue,
+      grammarDue,
       statusCounts,
       totalMs: lwTotalMs(activity),
       week: lwLastDays(activity, now, 7),
     };
-  }, [activity, progress, scopedWords, now, dailyGoal, reviewPlan, srs]);
+  }, [activity, progress, scopedWords, now, dailyGoal, reviewPlan, srs, selected, lang, grammarPlan]);
 
   /* Badges, per language like every other stat: metrics from the current
      language's data; earned ones are kept in users/{uid}.badges (badges_<lang>
@@ -746,18 +756,25 @@ function App() {
   }, [lessonError]);
   const saveLessonProgress = useCallback((lessonId, fields) => lwSaveLessonProgress(authUser.uid, lessonId, fields)
     .catch(lessonError('Could not save lesson progress')), [authUser, lessonError]);
-  /* a finished test: attempts, last/best score; 10/10 completes the lesson (+50 XP the first time) */
+  /* a finished test: attempts, last/best score; 10/10 completes the lesson (+50 XP
+     the first time) and schedules its first review (lesson_progress.srs) */
   const finishLessonTest = useCallback((lessonId, score) => {
     const p = lessonProgress[lessonId] || {};
     const passed = score >= LW_LESSON_TASKS;
     const fields = { attempts: (p.attempts || 0) + 1, last: score, best: Math.max(p.best || 0, score) };
     if (passed && !p.completedAt) {
       fields.completedAt = Date.now();
+      fields.srs = lwNextLessonSrs(null, lessonId, score, LW_LESSON_TASKS, Date.now());
       lwAddBonusXp(authUser.uid, lang, lwLocalDate(Date.now()), LW_XP_LESSON_BONUS).catch(lessonError('Could not add XP'));
     }
     saveLessonProgress(lessonId, fields);
     return passed && !p.completedAt;
   }, [lessonProgress, authUser, lang, saveLessonProgress, lessonError]);
+  /* Grammar → Review: a lesson's tasks in this session are done; reschedule its rule */
+  const gradeLessonReview = useCallback((lessonId, right, total) => {
+    const p = lessonProgress[lessonId] || {};
+    saveLessonProgress(lessonId, { srs: lwNextLessonSrs(p.srs, lessonId, right, total, Date.now()) });
+  }, [lessonProgress, saveLessonProgress]);
 
   /* save a new text (meta + chapters); admins may publish it for everyone */
   const saveText = useCallback((meta, chapters) => lwSaveText({
@@ -789,8 +806,14 @@ function App() {
     return <LanguageSelectView onSelect={chooseLangs} />;
   }
 
-  const { tab, learnMode } = nav;
   const isAdmin = userDoc.role === 'admin';
+  /* Learn modes with something to play: Forms once a word of this language has
+     forms (never in English), Video once there are clips (admins always see it:
+     they add clips there). A hidden mode in the URL or saved nav shows Cards. */
+  const learnModes = LW_LEARN_MODES.filter((m) => (m.id !== 'forms' || lwHasForms(scopedWords, lang))
+    && (m.id !== 'video' || isAdmin || clips.length > 0));
+  const { tab } = nav;
+  const learnMode = learnModes.some((m) => m.id === nav.learnMode) ? nav.learnMode : 'cards';
   const toggleTheme = () => setTheme((t) => (t === 'light' ? 'dark' : 'light'));
   const learnProps = {
     words: scopedWords, groupById, direction, progress, recordAnswer,
@@ -814,7 +837,7 @@ function App() {
         {/* keyed by language: every view starts fresh (filters, decks, open sheets) after a switch */}
         <main key={lang} className={'content content-' + tab}>
           {tab === 'learn' ? (
-            <LearnView mode={learnMode} setMode={(m) => goTo(m)} stats={stats} studyStats={studyStats}
+            <LearnView mode={learnMode} setMode={(m) => goTo(m)} modes={learnModes} stats={stats} studyStats={studyStats}
               selectedCount={scopedSelected.length} onPickGroups={() => setGroupsOpen(true)}
               reviewScope={reviewScope} setReviewScope={setReviewScope} reviewPlan={reviewPlan}>
               {learnMode === 'review' ? (
@@ -824,6 +847,9 @@ function App() {
                 <ChoiceView {...learnProps} selected={scopedSelected} onStatsChange={setStudyStats} />
               ) : learnMode === 'fill' ? (
                 <FillView {...learnProps} selected={scopedSelected} onStatsChange={setStudyStats} />
+              ) : learnMode === 'forms' ? (
+                <FormsView {...learnProps} selected={scopedSelected} onStatsChange={setStudyStats} lang={lang}
+                  goStudy={() => goTo('cards')} />
               ) : learnMode === 'video' ? (
                 <VideoView key={'video-' + lang} clips={clips} words={scopedWords} progress={progress} now={now} online={online}
                   recordAnswer={recordAnswer} addWord={addWordFromVideo} isAdmin={isAdmin} uid={authUser.uid}
@@ -858,6 +884,7 @@ function App() {
           ) : tab === 'grammar' ? (
             <GrammarScreen nav={nav.grammar} setGrammar={setGrammar} lessons={scopedLessons} progressBy={lessonProgress}
               isAdmin={isAdmin} userLevel={userDoc[lwCefrField(lang)]} recordAnswer={recordAnswer}
+              reviewPlan={grammarPlan} now={now} gradeReview={gradeLessonReview}
               saveLesson={saveLesson} moveLesson={moveLesson} saveProgress={saveLessonProgress} finishTest={finishLessonTest}
               deleteLesson={(l) => { setGrammar({ view: 'home' }); lwDeleteDoc(LW_COLLECTIONS.lessons, l.id).catch(lessonError('Could not delete the lesson')); }} />
           ) : tab === 'library' ? (

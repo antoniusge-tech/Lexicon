@@ -1,8 +1,13 @@
 /* import.jsx — Import: paste or upload word lines, preview, AI fill and save. Loaded on demand (lazy) from App. */
 
 import React from 'react';
-import { lwHasGeminiKey, lwLangInfo, lwUid } from '../data.js';
+import { lwCurrentLang, lwHasGeminiKey, lwLangInfo, lwUid } from '../data.js';
 import { GeminiKeyModal, Ic, lwLeafGroups, lwParseImportLine, lwWordKey } from '../components.jsx';
+
+/* how the forms column is written, per language (forms.ts, lwParseFormsText) */
+const LW_FORMS_IMPORT_HINT = {
+  ro: <>verb <code>lucrez, lucrează, lucreze, lucrat</code> (eu, el, el să, participle) · noun <code>f, case</code> (gender m/f/n, plural) · adjective <code>frumoasă, frumoși, frumoase</code></>,
+};
 
 /* Full-page import view. Draft text + chosen group + AI status live in App
    (importState) so a typed/generated list survives leaving the tab; the AI
@@ -97,6 +102,7 @@ function ImportView({ groups, words, uid, importState, setImportState, startAiFi
       example: r.example || '',
       exampleTr: r.exampleTr || '',
       pos: r.pos || '',
+      forms: r.forms, // undefined fields are dropped by lwSetDoc
       createdAt: t + i, // keeps the list's order in Library's "Recent" sort
     }));
     // Импортируем и очищаем черновик — иначе текст «не пропадает» до импорта.
@@ -120,9 +126,10 @@ function ImportView({ groups, words, uid, importState, setImportState, startAiFi
 
       <div className="form">
       <p className="field-hint">
-        One line per word. Format: <code>word | transcription | translation | example | example translation | part of speech</code>
-        {' '}(the example, its translation and the part of speech are optional), or <code>word || translation</code> (no transcription), or <code>word | translation</code>.
+        One line per word. Format: <code>word | transcription | translation | example | example translation | part of speech{LW_FORMS_IMPORT_HINT[lwCurrentLang()] ? ' | forms' : ''}</code>
+        {' '}(everything after the translation is optional), or <code>word || translation</code> (no transcription), or <code>word | translation</code>.
       </p>
+      {LW_FORMS_IMPORT_HINT[lwCurrentLang()] && <p className="field-hint">Forms, comma-separated: {LW_FORMS_IMPORT_HINT[lwCurrentLang()]}</p>}
       <label className="field">
         <div className="field-label-row">
           <span className="field-label">Words to import</span>

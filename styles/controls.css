@@ -159,6 +159,10 @@ html[data-theme="dark"] .btn-primary { color: var(--on-primary); }
 /* ---------- Forms ---------- */
 .form { display: flex; flex-direction: column; gap: 16px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* WordForm: one small input per principal form (forms.ts) */
+.forms-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.forms-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.forms-cell-label { font-size: 12px; color: var(--on-surface-variant); }
 .field { display: flex; flex-direction: column; gap: 7px; }
 .field-label { font-size: 12.5px; font-weight: 600; color: var(--on-surface-variant); letter-spacing: .01em; }
 .field-label .opt { font-style: normal; font-weight: 500; color: var(--faint); }

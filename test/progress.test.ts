@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   LW_RELEARN_MS, LW_SRS_DEFAULTS, lwBestStreak, lwCheckFill, lwCollocPick, lwCollocRoundPhrases,
   lwFormatDuration, lwFormatInterval, lwGroupPaused, lwLessonStatus, lwLessonTopics, lwLevel,
+  lwLessonReviewGrade, lwLessonReviewQueue, lwNextLessonSrs,
   lwLevelTestResult, lwLocalDate, lwNextProgress, lwPracticeMs, lwRetrievability, lwReviewQueue,
   lwSetSrsSettings, lwSrsSettings, lwStatusCounts, lwStreak, lwWordMastery, lwWordStatus,
 } from '../progress.ts';
@@ -282,5 +283,49 @@ describe('collocations game', () => {
   it('a round puts due or new phrases first', () => {
     const progress = { p1: { due: T0 + DAY } };
     expect(lwCollocRoundPhrases(entry('e', ['p1', 'p2', 'p3']), progress, wordsById, T0).map((p) => p.wordId)).toEqual(['p2', 'p3', 'p1']);
+  });
+});
+
+describe('grammar review', () => {
+  it('grades a lesson by its tasks: all right Good, some Hard, none Again', () => {
+    expect(lwLessonReviewGrade(2, 2)).toBe(3);
+    expect(lwLessonReviewGrade(1, 2)).toBe(2);
+    expect(lwLessonReviewGrade(0, 2)).toBe(1);
+  });
+
+  it('a completed lesson first comes back in a couple of days, later further out', () => {
+    const first = lwNextLessonSrs(null, 'L1', 10, 10, T0);
+    expect(first.reps).toBe(1);
+    expect(first.due - T0).toBeGreaterThan(DAY);
+    expect(first.due - T0).toBeLessThan(4 * DAY);
+    const second = lwNextLessonSrs(first, 'L1', 2, 2, first.due);
+    expect(second.due - first.due).toBeGreaterThan(first.due - T0);
+    expect(second.stability).toBeGreaterThan(first.stability);
+  });
+
+  it('a review with only mistakes brings the lesson back soon and counts a lapse', () => {
+    const first = lwNextLessonSrs(null, 'L1', 10, 10, T0);
+    const failed = lwNextLessonSrs(first, 'L1', 0, 2, first.due);
+    expect(failed.lapses).toBe(1);
+    expect(failed.due - first.due).toBe(LW_RELEARN_MS);
+    const hard = lwNextLessonSrs(first, 'L1', 1, 2, first.due);
+    const good = lwNextLessonSrs(first, 'L1', 2, 2, first.due);
+    expect(hard.lapses).toBe(0);
+    expect(hard.due).toBeLessThanOrEqual(good.due);
+  });
+
+  it('queues completed lessons that are due, unscheduled (older completions) first', () => {
+    const lessons = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'e' }];
+    const srs = (due: number, stability: number) => ({ stability, difficulty: 5, due, lastReview: due - stability * DAY, reps: 1, lapses: 0 });
+    const progress = {
+      a: { completedAt: T0 - 9 * DAY, srs: srs(T0 - DAY, 2) },
+      b: { completedAt: T0 - 5 * DAY }, // completed before reviews existed
+      c: { completedAt: T0 - 8 * DAY, srs: srs(T0 + 3 * DAY, 5) },
+      d: { studiedAt: T0 },
+      e: { completedAt: T0 - 7 * DAY },
+    };
+    const q = lwLessonReviewQueue(lessons, progress, T0);
+    expect(q.ids).toEqual(['e', 'b', 'a']);
+    expect(q.nextDue).toBe(T0 + 3 * DAY);
   });
 });

@@ -211,6 +211,15 @@ html[data-theme="dark"] .chip-on { color: var(--on-primary); }
 }
 .fill-reveal:hover { background: var(--surface-highest); color: var(--on-surface); }
 .fill-sentence-back { font-weight: 500; color: var(--on-surface-variant); }
+/* Learn → Forms: the word and which form is asked, above the cue */
+.fill-caption { display: flex; flex-direction: column; align-items: center; gap: 2px; max-width: 100%; }
+.forms-lemma { font-family: var(--font-display); font-size: 17px; font-weight: 800; color: var(--on-surface); overflow-wrap: anywhere; }
+.forms-tr { font-size: 14px; color: var(--on-surface-variant); overflow-wrap: anywhere; }
+.forms-step {
+  margin-top: 8px; padding: 3px 10px; border-radius: 999px; background: var(--surface-high);
+  font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--on-surface-variant);
+}
+.forms-so-far { margin: 0; max-width: min(440px, 100%); text-align: center; font-size: 14px; color: var(--on-surface-variant); }
 .fill-back {
   transform: rotateY(180deg);
   background: linear-gradient(180deg, color-mix(in srgb, var(--hue, var(--primary)) 7%, var(--surface-lowest)), var(--surface-lowest));
@@ -401,6 +410,11 @@ html[data-theme="dark"] .chip-on { color: var(--on-primary); }
 .card-tr { font-family: var(--font-display); font-size: 38px; font-weight: 800; line-height: 1.12; letter-spacing: -.025em; color: var(--on-surface); overflow-wrap: break-word; word-break: break-word; max-width: 100%; }
 .back-word { font-size: 15px; color: var(--on-surface-variant); font-weight: 500; }
 .back-ipa { font-style: italic; color: var(--faint); }
+/* principal forms (forms.ts) under the word on the back */
+.back-forms {
+  max-width: 100%; padding: 6px 12px; border-radius: 12px; background: var(--surface-low);
+  font-size: 14px; line-height: 1.45; color: var(--on-surface-variant); overflow-wrap: break-word;
+}
 
 /* empty */
 .empty-card {

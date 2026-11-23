@@ -80,6 +80,21 @@ export interface Group extends Owned {
   color?: string;
 }
 
+/** Principal forms of a word (forms.ts, LW_FORM_SLOTS): what the paradigm follows
+    from and can't be guessed (Romanian only). Verb: pres1, pres3, subj3 (without
+    să), part; noun: gender (m | f | n), pl; adjective: f, mpl, fpl. */
+export interface WordForms {
+  pres1?: string;
+  pres3?: string;
+  subj3?: string;
+  part?: string;
+  gender?: 'm' | 'f' | 'n' | string;
+  pl?: string;
+  f?: string;
+  mpl?: string;
+  fpl?: string;
+}
+
 /** words/{id}. lwSetDoc replaces the whole doc, so edits start from the stored one. */
 export interface Word extends Owned {
   groupId: string;
@@ -89,6 +104,8 @@ export interface Word extends Owned {
   example?: string;
   exampleTr?: string;
   pos?: PartOfSpeech;
+  /** principal forms, drilled in Learn → Forms (their memory: progress of `<id>~forms`) */
+  forms?: WordForms;
   /** data URL or remote image */
   photo?: string;
   /** ms; only on words added since stage 4 */
@@ -98,9 +115,10 @@ export interface Word extends Owned {
 /* ---------------- progress (FSRS), activity ---------------- */
 
 /** How an answer was given; 'choice' grades Hard, a fast 'fill' Easy (lwAnswerGrade). */
-export type AnswerMode = 'study' | 'cards' | 'review' | 'choice' | 'fill' | 'colloc' | 'lesson' | 'reading' | 'video';
+export type AnswerMode = 'study' | 'cards' | 'review' | 'choice' | 'fill' | 'forms' | 'colloc' | 'lesson' | 'reading' | 'video';
 
-/** progress/{uid}_{wordId}: the user's memory state for one word. */
+/** progress/{uid}_{wordId}: the user's memory state for one word. A word's forms
+    (Learn → Forms) have their own doc, with wordId = `<word id>~forms` (lwFormsId). */
 export interface Progress {
   userId?: string;
   wordId: string;
@@ -226,6 +244,18 @@ export interface LessonProgress {
   best?: number;
   completedAt?: Ms;
   saved?: boolean;
+  /** spaced review of a completed lesson (Grammar → Review), FSRS like a word card */
+  srs?: LessonSrs;
+}
+
+/** FSRS memory of a lesson's rule; set on completion, updated by each review */
+export interface LessonSrs {
+  stability: number;
+  difficulty: number;
+  due: Ms;
+  lastReview: Ms;
+  reps: number;
+  lapses: number;
 }
 
 /* ---------------- level test, video clips ---------------- */

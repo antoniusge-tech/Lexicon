@@ -7,7 +7,7 @@ import { FillCard, Flashcard, Ic, SpeakButton, lwBlankSentence } from '../compon
 import { LW_LEARN_MODES } from '../nav.ts';
 import { AnswerButtons, shuffle } from './shared.jsx';
 
-function LearnView({ mode, setMode, stats, studyStats, selectedCount, onPickGroups, reviewScope, setReviewScope, reviewPlan, children }) {
+function LearnView({ mode, setMode, modes, stats, studyStats, selectedCount, onPickGroups, reviewScope, setReviewScope, reviewPlan, children }) {
   /* on narrow screens the modes scroll sideways: keep the chosen one in view */
   const pillsRef = useRef(null);
   useEffect(() => {
@@ -28,11 +28,12 @@ function LearnView({ mode, setMode, stats, studyStats, selectedCount, onPickGrou
           <div className="goal-track"><div className="goal-fill" style={{ width: pct + '%' }} /></div>
         </div>
         <div className="mode-pills" role="tablist" ref={pillsRef}>
-          {LW_LEARN_MODES.map((m) => (
+          {(modes || LW_LEARN_MODES).map((m) => (
             <button key={m.id} type="button" role="tab" aria-selected={mode === m.id}
               className={'mode-pill' + (mode === m.id ? ' on' : '')} onClick={() => setMode(m.id)}>
               {m.label}
               {m.id === 'review' && stats.dueCount > 0 && <span className="mode-pill-count">{stats.dueCount}</span>}
+              {m.id === 'forms' && stats.formsDue > 0 && <span className="mode-pill-count">{stats.formsDue}</span>}
             </button>
           ))}
         </div>
@@ -59,7 +60,7 @@ function LearnView({ mode, setMode, stats, studyStats, selectedCount, onPickGrou
             <button type="button" className="groups-chip" onClick={onPickGroups}>
               <Ic.Tag width="15" height="15" /> {selectedCount} {selectedCount === 1 ? 'group' : 'groups'} <Ic.Chevron width="15" height="15" />
             </button>
-            {(mode === 'cards' || mode === 'choice' || mode === 'fill') && studyStats.poolCount > 0 && (
+            {(mode === 'cards' || mode === 'choice' || mode === 'fill' || mode === 'forms') && studyStats.poolCount > 0 && (
               <span className="learn-session">{studyStats.knownCount} / {studyStats.poolCount} known</span>
             )}
           </div>

@@ -2,6 +2,7 @@
 
 import { lwWordStatus } from './progress.ts';
 import { lwNormLetters } from './reading.ts';
+import { LW_FORMS_AI_HINT, LW_FORMS_AI_SCHEMA, lwNormForms } from './forms.ts';
 
 const LW_KEYS = {
   theme: 'lw_theme_v1',
@@ -224,7 +225,8 @@ async function lwAiFillWord(word) {
           + 'tr — краткий перевод на русский (1–3 варианта через запятую, как в Cambridge Dictionary); '
           + 'example — запоминающееся простое предложение-пример с этим словом на ' + lwLangInfo().ruPrep + '; '
           + 'exampleTr — перевод примера на русский; '
-          + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '.',
+          + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '.'
+          + lwFormsHint(),
       }],
     },
     contents: [{ role: 'user', parts: [{ text: 'Слово: ' + term }] }],
@@ -239,6 +241,7 @@ async function lwAiFillWord(word) {
           example: { type: 'STRING' },
           exampleTr: { type: 'STRING' },
           pos: { type: 'STRING', enum: LW_POS },
+          ...lwFormsSchemaProp(),
         },
         required: ['ipa', 'tr', 'example', 'exampleTr', 'pos'],
       },
@@ -282,14 +285,20 @@ async function lwAiFillWord(word) {
   try { parsed = JSON.parse(text); }
   catch (e) { const err = new Error('AI returned an invalid response.'); err.code = 'refusal'; throw err; }
 
+  const pos = lwNormPos(parsed.pos);
   return {
     ipa: String(parsed.ipa || '').trim(),
     tr: String(parsed.tr || '').trim(),
     example: String(parsed.example || '').trim(),
     exampleTr: String(parsed.exampleTr || '').trim(),
-    pos: lwNormPos(parsed.pos),
+    pos,
+    forms: lwNormForms(parsed.forms, lwLangCode, pos),
   };
 }
+
+/* the forms part of a fill prompt and schema, for languages that keep forms (forms.ts) */
+const lwFormsHint = () => (LW_FORMS_AI_HINT[lwLangCode] ? ' ' + LW_FORMS_AI_HINT[lwLangCode] : '');
+const lwFormsSchemaProp = () => (LW_FORMS_AI_HINT[lwLangCode] ? { forms: LW_FORMS_AI_SCHEMA } : {});
 
 /* Пакетное заполнение: на входе массив английских слов, на выходе массив
    объектов { word, ipa, tr, example, exampleTr } в том же порядке. Слово в
@@ -321,7 +330,8 @@ async function lwAiFillWords(words) {
           + 'tr — краткий перевод на русский (1–3 варианта через запятую, как в Cambridge Dictionary); '
           + 'example — запоминающееся простое предложение-пример с этим словом на ' + lwLangInfo().ruPrep + '; '
           + 'exampleTr — перевод примера на русский; '
-          + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '. '
+          + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '.'
+          + lwFormsHint() + ' '
           + 'Верни объекты в том же порядке и количестве, что и входной список.',
       }],
     },
@@ -339,6 +349,7 @@ async function lwAiFillWords(words) {
             example: { type: 'STRING' },
             exampleTr: { type: 'STRING' },
             pos: { type: 'STRING', enum: LW_POS },
+            ...lwFormsSchemaProp(),
           },
           required: ['word', 'ipa', 'tr', 'example', 'exampleTr', 'pos'],
         },
@@ -399,13 +410,15 @@ async function lwAiFillWords(words) {
     if (word && (srcLower || lowerInputs.has(word.toLowerCase()))) {
       word = word[0].toLowerCase() + word.slice(1);
     }
+    const pos = lwNormPos(p && p.pos);
     return {
       word,
       ipa: String((p && p.ipa) || '').trim(),
       tr: String((p && p.tr) || '').trim(),
       example: String((p && p.example) || '').trim(),
       exampleTr: String((p && p.exampleTr) || '').trim(),
-      pos: lwNormPos(p && p.pos),
+      pos,
+      forms: lwNormForms(p && p.forms, lwLangCode, pos),
     };
   }).filter((r) => r.word);
 }
@@ -444,6 +457,28 @@ async function lwGeminiJson(systemText, userText, schema) {
   if (!text) { const e = new Error('Empty AI response.'); e.code = 'refusal'; throw e; }
   try { return JSON.parse(text); }
   catch (e) { const err = new Error('AI returned an invalid response.'); err.code = 'refusal'; throw err; }
+}
+
+/* Fill only the principal forms of existing words (Library → "Fill forms with AI").
+   items: up to 50 [{ word, pos }] with a verb / noun / adjective pos; returns
+   [{ word, forms }] in the same order (forms undefined when the model gave none). */
+async function lwAiFillForms(items) {
+  const list = (items || []).map((it) => ({ word: String((it && it.word) || '').trim().slice(0, 100), pos: (it && it.pos) || '' }))
+    .filter((it) => it.word).slice(0, 50);
+  if (!list.length) { const e = new Error('No words to process.'); e.code = 'empty'; throw e; }
+  if (!LW_FORMS_AI_HINT[lwLangCode]) { const e = new Error('No forms for this language.'); e.code = 'empty'; throw e; }
+  const parsed = await lwGeminiJson(
+    'Ты — грамматист ' + lwLangInfo().ruGen + ' языка. Тебе дают слова с частью речи (слово | часть речи). '
+      + 'Для КАЖДОГО верни { word, forms }: word — слово как в запросе; ' + LW_FORMS_AI_HINT[lwLangCode]
+      + ' Сохрани порядок и количество.',
+    list.map((it) => it.word + ' | ' + it.pos).join('\n'),
+    { type: 'ARRAY', items: { type: 'OBJECT', properties: { word: { type: 'STRING' }, forms: LW_FORMS_AI_SCHEMA }, required: ['word', 'forms'] } },
+  );
+  if (!Array.isArray(parsed)) { const e = new Error('AI returned an invalid response.'); e.code = 'refusal'; throw e; }
+  return list.map((it, i) => {
+    const p = parsed.find((x) => x && String(x.word || '').trim().toLowerCase() === it.word.toLowerCase()) || parsed[i];
+    return { word: it.word, forms: lwNormForms(p && p.forms, lwLangCode, it.pos) };
+  });
 }
 
 /* Tag existing words with a part of speech only (cheaper than a full fill).
@@ -1079,7 +1114,7 @@ export {
   lwSaveVoiceSettings, lwPickVoice, lwOnVoicesChanged, lwUtterance, LW_KEYS,
   LW_READING_BATCH, LW_LANGUAGES, LW_LANG_CODES, lwDocLang, lwUserLangs,
   lwSetCurrentLang, lwCurrentLang, lwLangInfo, lwCefrField, lwLangField, LW_CEFR_LEVELS,
-  LW_TEXT_TOPICS, LW_TEXT_LENGTHS, lwUid, LW_POS, lwNormPos, lwAiTagPos, lwAiLookupWord,
+  LW_TEXT_TOPICS, LW_TEXT_LENGTHS, lwUid, LW_POS, lwNormPos, lwAiTagPos, lwAiFillForms, lwAiLookupWord,
   lwAiTranslateSentences, lwAiSuggestCollocations, lwAiGenerateLesson,
   lwAiRegenerateTask, lwNormTask, lwWordOfTheDay, lwLoad, lwSave, lwFileToPhoto,
   lwAutoFindPhoto, lwGetGeminiKey, lwSetGeminiKey, lwHasGeminiKey, lwAiFillWord,

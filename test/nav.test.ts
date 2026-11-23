@@ -26,6 +26,8 @@ describe('nav ↔ hash', () => {
     ['#/grammar/lesson/L1/test', { tab: 'grammar', grammar: { view: 'quiz', lessonId: 'L1' } }],
     ['#/grammar/edit', { tab: 'grammar', grammar: { view: 'edit' } }],
     ['#/grammar/edit/L1', { tab: 'grammar', grammar: { view: 'edit', lessonId: 'L1' } }],
+    ['#/grammar/review', { tab: 'grammar', grammar: { view: 'review' } }],
+    ['#/learn/forms', { tab: 'learn', learnMode: 'forms' }],
     ['#/library', { tab: 'library' }],
     ['#/leveltest', { tab: 'leveltest' }],
   ];

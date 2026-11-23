@@ -146,7 +146,8 @@ function NavDrawer({ open, onClose, tab, learnMode, goTo, stats, user, isAdmin, 
           {item('review', Ic.Repeat, 'Review', tab === 'learn' && learnMode === 'review',
             stats.dueCount > 0 && <span className="nav-badge nav-badge-hot">{stats.dueCount}</span>)}
           {item('reading', Ic.Book, 'Reading', tab === 'reading')}
-          {item('grammar', Ic.Grammar, 'Grammar', tab === 'grammar')}
+          {item('grammar', Ic.Grammar, 'Grammar', tab === 'grammar',
+            stats.grammarDue > 0 && <span className="nav-badge" title="Lessons to review">{stats.grammarDue}</span>)}
           {item('library', Ic.Library, 'Library', tab === 'library', <span className="nav-badge">{wordCount} words</span>)}
           {item('import', Ic.Plus, 'Import', tab === 'import')}
           {isAdmin && item('admin', Ic.Settings, 'Admin', tab === 'admin')}

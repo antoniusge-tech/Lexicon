@@ -3,7 +3,8 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { LW_KEYS, lwLoad, lwSave } from '../data.js';
 import {
-  LW_LESSON_TASKS, LW_XP_LESSON_BONUS, lwCheckFill, lwLessonStatus, lwLessonTopics,
+  LW_GRAMMAR_REVIEW_LESSONS, LW_GRAMMAR_REVIEW_TASKS, LW_LESSON_TASKS, LW_XP_LESSON_BONUS,
+  lwCheckFill, lwFormatInterval, lwLessonStatus, lwLessonTopics,
 } from '../progress.ts';
 import { Ic, LessonBody } from '../components.jsx';
 import { lwLazy, shuffle } from './shared.jsx';
@@ -20,7 +21,7 @@ const LW_LESSON_STATUS = {
 };
 
 function GrammarScreen({ nav, setGrammar, lessons, progressBy, isAdmin, userLevel, recordAnswer,
-  saveLesson, moveLesson, saveProgress, finishTest, deleteLesson }) {
+  reviewPlan, now, gradeReview, saveLesson, moveLesson, saveProgress, finishTest, deleteLesson }) {
   const topics = useMemo(() => lwLessonTopics(lessons), [lessons]);
   const [attempt, setAttempt] = useState(0); // bumps on "Retake test" to restart the quiz
   const topicOf = (l) => topics.find((t) => t.lessons.some((x) => x.id === l.id)) || { lessons: [l] };
@@ -46,6 +47,12 @@ function GrammarScreen({ nav, setGrammar, lessons, progressBy, isAdmin, userLeve
             onDelete={lesson ? () => { if (window.confirm('Delete “' + lesson.title + '”? This can\'t be undone.')) deleteLesson(lesson); } : null} />
         </div>
       </div>
+    );
+  }
+  if (nav.view === 'review') {
+    return (
+      <GrammarReview lessons={lessons} plan={reviewPlan} now={now} recordAnswer={recordAnswer} gradeReview={gradeReview}
+        onOpen={(l) => setGrammar({ view: 'lesson', lessonId: l.id })} onHome={home} />
     );
   }
   if (lesson && !blocked && (nav.view === 'lesson' || nav.view === 'quiz')) {
@@ -74,12 +81,13 @@ function GrammarScreen({ nav, setGrammar, lessons, progressBy, isAdmin, userLeve
   }
   return (
     <GrammarHome topics={topics} progressBy={progressBy} isAdmin={isAdmin} userLevel={userLevel} statusOf={statusOf}
+      reviewPlan={reviewPlan} now={now} onReview={() => setGrammar({ view: 'review' })}
       onOpen={(l) => setGrammar({ view: 'lesson', lessonId: l.id })} onNew={() => setGrammar({ view: 'edit' })}
       onMove={moveLesson} onToggleSave={(l) => saveProgress(l.id, { saved: !(progressBy[l.id] || {}).saved })} />
   );
 }
 
-function GrammarHome({ topics, progressBy, isAdmin, userLevel, statusOf, onOpen, onNew, onMove, onToggleSave }) {
+function GrammarHome({ topics, progressBy, isAdmin, userLevel, statusOf, reviewPlan, now, onReview, onOpen, onNew, onMove, onToggleSave }) {
   const [f, setF] = useState(() => ({ level: 'all', saved: false, ...(lwLoad(LW_KEYS.grammar, null) || {}) }));
   useEffect(() => { lwSave(LW_KEYS.grammar, f); }, [f]);
   const levels = [...new Set(topics.flatMap((t) => t.lessons.map((l) => l.level)).filter(Boolean))].sort();
@@ -96,6 +104,8 @@ function GrammarHome({ topics, progressBy, isAdmin, userLevel, statusOf, onOpen,
         </div>
         {isAdmin && <button className="btn btn-primary" onClick={onNew}><Ic.Plus /> New lesson</button>}
       </div>
+
+      {done > 0 && <ReviewCard plan={reviewPlan} now={now} onReview={onReview} />}
 
       {all.length > 0 && (
         <div className="status-chips gr-filters">
@@ -226,14 +236,54 @@ function LessonView({ lesson, prog, status, isAdmin, position, total, onBack, on
   );
 }
 
+/* a test task with a choice's options in a new random order */
+function lwShuffleOptions(t) {
+  if (t.type !== 'choice') return t;
+  const order = shuffle([0, 1, 2, 3]);
+  return { ...t, options: order.map((i) => t.options[i]), answer: order.indexOf(t.answer) };
+}
+
+/* One task: the question, its options or a gap to type in, and the feedback
+   once answered (`given`: the option index or the typed text). */
+function QuizTaskCard({ task, given, ok, typed, setTyped, onAnswer, inputRef }) {
+  const right = task.type === 'choice' ? task.options[task.answer] : task.answers[0];
+  return (
+    <div className="ls-card quiz-card">
+      <p className="quiz-type">{task.type === 'choice' ? 'Choose the right option' : 'Fill in the gap'}</p>
+      <p className="quiz-q quiz-q-big">{task.q}</p>
+      {task.type === 'choice' ? (
+        <div className="quiz-options">
+          {task.options.map((o, i) => {
+            const cls = given == null ? '' : i === task.answer ? ' right' : i === given ? ' wrong' : ' dim';
+            return (
+              <button key={i} type="button" className={'quiz-option' + cls} disabled={given != null} onClick={() => onAnswer(i)}>
+                <span className="quiz-letter">{'ABCD'[i]}</span>{o}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <form className="quiz-fill" onSubmit={(e) => { e.preventDefault(); onAnswer(typed); }}>
+          <input ref={inputRef} className={'input quiz-input' + (given == null ? '' : ok ? ' right' : ' wrong')} value={typed}
+            disabled={given != null} placeholder="Type your answer" autoComplete="off" autoCapitalize="off" spellCheck="false"
+            onChange={(e) => setTyped(e.target.value)} />
+          {given == null && <button type="submit" className="btn btn-primary" disabled={!typed.trim()}>Check</button>}
+        </form>
+      )}
+      {given != null && (
+        <div className={'quiz-feedback' + (ok ? ' ok' : ' bad')} role="status">
+          <p className="quiz-feedback-title">{ok ? 'Correct!' : 'Not quite — the answer is “' + right + '”'}</p>
+          {task.why && <p className="quiz-why">{task.why}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* The test: tasks and options shuffled per attempt; feedback after each answer;
    10/10 completes the lesson. Every answer counts toward XP and the daily goal. */
 function LessonQuiz({ lesson, recordAnswer, finishTest, next, onRetake, onReview, onNext, onHome }) {
-  const [tasks] = useState(() => shuffle(lesson.quiz || []).map((t) => {
-    if (t.type !== 'choice') return t;
-    const order = shuffle([0, 1, 2, 3]);
-    return { ...t, options: order.map((i) => t.options[i]), answer: order.indexOf(t.answer) };
-  }));
+  const [tasks] = useState(() => shuffle(lesson.quiz || []).map(lwShuffleOptions));
   const [idx, setIdx] = useState(0);
   const [given, setGiven] = useState(null); // choice index or typed text, once answered
   const [typed, setTyped] = useState('');
@@ -304,7 +354,6 @@ function LessonQuiz({ lesson, recordAnswer, finishTest, next, onRetake, onReview
   if (!task) return null;
 
   const ok = given != null && (results[results.length - 1] || {}).ok;
-  const right = task.type === 'choice' ? task.options[task.answer] : task.answers[0];
   return (
     <div className="grammar quiz">
       <div className="ls-back-row">
@@ -323,35 +372,145 @@ function LessonQuiz({ lesson, recordAnswer, finishTest, next, onRetake, onReview
           return <span key={i} className={'colloc-seg' + (r ? (r.ok ? ' on' : ' bad') : i === idx ? ' cur' : '')} />;
         })}
       </div>
-      <div className="ls-card quiz-card">
-        <p className="quiz-type">{task.type === 'choice' ? 'Choose the right option' : 'Fill in the gap'}</p>
-        <p className="quiz-q quiz-q-big">{task.q}</p>
-        {task.type === 'choice' ? (
-          <div className="quiz-options">
-            {task.options.map((o, i) => {
-              const cls = given == null ? '' : i === task.answer ? ' right' : i === given ? ' wrong' : ' dim';
-              return (
-                <button key={i} type="button" className={'quiz-option' + cls} disabled={given != null} onClick={() => answer(i)}>
-                  <span className="quiz-letter">{'ABCD'[i]}</span>{o}
-                </button>
-              );
-            })}
+      <QuizTaskCard task={task} given={given} ok={ok} typed={typed} setTyped={setTyped} onAnswer={answer} inputRef={inputRef} />
+      {given != null && (
+        <button type="button" className="btn btn-primary quiz-next" onClick={goNext} autoFocus>
+          {idx + 1 < tasks.length ? 'Next' : 'See result'} <Ic.Arrow width="16" height="16" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* Grammar home: lessons whose rule is due for a review (spaced repetition) */
+function ReviewCard({ plan, now, onReview }) {
+  const n = plan.ids.length;
+  return (
+    <section className={'gr-review' + (n ? ' due' : '')}>
+      <span className="gr-review-icon"><Ic.Repeat width="22" height="22" /></span>
+      <div className="gr-review-text">
+        <h2 className="gr-review-title">{n ? 'Time to review ' + n + (n === 1 ? ' lesson' : ' lessons') : 'Grammar review'}</h2>
+        <p className="gr-review-sub">
+          {n ? 'A few tasks from lessons you completed, so the rules stay with you.'
+            : plan.nextDue ? 'Completed lessons come back for a short check. Next in ' + lwFormatInterval(plan.nextDue - now) + '.'
+              : 'Completed lessons come back here for a short check.'}
+        </p>
+      </div>
+      {n > 0 && <button type="button" className="btn btn-primary" onClick={onReview}>Review <Ic.Arrow width="16" height="16" /></button>}
+    </section>
+  );
+}
+
+/* Grammar → Review: LW_GRAMMAR_REVIEW_TASKS tasks from each of the first
+   LW_GRAMMAR_REVIEW_LESSONS due lessons (most likely forgotten first), mixed
+   together. The session is fixed when it opens. Once all of a lesson's tasks
+   are answered, its rule is rescheduled (gradeReview → lesson_progress.srs).
+   Every answer counts toward XP and the daily goal, like a lesson test. */
+function GrammarReview({ lessons, plan, now, recordAnswer, gradeReview, onOpen, onHome }) {
+  const [session, setSession] = useState(0); // bumps on "Review more"
+  const [tasks, setTasks] = useState(null); // [{ task, lesson }]
+  /* pick the session; again once lessons and progress have loaded (a cold start
+     on #/grammar/review), but never while one is being played */
+  const ready = lessons.length > 0 && plan.ids.length > 0;
+  useEffect(() => {
+    if (tasks && tasks.length) return;
+    const picked = plan.ids.map((id) => lessons.find((l) => l.id === id)).filter((l) => l && (l.quiz || []).length)
+      .slice(0, LW_GRAMMAR_REVIEW_LESSONS);
+    setTasks(shuffle(picked.flatMap((l) => shuffle(l.quiz).slice(0, LW_GRAMMAR_REVIEW_TASKS)
+      .map((t) => ({ task: lwShuffleOptions(t), lesson: l })))));
+    // eslint-disable-next-line
+  }, [session, ready]);
+  const [idx, setIdx] = useState(0);
+  const [given, setGiven] = useState(null);
+  const [typed, setTyped] = useState('');
+  const [results, setResults] = useState([]); // { lessonId, ok }
+  const [finished, setFinished] = useState(false);
+  const inputRef = useRef(null);
+  useEffect(() => { window.scrollTo(0, 0); if (inputRef.current) inputRef.current.focus(); }, [idx, tasks]);
+
+  if (!tasks) return null;
+  const item = tasks[idx];
+  const answer = (value) => {
+    if (given != null || !item) return;
+    const { task, lesson } = item;
+    if (task.type === 'fill' && !String(value).trim()) return;
+    const ok = task.type === 'choice' ? value === task.answer : lwCheckFill(value, task.answers);
+    const next = [...results, { lessonId: lesson.id, ok }];
+    setGiven(value);
+    setResults(next);
+    recordAnswer(null, ok, 'lesson');
+    const mine = next.filter((r) => r.lessonId === lesson.id);
+    if (mine.length === tasks.filter((t) => t.lesson.id === lesson.id).length) {
+      gradeReview(lesson.id, mine.filter((r) => r.ok).length, mine.length);
+    }
+  };
+  const goNext = () => {
+    if (idx + 1 < tasks.length) { setIdx(idx + 1); setGiven(null); setTyped(''); return; }
+    setFinished(true);
+  };
+  const again = () => { setSession((n) => n + 1); setTasks(null); setIdx(0); setGiven(null); setTyped(''); setResults([]); setFinished(false); };
+
+  if (!tasks.length || finished) {
+    const byLesson = [...new Set(tasks.map((t) => t.lesson))].map((l) => {
+      const mine = results.filter((r) => r.lessonId === l.id);
+      return { lesson: l, right: mine.filter((r) => r.ok).length, total: mine.length };
+    });
+    const right = results.filter((r) => r.ok).length;
+    const more = plan.ids.filter((id) => !byLesson.some((b) => b.lesson.id === id)).length;
+    return (
+      <div className="grammar quiz">
+        <div className={'quiz-result' + (right === results.length ? ' pass' : ' fail')}>
+          <span className="quiz-result-icon">{right === results.length ? <Ic.DoubleCheck width="30" height="30" /> : <Ic.Repeat width="28" height="28" />}</span>
+          {results.length > 0 && <p className="quiz-score">{right}/{results.length}</p>}
+          <h2 className="quiz-result-title">{results.length ? 'Review done' : 'Nothing to review'}</h2>
+          <p className="quiz-result-sub">
+            {results.length ? 'Rules you got right come back later; the others come back sooner.'
+              : plan.nextDue ? 'The next lesson comes back in ' + lwFormatInterval(plan.nextDue - now) + '.' : 'Complete a lesson first.'}
+          </p>
+          <div className="quiz-result-btns">
+            <button className="btn btn-soft" onClick={onHome}>All lessons</button>
+            {more > 0 && <button className="btn btn-primary" onClick={again}>Review {more} more <Ic.Arrow width="16" height="16" /></button>}
           </div>
-        ) : (
-          <form className="quiz-fill" onSubmit={(e) => { e.preventDefault(); answer(typed); }}>
-            <input ref={inputRef} className={'input quiz-input' + (given == null ? '' : ok ? ' right' : ' wrong')} value={typed}
-              disabled={given != null} placeholder="Type your answer" autoComplete="off" autoCapitalize="off" spellCheck="false"
-              onChange={(e) => setTyped(e.target.value)} />
-            {given == null && <button type="submit" className="btn btn-primary" disabled={!typed.trim()}>Check</button>}
-          </form>
-        )}
-        {given != null && (
-          <div className={'quiz-feedback' + (ok ? ' ok' : ' bad')} role="status">
-            <p className="quiz-feedback-title">{ok ? 'Correct!' : 'Not quite — the answer is “' + right + '”'}</p>
-            {task.why && <p className="quiz-why">{task.why}</p>}
-          </div>
+        </div>
+        {byLesson.length > 0 && (
+          <section className="quiz-mistakes">
+            <h3 className="csheet-h">Lessons</h3>
+            {byLesson.map((b) => (
+              <div className="ls-card gr-review-row" key={b.lesson.id}>
+                <span className={'gr-review-mark' + (b.right === b.total ? ' ok' : '')}>
+                  {b.right === b.total ? <Ic.Check width="15" height="15" /> : <Ic.Repeat width="14" height="14" />}
+                </span>
+                <span className="gr-review-row-title">{b.lesson.title}</span>
+                <span className="gr-review-row-score">{b.right}/{b.total}</span>
+                {b.right < b.total && <button type="button" className="btn btn-ghost sm" onClick={() => onOpen(b.lesson)}>Open lesson</button>}
+              </div>
+            ))}
+          </section>
         )}
       </div>
+    );
+  }
+
+  const ok = given != null && (results[results.length - 1] || {}).ok;
+  return (
+    <div className="grammar quiz">
+      <div className="ls-back-row">
+        <button type="button" className="btn btn-ghost sm" onClick={() => setFinished(true)}>
+          <Ic.Close width="15" height="15" /> Finish
+        </button>
+        <span className="ls-pos">Grammar review</span>
+      </div>
+      <div className="colloc-head">
+        <span className="colloc-kicker">{item.lesson.title}</span>
+        <span className="colloc-count">{idx + 1} / {tasks.length}</span>
+      </div>
+      <div className="colloc-segs">
+        {tasks.map((_, i) => {
+          const r = results[i];
+          return <span key={i} className={'colloc-seg' + (r ? (r.ok ? ' on' : ' bad') : i === idx ? ' cur' : '')} />;
+        })}
+      </div>
+      <QuizTaskCard task={item.task} given={given} ok={ok} typed={typed} setTyped={setTyped} onAnswer={answer} inputRef={inputRef} />
       {given != null && (
         <button type="button" className="btn btn-primary quiz-next" onClick={goNext} autoFocus>
           {idx + 1 < tasks.length ? 'Next' : 'See result'} <Ic.Arrow width="16" height="16" />

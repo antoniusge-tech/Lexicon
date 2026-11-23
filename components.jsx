@@ -13,6 +13,7 @@ import {
   LW_LETTERS, lwCollocKey, lwCollocPartner, lwFindPhraseCards, lwNormLetters,
   readingTokensMatch,
 } from './reading.ts';
+import { LW_GENDER_LABEL, lwFormSlots, lwFormsLabel, lwNormForms, lwParseFormsText } from './forms.ts';
 
 /* ---------------- Icons ---------------- */
 const Ic = {
@@ -470,6 +471,7 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupC
               <div className="back-word">
                 {entry.ipa}
               </div>
+              <CardForms entry={entry} />
               {groupTag}
               <SpeakButton word={entry.word} />
               <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
@@ -499,6 +501,7 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupC
                 {entry.tr}
               </div>
               <div className="back-word">{entry.word} <span className="back-ipa">{entry.ipa}</span></div>
+              <CardForms entry={entry} />
               {groupTag}
               <ExampleBulb example={entry.example} onShow={() => setShowExample(true)} />
             </div>
@@ -517,6 +520,12 @@ function Flashcard({ entry, group, flipped, onFlip, onSwipe, onShuffle, onGroupC
       </div>
     </div>
   );
+}
+
+/* the word's principal forms on the back of a card (forms.ts) */
+function CardForms({ entry }) {
+  const label = lwFormsLabel(entry, lwCurrentLang());
+  return label ? <div className="back-forms">{label}</div> : null;
 }
 
 /* ---------------- Pronunciation button ---------------- */
@@ -553,7 +562,7 @@ const lwFillNorm = (s) => lwNormLetters(String(s || '').toLowerCase().replace(/�
 
 const LW_FILL_EASY_MS = 12000;
 
-function FillCard({ entry, group, blank, onAnswer, onShuffle, onGroupClick }) {
+function FillCard({ entry, group, blank, caption, onAnswer, onShuffle, onGroupClick }) {
   const [drag, setDrag] = React.useState(null);   // {startX, startY, dx, dy, moved} | null
   const [flyDir, setFlyDir] = React.useState(null); // 'known' | 'unknown' | 'shuffle' | 'skip' | null
   const [typed, setTyped] = React.useState('');
@@ -718,6 +727,7 @@ function FillCard({ entry, group, blank, onAnswer, onShuffle, onGroupClick }) {
       <div className="fill-inner">
         <div className="fill-face fill-front">
           {makeGroupTag('choice-tag')}
+          {caption && <div className="fill-caption">{caption}</div>}
           <p className="fill-sentence">
             {blank ? <>{blank.before}{input}{blank.after}</> : <>{entry.example} {input}</>}
           </p>
@@ -731,7 +741,7 @@ function FillCard({ entry, group, blank, onAnswer, onShuffle, onGroupClick }) {
             ) : revealed ? (
               <span className="fill-answer" onPointerDown={stop} onClick={stop}>
                 <strong>{target}</strong>{entry.ipa && <span className="fill-ipa">{entry.ipa}</span>}
-                <SpeakButton word={entry.word} />
+                <SpeakButton word={target} />
                 <span className="fill-note">Type it to continue</span>
               </span>
             ) : wrong ? (
@@ -906,6 +916,8 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
   const [exampleTr, setExampleTr] = React.useState(initial ? (initial.exampleTr || '') : '');
   const [photo, setPhoto] = React.useState(initial ? (initial.photo || '') : '');
   const [pos, setPos] = React.useState(initial ? (initial.pos || '') : '');
+  const [forms, setForms] = React.useState(initial ? (initial.forms || {}) : {});
+  const formSlots = lwFormSlots(lwCurrentLang(), pos);
   const [autoState, setAutoState] = React.useState('idle'); // 'idle' | 'loading' | 'notfound' | 'error'
   const [aiState, setAiState] = React.useState('idle'); // 'idle' | 'loading' | error-code string
   const [keyModal, setKeyModal] = React.useState(false);
@@ -928,6 +940,8 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
       example: example.trim(),
       exampleTr: exampleTr.trim(),
       pos,
+      /* none: dropped, or {} when the word was already checked (Library's AI fill) */
+      forms: lwNormForms(forms, lwCurrentLang(), pos) || (initial && initial.forms ? {} : undefined),
       photo,
       createdAt: (initial && initial.createdAt) || Date.now(),
     });
@@ -961,6 +975,8 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
         if (r.example && !example.trim()) setExample(r.example);
         if (r.exampleTr && !exampleTr.trim()) setExampleTr(r.exampleTr);
         if (r.pos && !pos) setPos(r.pos);
+        /* forms of the part of speech the word ends up with; filled ones are kept */
+        if (r.forms && (!pos || pos === r.pos)) setForms((f) => ({ ...r.forms, ...Object.fromEntries(Object.entries(f).filter(([, v]) => v)) }));
         setAiState('idle');
       })
       .catch((e) => setAiState((e && e.code) || 'error'));
@@ -1000,6 +1016,29 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
           </select>
         </label>
       </div>
+      {formSlots.length > 0 && (
+        <div className="field">
+          <span className="field-label">Forms</span>
+          <div className="forms-grid">
+            {formSlots.map((sl) => (
+              <label className="forms-cell" key={sl.key}>
+                <span className="forms-cell-label">{sl.cue ? sl.cue + ' …' : sl.label}</span>
+                {sl.options ? (
+                  <select className="input input-sm" value={forms[sl.key] || ''} aria-label={sl.label}
+                    onChange={(e) => setForms((f) => ({ ...f, [sl.key]: e.target.value }))}>
+                    <option value="">—</option>
+                    {sl.options.map((o) => <option key={o} value={o}>{LW_GENDER_LABEL[o] || o}</option>)}
+                  </select>
+                ) : (
+                  <input className="input input-sm" value={forms[sl.key] || ''} aria-label={sl.label} placeholder={sl.label}
+                    autoComplete="off" autoCapitalize="off" spellCheck="false"
+                    onChange={(e) => setForms((f) => ({ ...f, [sl.key]: e.target.value }))} />
+                )}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
       <label className="field">
         <span className="field-label">Example sentence</span>
         <input className="input" value={example} placeholder={'e.g. ' + lwLangInfo().ex.example}
@@ -1098,7 +1137,11 @@ function WordForm({ initial, groups, defaultGroupId, onSave, onCancel }) {
 function lwParseImportLine(line) {
   const parts = line.split('|').map((p) => p.trim());
   if (parts.length >= 5) {
-    return { word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3], exampleTr: parts[4], pos: lwNormPos(parts[5]) };
+    const pos = lwNormPos(parts[5]);
+    return {
+      word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3], exampleTr: parts[4], pos,
+      forms: lwParseFormsText(parts[6], lwCurrentLang(), pos), // 7th column, comma-separated (forms.ts)
+    };
   }
   if (parts.length === 4) {
     return { word: parts[0], ipa: parts[1], tr: parts[2], example: parts[3], exampleTr: '' };

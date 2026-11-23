@@ -4,11 +4,12 @@
      #/learn/review            #/reading            #/reading/book/<textId>
      #/reading/ai              #/grammar            #/grammar/lesson/<id>
      #/grammar/lesson/<id>/test                     #/grammar/edit[/<id>]
+     #/grammar/review
      #/library  #/profile  #/import  #/admin  #/leveltest
    A hash (not a path) works on GitHub Pages without server rewrites. */
 
 export type Screen = 'learn' | 'reading' | 'grammar' | 'library' | 'profile' | 'import' | 'admin' | 'leveltest';
-export type LearnMode = 'cards' | 'review' | 'choice' | 'fill' | 'colloc' | 'video';
+export type LearnMode = 'cards' | 'review' | 'choice' | 'fill' | 'forms' | 'colloc' | 'video';
 
 export type ReadingNav =
   | { view: 'home' }
@@ -17,6 +18,7 @@ export type ReadingNav =
 
 export type GrammarNav =
   | { view: 'home' }
+  | { view: 'review' }
   | { view: 'lesson'; lessonId: string }
   | { view: 'quiz'; lessonId: string }
   | { view: 'edit'; lessonId?: string };
@@ -36,6 +38,7 @@ const LW_LEARN_MODES: { id: LearnMode; label: string }[] = [
   { id: 'review', label: 'Review' },
   { id: 'choice', label: 'Choice' },
   { id: 'fill', label: 'Fill' },
+  { id: 'forms', label: 'Forms' },
   { id: 'colloc', label: 'Phrases' },
   { id: 'video', label: 'Video' },
 ];
@@ -53,6 +56,7 @@ function normGrammar(g: any): GrammarNav {
   const id = g && typeof g.lessonId === 'string' && g.lessonId ? g.lessonId : '';
   if (g && (g.view === 'lesson' || g.view === 'quiz') && id) return { view: g.view, lessonId: id };
   if (g && g.view === 'edit') return id ? { view: 'edit', lessonId: id } : { view: 'edit' };
+  if (g && g.view === 'review') return { view: 'review' };
   return { view: 'home' };
 }
 
@@ -83,6 +87,7 @@ function lwNavToHash(nav: Nav): string {
       if (g.view === 'lesson') return '#/grammar/lesson/' + enc(g.lessonId);
       if (g.view === 'quiz') return '#/grammar/lesson/' + enc(g.lessonId) + '/test';
       if (g.view === 'edit') return '#/grammar/edit' + (g.lessonId ? '/' + enc(g.lessonId) : '');
+      if (g.view === 'review') return '#/grammar/review';
       return '#/grammar';
     }
     default:
@@ -108,6 +113,7 @@ function lwHashToNav(hash: string, prev: Nav): Nav | null {
   if (tab === 'grammar') {
     if (a === 'lesson' && b) next.grammar = c === 'test' ? { view: 'quiz', lessonId: b } : { view: 'lesson', lessonId: b };
     else if (a === 'edit') next.grammar = b ? { view: 'edit', lessonId: b } : { view: 'edit' };
+    else if (a === 'review') next.grammar = { view: 'review' };
     else next.grammar = { view: 'home' };
   }
   return next;
