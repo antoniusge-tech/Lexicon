@@ -15,6 +15,15 @@ service cloud.firestore {
       return isSignedIn()
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
+    // An update by the owner keeps the doc's owner and its shared flag: otherwise a
+    // user could hand a doc to another uid (it would show up in that user's "own"
+    // queries) or publish it. Admins may change both (Import, publishing).
+    // The equality checks come first, so the get() in isAdmin() runs only when needed.
+    function keepsOwnerAndShared() {
+      return (request.resource.data.userId == resource.data.userId
+          && request.resource.data.shared == resource.data.shared)
+        || isAdmin();
+    }
 
     match /users/{uid} {
       // optional profile fields: avatar is a small inline JPEG, dailyGoal a sane number
@@ -47,7 +56,7 @@ service cloud.firestore {
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.shared == true || isAdmin());
       allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
       allow update: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin())
-        && (request.resource.data.shared == resource.data.shared || isAdmin());
+        && keepsOwnerAndShared();
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid
         && (request.resource.data.shared == false || (request.resource.data.shared == true && isAdmin()));
     }
@@ -57,7 +66,7 @@ service cloud.firestore {
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.shared == true || isAdmin());
       allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
       allow update: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin())
-        && (request.resource.data.shared == resource.data.shared || isAdmin());
+        && keepsOwnerAndShared();
       // Admins may also create words owned by another user (Import into that user's group).
       allow create: if isSignedIn()
         && (request.resource.data.userId == request.auth.uid || isAdmin())
@@ -92,15 +101,18 @@ service cloud.firestore {
       allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.shared == true || isAdmin());
       allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
       allow update: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin())
-        && (request.resource.data.shared == resource.data.shared || isAdmin());
+        && keepsOwnerAndShared();
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid
         && (request.resource.data.shared == false || (request.resource.data.shared == true && isAdmin()));
 
       match /chapters/{chapterId} {
         allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.shared == true || isAdmin());
         allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-        allow create, update: if isSignedIn() && request.resource.data.userId == request.auth.uid
+        allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid
           && (request.resource.data.shared == false || (request.resource.data.shared == true && isAdmin()));
+        // only the chapter's owner (or an admin) may rewrite it, keeping its owner and shared flag
+        allow update: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin())
+          && keepsOwnerAndShared();
       }
     }
 
@@ -126,7 +138,7 @@ service cloud.firestore {
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.shared == true || isAdmin());
       allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
       allow update: if isSignedIn() && validColloc() && (resource.data.userId == request.auth.uid || isAdmin())
-        && (request.resource.data.shared == resource.data.shared || isAdmin());
+        && keepsOwnerAndShared();
       allow create: if isSignedIn() && validColloc() && request.resource.data.userId == request.auth.uid
         && (request.resource.data.shared == false || (request.resource.data.shared == true && isAdmin()));
     }
