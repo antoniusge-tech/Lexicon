@@ -1,7 +1,7 @@
 /* app.jsx — the root App: auth → profile → data subscriptions, navigation state,
    answers (recordAnswer), toasts and AI jobs; mounts React. Screens live in views/. */
 
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import { registerSW } from 'virtual:pwa-register';
 import {
@@ -438,7 +438,16 @@ function App() {
      collocation game records several answers at once, and each must see the
      others so the goal bonus lands only once */
   const sentToday = useRef({ date: '', answers: 0, goalMet: false });
+  /* recordAnswer reads the latest state through this ref, so it keeps one
+     identity: otherwise every answer (new progress and activity) made a new
+     function, and with it new answer handlers and keyboard listeners in the
+     Learn screens. Updated in a layout effect, before any event can fire. */
+  const answerState = useRef(null);
+  useLayoutEffect(() => {
+    answerState.current = { authUser, lang, activity, progress, dailyGoal, pushToast };
+  });
   const recordAnswer = useCallback((wordId, known, mode, opts) => {
+    const { authUser, lang, activity, progress, dailyGoal, pushToast } = answerState.current || {};
     if (!authUser) return;
     const t = Date.now();
     const ms = lwPracticeMs(lastAnswerAt.current, t);
@@ -463,7 +472,7 @@ function App() {
       pushToast({ kind: 'error', title: 'Could not save progress', msg: (e && e.message) || String(e) });
     });
     setNow(t);
-  }, [authUser, lang, activity, progress, dailyGoal, pushToast]);
+  }, []);
 
   /* persistence (local-only settings) */
   useEffect(() => { document.documentElement.dataset.theme = theme; lwSave(LW_KEYS.theme, theme); }, [theme]);
