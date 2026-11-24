@@ -10,10 +10,14 @@ import {
 import {
   collection, deleteDoc, doc, getCountFromServer, getDoc, getDocs, getFirestore, increment,
   initializeFirestore, onSnapshot, persistentLocalCache, persistentMultipleTabManager, query,
-  serverTimestamp, setDoc, updateDoc, where, writeBatch,
+  serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch,
 } from 'firebase/firestore';
 import { lwCurrentLang, lwRoIpa } from './data.js';
 import { lwCacheGet, lwCacheSet } from './idb-cache.js';
+import {
+  lwEmptyProgressCache, lwNormProgressCache, lwProgressByWord, lwProgressCountOk,
+  lwPutLocalProgress, lwPutProgressDocs, lwRemoveProgressDocs,
+} from './progsync.ts';
 import {
   lwCachedWords, lwEmptyWordsCache, lwFindCachedWord, lwMergeWords, lwNormWordsCache,
   lwAdoptOwnStamps, lwPutCachedWord, lwRemoveCachedWord, lwStampMs, lwWithGroupWords, lwWithoutGroups,
@@ -548,7 +552,12 @@ function lwActivityRef(uid, lang, date) {
    answer that belongs to no word (grammar tests): then only activity is written. */
 function lwRecordAnswer({ uid, lang, progress, date, correct, xp, goalBonus, ms }) {
   const batch = writeBatch(lwDb);
-  if (progress) batch.set(ref(LW_COLLECTIONS.progress, uid + '_' + progress.wordId), { ...progress, userId: uid });
+  if (progress) {
+    // updatedAt (server time) lets devices ask only for changed progress (lwWatchProgress)
+    const id = uid + '_' + progress.wordId;
+    batch.set(ref(LW_COLLECTIONS.progress, id), { ...progress, userId: uid, updatedAt: serverTimestamp() });
+    lwProgressWatchers.forEach((w) => w.put(id, { ...progress, userId: uid }));
+  }
   const day = {
     userId: uid, lang: lang || 'en', date,
     answers: increment(1), correct: increment(correct ? 1 : 0), xp: increment(xp + (goalBonus || 0)), ms: increment(ms || 0),
@@ -571,6 +580,116 @@ async function lwDeleteProgressForWords(uid, wordIds) {
     wordIds.slice(i, i + 400).forEach((id) => batch.delete(ref(LW_COLLECTIONS.progress, uid + '_' + id)));
     await batch.commit();
   }
+  lwProgressWatchers.forEach((w) => w.remove(wordIds.map((id) => uid + '_' + id)));
+}
+
+/* ---------------- Progress: from the device cache ----------------
+   The user's progress docs live in IndexedDB (progsync.ts). A load reads only
+   the docs changed since the latest updatedAt the device has seen, through a
+   live listener that keeps bringing new answers (other devices too). The first
+   load, or a cache that disagrees with a count() of the docs, reads them all.
+   Without the composite index progress(userId, updatedAt) the "changed since"
+   query fails; then the old full listener takes over, so nothing breaks. */
+
+const lwProgressWatchers = new Set();
+
+/* onChange gets { wordId: progress doc }. Returns { put, remove, stop }. */
+function lwWatchProgress(uid, onChange) {
+  const key = 'progress:' + uid;
+  const own = query(col(LW_COLLECTIONS.progress), where('userId', '==', uid));
+  let cache = null;
+  let stopped = false;
+  let unsub = () => {};
+  let checkTimer = null;
+
+  const emit = () => { if (cache) onChange(lwProgressByWord(cache)); };
+  const store = () => lwCacheSet(key, cache);
+
+  async function readAll(label) {
+    const snap = await lwFetch(own, label);
+    if (stopped) return;
+    cache = lwPutProgressDocs(lwEmptyProgressCache(), lwSnapItems(snap));
+    store();
+    emit();
+  }
+
+  /* the old way: one listener on every progress doc of the user */
+  function fallback(err) {
+    console.warn('Progress: the "changed since" query failed, reading all progress live instead.', (err && err.message) || err);
+    unsub();
+    unsub = lwListen(own, 'progress', (snap) => {
+      cache = lwPutProgressDocs(lwEmptyProgressCache(), lwSnapItems(snap));
+      store();
+      emit();
+    });
+  }
+
+  function listenSince() {
+    let synced = false;
+    const changed = query(own, where('updatedAt', '>', Timestamp.fromMillis(cache.since)));
+    unsub = onSnapshot(changed, { includeMetadataChanges: true }, (snap) => {
+      lwMeter('progress (changed)', snap, !synced && !snap.metadata.fromCache);
+      if (!snap.metadata.fromCache) synced = true;
+      const docs = snap.docChanges().filter((c) => c.type !== 'removed').map((c) => ({ id: c.doc.id, ...c.doc.data() }));
+      if (!docs.length) return;
+      cache = lwPutProgressDocs(cache, docs);
+      store();
+      emit();
+    }, (err) => {
+      // no index yet: fall back to the full listener; other errors (quota,
+      // offline) leave the cached progress in place
+      if (err && err.code === 'failed-precondition') fallback(err);
+      else console.warn('Progress listener failed (cached progress stays):', (err && err.code) || err);
+    });
+  }
+
+  /* safety net: progress deleted on another device isn't "changed since" */
+  async function check() {
+    if (stopped) return;
+    try {
+      const n = (await getCountFromServer(own)).data().count;
+      const s = lwReadStats['progress (count)'] || (lwReadStats['progress (count)'] = { snapshots: 0, fromCache: 0, serverDocs: 0, docs: 0 });
+      s.snapshots++;
+      s.docs = n;
+      s.serverDocs += Math.max(1, Math.ceil(n / 1000));
+      if (!stopped && !lwProgressCountOk(n, cache)) {
+        console.warn('Progress: ' + n + ' docs on the server, ' + Object.keys(cache.docs).length + ' cached — reading them all again.');
+        await readAll('progress (full)');
+      }
+    } catch (e) {
+      console.warn('Progress count failed:', e.code || e);
+    }
+  }
+
+  lwCacheGet(key).then(async (raw) => {
+    if (stopped) return;
+    cache = lwNormProgressCache(raw);
+    try {
+      if (cache) emit();
+      else await readAll('progress (full)');
+    } catch (e) {
+      console.warn('Progress could not be read:', e.code || e);
+      fallback(e);
+      return;
+    }
+    if (stopped) return;
+    listenSince();
+    checkTimer = setTimeout(check, 3000);
+  });
+
+  const watcher = {
+    /* this device's answer: show it now */
+    put(id, doc) { if (cache) { cache = lwPutLocalProgress(cache, id, doc); store(); emit(); } },
+    remove(ids) { if (cache) { cache = lwRemoveProgressDocs(cache, ids); store(); emit(); } },
+    stop() {
+      stopped = true;
+      clearTimeout(checkTimer);
+      unsub();
+      lwProgressWatchers.delete(watcher);
+    },
+  };
+  lwProgressWatchers.add(watcher);
+  return watcher;
 }
 
 /* ---------------- Grammar lessons ---------------- */
@@ -699,7 +818,7 @@ async function lwAdminFetchAllData() {
 
 export {
   LW_COLLECTIONS, lwReadReport, lwWatchCollection, lwWatchUserCollection,
-  lwWatchUserAndSharedCollection, lwWatchWords, lwTouchGroups, lwSetDoc, lwDeleteDoc,
+  lwWatchUserAndSharedCollection, lwWatchWords, lwWatchProgress, lwTouchGroups, lwSetDoc, lwDeleteDoc,
   lwDeleteWordsByGroup, lwRecordAnswer, lwAddPracticeTime, lwSaveText, lwDeleteText, lwGetChapter,
   lwSaveReadingProgress, lwDeleteReadingProgress, lwDeleteProgressForWords,
   lwWatchLessons, lwWatchLevelQuestions, lwWatchClips, lwSaveLessonProgress,

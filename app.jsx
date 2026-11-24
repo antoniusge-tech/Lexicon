@@ -8,7 +8,7 @@ import {
   LW_COLLECTIONS, lwAddBonusXp, lwAddPracticeTime, lwAuthInfo, lwDeleteDoc,
   lwDeleteReadingProgress, lwDeleteText, lwLogout, lwRecordAnswer, lwSaveLessonProgress,
   lwSaveText, lwSetDoc, lwUpdateUser, lwWatchAuth, lwWatchClips, lwWatchCollection,
-  lwWatchLessons, lwWatchUserAndSharedCollection, lwWatchUserCollection, lwWatchUserDoc, lwWatchWords,
+  lwWatchLessons, lwWatchUserAndSharedCollection, lwWatchUserCollection, lwWatchUserDoc, lwWatchWords, lwWatchProgress,
 } from './firebase.js';
 import {
   LW_KEYS, LW_READING_BATCH, lwAiFillWords, lwAiGenerateBatch, lwCefrField,
@@ -369,8 +369,9 @@ function App() {
   /* live sync with this user's progress + daily activity */
   useEffect(() => {
     if (!authUser) { setProgress({}); setActivityDocs([]); return; }
-    const unsubProgress = lwWatchUserCollection(LW_COLLECTIONS.progress, authUser.uid,
-      (items) => setProgress(Object.fromEntries(items.map((p) => [p.wordId, p]))));
+    /* progress comes from the device cache plus the docs changed since (lwWatchProgress) */
+    const progressWatch = lwWatchProgress(authUser.uid, setProgress);
+    const unsubProgress = () => progressWatch.stop();
     const unsubActivity = lwWatchUserCollection(LW_COLLECTIONS.activity, authUser.uid, setActivityDocs);
     return () => { unsubProgress(); unsubActivity(); };
   }, [authUser]);
