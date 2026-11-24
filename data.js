@@ -3,6 +3,7 @@
 import { lwWordStatus } from './progress.ts';
 import { lwNormLetters } from './reading.ts';
 import { LW_FORMS_AI_HINT, LW_FORMS_AI_SCHEMA, lwNormForms } from './forms.ts';
+import { lwAiError, lwGeminiCall } from './gemini.ts';
 
 const LW_KEYS = {
   theme: 'lw_theme_v1',
@@ -190,8 +191,6 @@ async function lwAutoFindPhoto(word) {
    в его браузере (localStorage) и тратит только его лимиты. Вызов идёт напрямую
    из браузера — безопасно, потому что ключ принадлежит самому пользователю. */
 
-const LW_GEMINI_MODEL = 'gemini-flash-latest'; // алиас на актуальную flash-модель (бесплатный тир, быстрый)
-
 function lwGetGeminiKey() {
   return (lwLoad(LW_KEYS.geminiKey, '') || '').trim();
 }
@@ -210,80 +209,29 @@ async function lwAiFillWord(word) {
   const term = (word || '').trim().slice(0, 100);
   if (!term) { const e = new Error('Empty word.'); e.code = 'empty'; throw e; }
 
-  const key = lwGetGeminiKey();
-  if (!key) { const e = new Error('No Gemini key set.'); e.code = 'no-key'; throw e; }
-
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
-    + LW_GEMINI_MODEL + ':generateContent?key=' + encodeURIComponent(key);
-
-  const body = {
-    systemInstruction: {
-      parts: [{
-        text: 'Ты — лексикограф для приложения изучения ' + lwLangInfo().ruGen + ' языка. '
-          + 'Для заданного ' + lwLangInfo().ruGen + ' слова верни: '
-          + 'ipa — транскрипцию IPA (без косых черт); '
-          + 'tr — краткий перевод на русский (1–3 варианта через запятую, как в Cambridge Dictionary); '
-          + 'example — запоминающееся простое предложение-пример с этим словом на ' + lwLangInfo().ruPrep + '; '
-          + 'exampleTr — перевод примера на русский; '
-          + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '.'
-          + lwFormsHint(),
-      }],
-    },
-    contents: [{ role: 'user', parts: [{ text: 'Слово: ' + term }] }],
-    generationConfig: {
-      // Structured output: модель обязана вернуть валидный JSON нужной формы.
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: 'OBJECT',
-        properties: {
-          ipa: { type: 'STRING' },
-          tr: { type: 'STRING' },
-          example: { type: 'STRING' },
-          exampleTr: { type: 'STRING' },
-          pos: { type: 'STRING', enum: LW_POS },
-          ...lwFormsSchemaProp(),
-        },
-        required: ['ipa', 'tr', 'example', 'exampleTr', 'pos'],
+  const parsed = await lwGeminiJson(
+    'Ты — лексикограф для приложения изучения ' + lwLangInfo().ruGen + ' языка. '
+      + 'Для заданного ' + lwLangInfo().ruGen + ' слова верни: '
+      + 'ipa — транскрипцию IPA (без косых черт); '
+      + 'tr — краткий перевод на русский (1–3 варианта через запятую, как в Cambridge Dictionary); '
+      + 'example — запоминающееся простое предложение-пример с этим словом на ' + lwLangInfo().ruPrep + '; '
+      + 'exampleTr — перевод примера на русский; '
+      + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '.'
+      + lwFormsHint(),
+    'Слово: ' + term,
+    {
+      type: 'OBJECT',
+      properties: {
+        ipa: { type: 'STRING' },
+        tr: { type: 'STRING' },
+        example: { type: 'STRING' },
+        exampleTr: { type: 'STRING' },
+        pos: { type: 'STRING', enum: LW_POS },
+        ...lwFormsSchemaProp(),
       },
+      required: ['ipa', 'tr', 'example', 'exampleTr', 'pos'],
     },
-  };
-
-  let res;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    const err = new Error('Cannot reach Gemini.'); err.code = 'network'; throw err;
-  }
-
-  if (!res.ok) {
-    // 400 при неверном ключе, 429 при исчерпании бесплатного лимита.
-    if (res.status === 400 || res.status === 403) {
-      const e = new Error('Invalid Gemini key.'); e.code = 'bad-key'; throw e;
-    }
-    if (res.status === 429) {
-      const e = new Error('Daily Gemini limit reached. Try again later.'); e.code = 'quota'; throw e;
-    }
-    if (res.status === 503 || res.status === 500) {
-      const e = new Error('Gemini is overloaded. Try again in a minute.'); e.code = 'overload'; throw e;
-    }
-    const e = new Error('AI service error (' + res.status + ').'); e.code = 'network'; throw e;
-  }
-
-  const data = await res.json();
-  const cand = data && data.candidates && data.candidates[0];
-  if (!cand || cand.finishReason === 'SAFETY' || cand.finishReason === 'PROHIBITED_CONTENT') {
-    const e = new Error('The model refused the request.'); e.code = 'refusal'; throw e;
-  }
-  const text = cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
-  if (!text) { const e = new Error('Empty AI response.'); e.code = 'refusal'; throw e; }
-
-  let parsed;
-  try { parsed = JSON.parse(text); }
-  catch (e) { const err = new Error('AI returned an invalid response.'); err.code = 'refusal'; throw err; }
+  );
 
   const pos = lwNormPos(parsed.pos);
   return {
@@ -311,87 +259,38 @@ async function lwAiFillWords(words) {
     .slice(0, 100); // разумный потолок на один запрос
   if (!list.length) { const e = new Error('No words to process.'); e.code = 'empty'; throw e; }
 
-  const key = lwGetGeminiKey();
-  if (!key) { const e = new Error('No Gemini key set.'); e.code = 'no-key'; throw e; }
-
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
-    + LW_GEMINI_MODEL + ':generateContent?key=' + encodeURIComponent(key);
-
-  const body = {
-    systemInstruction: {
-      parts: [{
-        text: 'Ты — лексикограф для приложения изучения ' + lwLangInfo().ruGen + ' языка. '
-          + 'Тебе дают список ' + lwLangInfo().ruGenPl + ' слов. Для КАЖДОГО слова верни объект: '
-          + 'word — само слово (как в запросе). '
-          + 'ВАЖНО: слово пиши строчными буквами (нижний регистр), '
-          + 'заглавную первую букву оставляй ТОЛЬКО у имён собственных — '
-          + 'названий городов, стран, имён людей и т.п.; '
-          + 'ipa — транскрипцию IPA (без косых черт); '
-          + 'tr — краткий перевод на русский (1–3 варианта через запятую, как в Cambridge Dictionary); '
-          + 'example — запоминающееся простое предложение-пример с этим словом на ' + lwLangInfo().ruPrep + '; '
-          + 'exampleTr — перевод примера на русский; '
-          + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '.'
-          + lwFormsHint() + ' '
-          + 'Верни объекты в том же порядке и количестве, что и входной список.',
-      }],
-    },
-    contents: [{ role: 'user', parts: [{ text: 'Слова:\n' + list.join('\n') }] }],
-    generationConfig: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: 'ARRAY',
-        items: {
-          type: 'OBJECT',
-          properties: {
-            word: { type: 'STRING' },
-            ipa: { type: 'STRING' },
-            tr: { type: 'STRING' },
-            example: { type: 'STRING' },
-            exampleTr: { type: 'STRING' },
-            pos: { type: 'STRING', enum: LW_POS },
-            ...lwFormsSchemaProp(),
-          },
-          required: ['word', 'ipa', 'tr', 'example', 'exampleTr', 'pos'],
+  const parsed = await lwGeminiJson(
+    'Ты — лексикограф для приложения изучения ' + lwLangInfo().ruGen + ' языка. '
+      + 'Тебе дают список ' + lwLangInfo().ruGenPl + ' слов. Для КАЖДОГО слова верни объект: '
+      + 'word — само слово (как в запросе). '
+      + 'ВАЖНО: слово пиши строчными буквами (нижний регистр), '
+      + 'заглавную первую букву оставляй ТОЛЬКО у имён собственных — '
+      + 'названий городов, стран, имён людей и т.п.; '
+      + 'ipa — транскрипцию IPA (без косых черт); '
+      + 'tr — краткий перевод на русский (1–3 варианта через запятую, как в Cambridge Dictionary); '
+      + 'example — запоминающееся простое предложение-пример с этим словом на ' + lwLangInfo().ruPrep + '; '
+      + 'exampleTr — перевод примера на русский; '
+      + 'pos — часть речи по-английски, одно из: ' + LW_POS.join(', ') + '.'
+      + lwFormsHint() + ' '
+      + 'Верни объекты в том же порядке и количестве, что и входной список.',
+    'Слова:\n' + list.join('\n'),
+    {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          word: { type: 'STRING' },
+          ipa: { type: 'STRING' },
+          tr: { type: 'STRING' },
+          example: { type: 'STRING' },
+          exampleTr: { type: 'STRING' },
+          pos: { type: 'STRING', enum: LW_POS },
+          ...lwFormsSchemaProp(),
         },
+        required: ['word', 'ipa', 'tr', 'example', 'exampleTr', 'pos'],
       },
     },
-  };
-
-  let res;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    const err = new Error('Cannot reach Gemini.'); err.code = 'network'; throw err;
-  }
-
-  if (!res.ok) {
-    if (res.status === 400 || res.status === 403) {
-      const e = new Error('Invalid Gemini key.'); e.code = 'bad-key'; throw e;
-    }
-    if (res.status === 429) {
-      const e = new Error('Daily Gemini limit reached. Try again later.'); e.code = 'quota'; throw e;
-    }
-    if (res.status === 503 || res.status === 500) {
-      const e = new Error('Gemini is overloaded. Try again in a minute.'); e.code = 'overload'; throw e;
-    }
-    const e = new Error('AI service error (' + res.status + ').'); e.code = 'network'; throw e;
-  }
-
-  const data = await res.json();
-  const cand = data && data.candidates && data.candidates[0];
-  if (!cand || cand.finishReason === 'SAFETY' || cand.finishReason === 'PROHIBITED_CONTENT') {
-    const e = new Error('The model refused the request.'); e.code = 'refusal'; throw e;
-  }
-  const text = cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
-  if (!text) { const e = new Error('Empty AI response.'); e.code = 'refusal'; throw e; }
-
-  let parsed;
-  try { parsed = JSON.parse(text); }
-  catch (e) { const err = new Error('AI returned an invalid response.'); err.code = 'refusal'; throw err; }
+  );
   if (!Array.isArray(parsed)) { const e = new Error('AI returned an invalid response.'); e.code = 'refusal'; throw e; }
 
   // Множество входных слов, которые пользователь ввёл строчными, — они точно не
@@ -423,40 +322,13 @@ async function lwAiFillWords(words) {
   }).filter((r) => r.word);
 }
 
-/* One structured-output Gemini call: system prompt + user text -> parsed JSON
-   matching `schema`. Throws Error with .code 'no-key' | 'bad-key' | 'quota' |
-   'overload' | 'refusal' | 'network', like lwAiFillWord. */
-async function lwGeminiJson(systemText, userText, schema) {
-  const key = lwGetGeminiKey();
-  if (!key) { const e = new Error('No Gemini key set.'); e.code = 'no-key'; throw e; }
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
-    + LW_GEMINI_MODEL + ':generateContent?key=' + encodeURIComponent(key);
-  const body = {
-    systemInstruction: { parts: [{ text: systemText }] },
-    contents: [{ role: 'user', parts: [{ text: userText }] }],
-    generationConfig: { responseMimeType: 'application/json', responseSchema: schema },
-  };
-  let res;
-  try {
-    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  } catch (e) {
-    const err = new Error('Cannot reach Gemini.'); err.code = 'network'; throw err;
-  }
-  if (!res.ok) {
-    if (res.status === 400 || res.status === 403) { const e = new Error('Invalid Gemini key.'); e.code = 'bad-key'; throw e; }
-    if (res.status === 429) { const e = new Error('Daily Gemini limit reached. Try again later.'); e.code = 'quota'; throw e; }
-    if (res.status === 503 || res.status === 500) { const e = new Error('Gemini is overloaded. Try again in a minute.'); e.code = 'overload'; throw e; }
-    const e = new Error('AI service error (' + res.status + ').'); e.code = 'network'; throw e;
-  }
-  const data = await res.json();
-  const cand = data && data.candidates && data.candidates[0];
-  if (!cand || cand.finishReason === 'SAFETY' || cand.finishReason === 'PROHIBITED_CONTENT') {
-    const e = new Error('The model refused the request.'); e.code = 'refusal'; throw e;
-  }
-  const text = cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
-  if (!text) { const e = new Error('Empty AI response.'); e.code = 'refusal'; throw e; }
-  try { return JSON.parse(text); }
-  catch (e) { const err = new Error('AI returned an invalid response.'); err.code = 'refusal'; throw err; }
+/* One structured-output Gemini call with the user's key: system prompt + user
+   text -> parsed JSON matching `schema` (gemini.ts: key in a header, timeout,
+   one retry when the model is overloaded). `opts`: { config, timeoutMs }.
+   Throws Error with .code 'no-key' | 'bad-key' | 'quota' | 'overload' |
+   'refusal' | 'network'. */
+function lwGeminiJson(systemText, userText, schema, opts = {}) {
+  return lwGeminiCall({ key: lwGetGeminiKey(), system: systemText, user: userText, schema, ...opts });
 }
 
 /* Fill only the principal forms of existing words (Library → "Fill forms with AI").
@@ -785,125 +657,74 @@ async function lwAiGenerateText(words, level, topic, length, count) {
     .slice(0, 60); // разумный потолок слов на один текст
   if (!list.length) { const e = new Error('No words for the text.'); e.code = 'empty'; throw e; }
 
-  const key = lwGetGeminiKey();
-  if (!key) { const e = new Error('No Gemini key set.'); e.code = 'no-key'; throw e; }
-
   const lvl = LW_CEFR_LEVELS.includes(level) ? level : 'B1';
   const topicText = (topic || '').trim() || LW_TEXT_TOPICS[0].prompt;
   const wordCount = Number(length) > 0 ? Math.round(Number(length)) : 150;
   const nTexts = Number(count) > 0 ? Math.round(Number(count)) : 1; // сколько текстов вернуть за один запрос
 
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
-    + LW_GEMINI_MODEL + ':generateContent?key=' + encodeURIComponent(key);
-
-  const body = {
-    systemInstruction: {
-      parts: [{
-        text: 'Ты — преподаватель ' + lwLangInfo().ruGen + ' языка, который пишет короткие обучающие тексты. '
-          + 'Тебе дают: список ' + lwLangInfo().ruGenPl + ' слов, уровень CEFR ученика и тему. '
-          + 'Напиши связный, естественный текст на ' + lwLangInfo().ruPrep + ' примерно на заданное число слов, '
-          + 'который по возможности РАСКРЫВАЕТ заданную тему. '
-          + 'Тема — это желательный ориентир для сеттинга и настроения, а не жёсткая рамка: '
-          + 'старайся выдержать её, но естественность и связность текста важнее. Если какое-то слово '
-          + 'из списка органично не вписывается в тему, не притягивай его за уши и не ломай тему ради него — '
-          + 'выбери естественный вариант (мягко отойди от темы либо оставь такое слово в стороне). '
-          + 'Слова из списка — это ЖЕЛАТЕЛЬНАЯ лексика, а не жёсткое требование: '
-          + 'старайся вплести в текст КАК МОЖНО БОЛЬШЕ слов из списка (в любой форме — '
-          + 'спряжение, число, время допустимы), но не жертвуй связностью и естественностью ради '
-          + 'того, чтобы впихнуть все слова. Лучше складный текст с частью слов, чем неестественный со всеми. '
-          + 'Число слов в списке — это НЕ требуемое количество: используй столько, сколько органично ложится в текст. '
-          + 'Не выдумывай перевод слов, просто вплети их в текст. '
-          + 'Язык и грамматика должны строго соответствовать уровню CEFR: для A2 — очень простые предложения, '
-          + 'для C1–C2 — богатая лексика и сложные конструкции. '
-          + 'Напиши РОВНО ' + nTexts + ' независимых текст(а/ов) по этим правилам. Тексты должны заметно '
-          + 'отличаться друг от друга по сюжету/ракурсу (даже при одной теме) и не повторять друг друга. '
-          + 'Верни поле texts — массив из ' + nTexts + ' объект(а/ов), где каждый объект это один текст со следующими полями: '
-          + 'title — короткий заголовок на ' + lwLangInfo().ruPrep + '; '
-          + 'sentences — массив предложений текста ПО ПОРЯДКУ, где каждый элемент это объект '
-          + '{ en, ru }: en — одно предложение на ' + lwLangInfo().ruPrep + ' (поле называется en для любого языка), ru — его точный перевод на русский. '
-          + 'Разбивай текст на естественные предложения; вместе они образуют связный текст. '
-          + 'used — массив слов из списка, которые ты реально использовал в этом тексте.',
-      }],
-    },
-    contents: [{
-      role: 'user',
-      parts: [{
-        text: 'Уровень CEFR: ' + lvl + '\n'
-          + 'Тема (желательный ориентир, естественность важнее): ' + topicText + '\n'
-          + 'Примерная длина каждого текста: ' + wordCount + ' слов\n'
-          + 'Сколько текстов вернуть: ' + nTexts + '\n'
-          + 'Слова для использования:\n' + list.join('\n'),
-      }],
-    }],
-    generationConfig: {
-      thinkingConfig: { thinkingBudget: 0 }, // без «рассуждений» — заметно быстрее для B1-текстов
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: 'OBJECT',
-        properties: {
-          texts: {
-            type: 'ARRAY',
-            items: {
-              type: 'OBJECT',
-              properties: {
-                title: { type: 'STRING' },
-                sentences: {
-                  type: 'ARRAY',
-                  items: {
-                    type: 'OBJECT',
-                    properties: {
-                      en: { type: 'STRING' },
-                      ru: { type: 'STRING' },
-                    },
-                    required: ['en', 'ru'],
+  const parsed = await lwGeminiJson(
+    'Ты — преподаватель ' + lwLangInfo().ruGen + ' языка, который пишет короткие обучающие тексты. '
+      + 'Тебе дают: список ' + lwLangInfo().ruGenPl + ' слов, уровень CEFR ученика и тему. '
+      + 'Напиши связный, естественный текст на ' + lwLangInfo().ruPrep + ' примерно на заданное число слов, '
+      + 'который по возможности РАСКРЫВАЕТ заданную тему. '
+      + 'Тема — это желательный ориентир для сеттинга и настроения, а не жёсткая рамка: '
+      + 'старайся выдержать её, но естественность и связность текста важнее. Если какое-то слово '
+      + 'из списка органично не вписывается в тему, не притягивай его за уши и не ломай тему ради него — '
+      + 'выбери естественный вариант (мягко отойди от темы либо оставь такое слово в стороне). '
+      + 'Слова из списка — это ЖЕЛАТЕЛЬНАЯ лексика, а не жёсткое требование: '
+      + 'старайся вплести в текст КАК МОЖНО БОЛЬШЕ слов из списка (в любой форме — '
+      + 'спряжение, число, время допустимы), но не жертвуй связностью и естественностью ради '
+      + 'того, чтобы впихнуть все слова. Лучше складный текст с частью слов, чем неестественный со всеми. '
+      + 'Число слов в списке — это НЕ требуемое количество: используй столько, сколько органично ложится в текст. '
+      + 'Не выдумывай перевод слов, просто вплети их в текст. '
+      + 'Язык и грамматика должны строго соответствовать уровню CEFR: для A2 — очень простые предложения, '
+      + 'для C1–C2 — богатая лексика и сложные конструкции. '
+      + 'Напиши РОВНО ' + nTexts + ' независимых текст(а/ов) по этим правилам. Тексты должны заметно '
+      + 'отличаться друг от друга по сюжету/ракурсу (даже при одной теме) и не повторять друг друга. '
+      + 'Верни поле texts — массив из ' + nTexts + ' объект(а/ов), где каждый объект это один текст со следующими полями: '
+      + 'title — короткий заголовок на ' + lwLangInfo().ruPrep + '; '
+      + 'sentences — массив предложений текста ПО ПОРЯДКУ, где каждый элемент это объект '
+      + '{ en, ru }: en — одно предложение на ' + lwLangInfo().ruPrep + ' (поле называется en для любого языка), ru — его точный перевод на русский. '
+      + 'Разбивай текст на естественные предложения; вместе они образуют связный текст. '
+      + 'used — массив слов из списка, которые ты реально использовал в этом тексте.',
+    'Уровень CEFR: ' + lvl + '\n'
+      + 'Тема (желательный ориентир, естественность важнее): ' + topicText + '\n'
+      + 'Примерная длина каждого текста: ' + wordCount + ' слов\n'
+      + 'Сколько текстов вернуть: ' + nTexts + '\n'
+      + 'Слова для использования:\n' + list.join('\n'),
+    {
+      type: 'OBJECT',
+      properties: {
+        texts: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              title: { type: 'STRING' },
+              sentences: {
+                type: 'ARRAY',
+                items: {
+                  type: 'OBJECT',
+                  properties: {
+                    en: { type: 'STRING' },
+                    ru: { type: 'STRING' },
                   },
+                  required: ['en', 'ru'],
                 },
-                used: { type: 'ARRAY', items: { type: 'STRING' } },
               },
-              required: ['title', 'sentences', 'used'],
+              used: { type: 'ARRAY', items: { type: 'STRING' } },
             },
+            required: ['title', 'sentences', 'used'],
           },
         },
-        required: ['texts'],
       },
+      required: ['texts'],
     },
-  };
-
-  let res;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    const err = new Error('Cannot reach Gemini.'); err.code = 'network'; throw err;
-  }
-
-  if (!res.ok) {
-    if (res.status === 400 || res.status === 403) {
-      const e = new Error('Invalid Gemini key.'); e.code = 'bad-key'; throw e;
-    }
-    if (res.status === 429) {
-      const e = new Error('Daily Gemini limit reached. Try again later.'); e.code = 'quota'; throw e;
-    }
-    if (res.status === 503 || res.status === 500) {
-      const e = new Error('Gemini is overloaded. Try again in a minute.'); e.code = 'overload'; throw e;
-    }
-    const e = new Error('AI service error (' + res.status + ').'); e.code = 'network'; throw e;
-  }
-
-  const data = await res.json();
-  const cand = data && data.candidates && data.candidates[0];
-  if (!cand || cand.finishReason === 'SAFETY' || cand.finishReason === 'PROHIBITED_CONTENT') {
-    const e = new Error('The model refused the request.'); e.code = 'refusal'; throw e;
-  }
-  const text = cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
-  if (!text) { const e = new Error('Empty AI response.'); e.code = 'refusal'; throw e; }
-
-  let parsed;
-  try { parsed = JSON.parse(text); }
-  catch (e) { const err = new Error('AI returned an invalid response.'); err.code = 'refusal'; throw err; }
+    {
+      config: { thinkingConfig: { thinkingBudget: 0 } }, // без «рассуждений» — заметно быстрее для B1-текстов
+      timeoutMs: 180 * 1000, // несколько длинных текстов за один запрос
+    },
+  );
 
   /* Собираем одну карточку из объекта { title, sentences, used }. Возвращает null,
      если у текста нет ни одного валидного предложения. */
@@ -955,7 +776,7 @@ function lwShuffle(arr) {
 async function lwAiGenerateBatch(words, levels, topicPrompts, length, count) {
   const pool = (words || []).map((w) => String(w || '').trim()).filter(Boolean);
   if (!pool.length) { const e = new Error('No words for the text.'); e.code = 'empty'; throw e; }
-  if (!lwGetGeminiKey()) { const e = new Error('No Gemini key set.'); e.code = 'no-key'; throw e; }
+  if (!lwGetGeminiKey()) throw lwAiError('no-key', 'No Gemini key set.');
 
   const lvls = (levels && levels.length) ? levels : ['B1'];
   const topics = (topicPrompts && topicPrompts.length) ? topicPrompts : [LW_TEXT_TOPICS[0].prompt];
