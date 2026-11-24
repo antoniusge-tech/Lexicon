@@ -1,6 +1,6 @@
 /* deltasync.ts — a device cache of a Firestore query whose docs carry
-   `updatedAt` (server time): the user's progress and the grammar lessons
-   (pure, no Firestore, no React; lwWatchSince in firebase.js reads and writes).
+   `updatedAt` (server time): the user's progress, daily activity and the grammar
+   lessons (pure, no Firestore, no React; lwWatchSince in firebase.js reads and writes).
 
    A fresh listener bills every doc of its query on each page load. Instead the
    device keeps the docs in IndexedDB with the latest updatedAt it has seen and
@@ -70,6 +70,21 @@ export function lwPutDeltaDocs(cache: DeltaCache, docs: ({ id: string; updatedAt
     doc's old stamp stay, so the confirmed doc still comes back through the query */
 export function lwPutLocalDoc(cache: DeltaCache, id: string, doc: Record<string, unknown>): DeltaCache {
   const old = cache.docs[id];
+  return { ...cache, docs: { ...cache.docs, [id]: { ...doc, id, updatedAt: old ? old.updatedAt : null } } };
+}
+
+/** this device's counter write (merge + increment, the daily activity doc), shown
+    before the server confirms it: `set` fields replace, `add` fields are added to
+    what the cache holds (a doc not cached yet starts from 0). Like lwPutLocalDoc,
+    `since` and the doc's stamp stay. */
+export function lwBumpLocalDoc(cache: DeltaCache, id: string,
+  set: Record<string, unknown>, add: Record<string, number>): DeltaCache {
+  const old = cache.docs[id];
+  const doc: Record<string, unknown> = { ...(old || {}), ...set };
+  Object.entries(add).forEach(([k, v]) => {
+    const had = old ? Number(old[k]) : 0;
+    doc[k] = (Number.isFinite(had) ? had : 0) + v;
+  });
   return { ...cache, docs: { ...cache.docs, [id]: { ...doc, id, updatedAt: old ? old.updatedAt : null } } };
 }
 

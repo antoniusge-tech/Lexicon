@@ -16,7 +16,7 @@ import { lwCurrentLang, lwRoIpa } from './data.js';
 import { lwCacheGet, lwCacheSet } from './idb-cache.js';
 import {
   lwDeltaCountOk, lwDeltaFullDue, lwDeltaList, lwEmptyDeltaCache, lwNormDeltaCache,
-  lwProgressByWord, lwPutDeltaDocs, lwPutLocalDoc, lwRemoveDeltaDocs,
+  lwProgressByWord, lwPutDeltaDocs, lwPutLocalDoc, lwRemoveDeltaDocs, lwBumpLocalDoc,
 } from './deltasync.ts';
 import {
   lwCachedWords, lwEmptyWordsCache, lwFindCachedWord, lwMergeWords, lwNormWordsCache,
@@ -550,6 +550,19 @@ function lwActivityRef(uid, lang, date) {
   return ref(LW_COLLECTIONS.activity, uid + '_' + (lang && lang !== 'en' ? lang + '_' : '') + date);
 }
 
+/* One write to the day's activity doc: `set` fields as given, `add` fields
+   incremented (merge, so it works offline), and updatedAt (server time) so
+   devices read only changed days (lwWatchActivity). The activity watcher shows
+   the result at once. Returns [ref, data] for setDoc or a batch. */
+function lwActivityWrite(uid, lang, date, set, add) {
+  const dayRef = lwActivityRef(uid, lang, date);
+  const fields = { userId: uid, lang: lang || 'en', date, ...set };
+  const data = { ...fields, updatedAt: serverTimestamp() };
+  Object.entries(add).forEach(([k, v]) => { data[k] = increment(v); });
+  lwSinceLocal(LW_COLLECTIONS.activity, (w) => w.bump(dayRef.id, fields, add));
+  return [dayRef, data];
+}
+
 /* Record one answer in a single batch: the word's new progress doc plus the
    day's activity counters. Uses merge + increment (no transaction), so it also
    works offline. `progress` is the full doc from lwNextProgress, or null for an
@@ -562,19 +575,16 @@ function lwRecordAnswer({ uid, lang, progress, date, correct, xp, goalBonus, ms 
     batch.set(ref(LW_COLLECTIONS.progress, id), { ...progress, userId: uid, updatedAt: serverTimestamp() });
     lwSinceLocal(LW_COLLECTIONS.progress, (w) => w.put(id, { ...progress, userId: uid }));
   }
-  const day = {
-    userId: uid, lang: lang || 'en', date,
-    answers: increment(1), correct: increment(correct ? 1 : 0), xp: increment(xp + (goalBonus || 0)), ms: increment(ms || 0),
-  };
-  if (goalBonus) day.goalMet = true;
-  batch.set(lwActivityRef(uid, lang, date), day, { merge: true });
+  const [dayRef, day] = lwActivityWrite(uid, lang, date, goalBonus ? { goalMet: true } : {},
+    { answers: 1, correct: correct ? 1 : 0, xp: xp + (goalBonus || 0), ms: ms || 0 });
+  batch.set(dayRef, day, { merge: true });
   return batch.commit();
 }
 
 /* Add practice time without an answer (reading): bumps activity.ms only. */
 function lwAddPracticeTime(uid, lang, date, ms) {
-  return setDoc(lwActivityRef(uid, lang, date),
-    { userId: uid, lang: lang || 'en', date, ms: increment(ms) }, { merge: true });
+  const [dayRef, day] = lwActivityWrite(uid, lang, date, {}, { ms });
+  return setDoc(dayRef, day, { merge: true });
 }
 
 /* Delete this user's progress docs for the given words (e.g. after the words were deleted). */
@@ -587,7 +597,7 @@ async function lwDeleteProgressForWords(uid, wordIds) {
   lwSinceLocal(LW_COLLECTIONS.progress, (w) => w.remove(wordIds.map((id) => uid + '_' + id)));
 }
 
-/* ---------------- Cached queries: progress and lessons ----------------
+/* ---------------- Cached queries: progress, activity and lessons ----------------
    A query whose docs carry updatedAt (server time) is kept in IndexedDB
    (deltasync.ts). A load reads only docs changed since the latest updatedAt the
    device has seen, through a live listener that keeps bringing changes (other
@@ -599,7 +609,7 @@ async function lwDeleteProgressForWords(uid, wordIds) {
 const lwSinceWatchers = new Set();
 
 /* key: IndexedDB key; base: the query; label: for lwReadReport; collection:
-   where local writes come from (lwSetDoc/lwDeleteDoc, lwRecordAnswer).
+   where local writes come from (lwSetDoc/lwDeleteDoc, lwRecordAnswer, lwActivityWrite).
    onChange(cache) gets the DeltaCache. Returns { put, remove, stop }. */
 function lwWatchSince({ key, base, label, collection: collectionName }, onChange) {
   let cache = null;
@@ -689,6 +699,8 @@ function lwWatchSince({ key, base, label, collection: collectionName }, onChange
     collection: collectionName,
     /* this device's write: show it now */
     put(id, doc) { if (cache) { cache = lwPutLocalDoc(cache, id, doc); store(); emit(); } },
+    /* a merge + increment write (activity): `add` is added to the cached fields */
+    bump(id, set, add) { if (cache) { cache = lwBumpLocalDoc(cache, id, set, add); store(); emit(); } },
     remove(ids) { if (cache) { cache = lwRemoveDeltaDocs(cache, ids); store(); emit(); } },
     stop() {
       stopped = true;
@@ -711,6 +723,19 @@ function lwWatchProgress(uid, onChange) {
     label: 'progress',
     collection: LW_COLLECTIONS.progress,
   }, (cache) => onChange(lwProgressByWord(cache)));
+}
+
+/* The user's daily activity docs (every language), as a list. Old docs without
+   updatedAt are read once, when the cache is filled; a day gets a stamp on its
+   next write. Returns an unsubscribe function. */
+function lwWatchActivity(uid, onChange) {
+  const w = lwWatchSince({
+    key: 'activity:' + uid,
+    base: query(col(LW_COLLECTIONS.activity), where('userId', '==', uid)),
+    label: 'activity',
+    collection: LW_COLLECTIONS.activity,
+  }, (cache) => onChange(lwDeltaList(cache)));
+  return () => w.stop();
 }
 
 /* ---------------- Grammar lessons ---------------- */
@@ -752,8 +777,8 @@ function lwSaveLessonProgress(uid, lessonId, fields) {
 
 /* XP bonus for a first lesson completion: activity only, no answer counted */
 function lwAddBonusXp(uid, lang, date, xp) {
-  return setDoc(lwActivityRef(uid, lang, date),
-    { userId: uid, lang: lang || 'en', date, xp: increment(xp) }, { merge: true });
+  const [dayRef, day] = lwActivityWrite(uid, lang, date, {}, { xp });
+  return setDoc(dayRef, day, { merge: true });
 }
 
 /* ---------------- Reading texts ---------------- */
@@ -847,7 +872,7 @@ async function lwAdminFetchAllData() {
 
 export {
   LW_COLLECTIONS, lwReadReport, lwWatchCollection, lwWatchUserCollection,
-  lwWatchUserAndSharedCollection, lwWatchWords, lwWatchProgress, lwTouchGroups, lwSetDoc, lwDeleteDoc,
+  lwWatchUserAndSharedCollection, lwWatchWords, lwWatchProgress, lwWatchActivity, lwTouchGroups, lwSetDoc, lwDeleteDoc,
   lwDeleteWordsByGroup, lwRecordAnswer, lwAddPracticeTime, lwSaveText, lwDeleteText, lwGetChapter,
   lwSaveReadingProgress, lwDeleteReadingProgress, lwDeleteProgressForWords,
   lwWatchLessons, lwWatchLevelQuestions, lwWatchClips, lwSaveLessonProgress,

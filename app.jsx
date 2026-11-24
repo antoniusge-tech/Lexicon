@@ -9,6 +9,7 @@ import {
   lwDeleteReadingProgress, lwDeleteText, lwLogout, lwRecordAnswer, lwSaveLessonProgress,
   lwSaveText, lwSetDoc, lwUpdateUser, lwWatchAuth, lwWatchClips, lwWatchCollection,
   lwWatchLessons, lwWatchUserAndSharedCollection, lwWatchUserCollection, lwWatchUserDoc, lwWatchWords, lwWatchProgress,
+  lwWatchActivity,
 } from './firebase.js';
 import {
   LW_KEYS, LW_READING_BATCH, lwAiFillWords, lwAiGenerateBatch, lwCefrField,
@@ -369,10 +370,10 @@ function App() {
   /* live sync with this user's progress + daily activity */
   useEffect(() => {
     if (!authUser) { setProgress({}); setActivityDocs([]); return; }
-    /* progress comes from the device cache plus the docs changed since (lwWatchProgress) */
+    /* both come from the device cache plus the docs changed since (lwWatchSince) */
     const progressWatch = lwWatchProgress(authUser.uid, setProgress);
     const unsubProgress = () => progressWatch.stop();
-    const unsubActivity = lwWatchUserCollection(LW_COLLECTIONS.activity, authUser.uid, setActivityDocs);
+    const unsubActivity = lwWatchActivity(authUser.uid, setActivityDocs);
     return () => { unsubProgress(); unsubActivity(); };
   }, [authUser]);
 

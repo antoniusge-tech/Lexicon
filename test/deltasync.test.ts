@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   LW_DELTA_CACHE_VERSION, LW_DELTA_FULL_EVERY_MS, lwDeltaCountOk, lwDeltaFullDue, lwDeltaList,
-  lwEmptyDeltaCache, lwNormDeltaCache, lwProgressByWord, lwPutDeltaDocs, lwPutLocalDoc,
+  lwBumpLocalDoc, lwEmptyDeltaCache, lwNormDeltaCache, lwProgressByWord, lwPutDeltaDocs, lwPutLocalDoc,
   lwRemoveDeltaDocs,
 } from '../deltasync.ts';
 
@@ -67,6 +67,19 @@ describe('local writes and deletes', () => {
     expect(c.docs.u_a.updatedAt).toBe(500);
     expect(c.since).toBe(600);
     expect(lwPutLocalDoc(base, 'u_new', doc('new')).docs.u_new.updatedAt).toBeNull();
+  });
+
+  it('a counter write adds to the cached fields and keeps the stamp', () => {
+    const day = lwPutDeltaDocs(lwEmptyDeltaCache(), [{ id: 'u_d', date: 'd', answers: 4, xp: 40, updatedAt: { toMillis: () => 700 } }]);
+    const c = lwBumpLocalDoc(day, 'u_d', { goalMet: true }, { answers: 1, xp: 10, ms: 500 });
+    expect(c.docs.u_d).toMatchObject({ date: 'd', answers: 5, xp: 50, ms: 500, goalMet: true, updatedAt: 700 });
+    expect(c.since).toBe(700);
+    expect(day.docs.u_d.answers).toBe(4); // the old cache is not changed
+  });
+
+  it('a counter write on a day not cached yet starts from zero', () => {
+    const c = lwBumpLocalDoc(lwEmptyDeltaCache(), 'u_new', { date: 'n' }, { answers: 1, correct: 0 });
+    expect(c.docs.u_new).toEqual({ id: 'u_new', date: 'n', answers: 1, correct: 0, updatedAt: null });
   });
 
   it('removes docs; unknown ids change nothing', () => {
