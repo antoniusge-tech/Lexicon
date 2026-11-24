@@ -8,11 +8,17 @@ import {
   unlink,
 } from 'firebase/auth';
 import {
-  collection, deleteDoc, doc, getDoc, getDocs, getFirestore, increment, initializeFirestore, onSnapshot,
-  persistentLocalCache, persistentMultipleTabManager, query, serverTimestamp, setDoc, updateDoc,
-  where, writeBatch,
+  collection, deleteDoc, doc, getCountFromServer, getDoc, getDocs, getFirestore, increment,
+  initializeFirestore, onSnapshot, persistentLocalCache, persistentMultipleTabManager, query,
+  serverTimestamp, setDoc, updateDoc, where, writeBatch,
 } from 'firebase/firestore';
 import { lwCurrentLang, lwRoIpa } from './data.js';
+import { lwCacheGet, lwCacheSet } from './idb-cache.js';
+import {
+  lwCachedWords, lwEmptyWordsCache, lwFindCachedWord, lwMergeWords, lwNormWordsCache,
+  lwAdoptOwnStamps, lwPutCachedWord, lwRemoveCachedWord, lwStampMs, lwWithGroupWords, lwWithoutGroups,
+  lwWordSyncPlan, lwWordsCountOk,
+} from './wordsync.ts';
 import { lwConsoleFirebase } from './firebase-console.js';
 
 const LW_FIREBASE_CONFIG = {
@@ -317,6 +323,167 @@ function lwWatchUserAndSharedCollection(name, uid, onChange, isAdmin, lang) {
   return () => { unsubOwn(); unsubShared(); };
 }
 
+/* ---------------- Words: shared ones from the device cache ----------------
+   Shared words (written only by admins) come from IndexedDB and are re-read
+   per group when the group's `updatedAt` changes (wordsync.ts). Own words keep a
+   live listener. Every write of a shared word stamps its group (lwTouchGroups),
+   and once per watcher a count() of shared words checks the cache, so an add
+   or delete that missed the stamp (an old client, a script) still shows up. */
+
+const lwWordWatchers = new Set();
+
+/* count() of this language's shared words; Firestore bills 1 read per 1000 counted */
+async function lwCountSharedWords(lang) {
+  const n = (await getCountFromServer(query(col(LW_COLLECTIONS.words), where('shared', '==', true), where('lang', '==', lang)))).data().count;
+  const s = lwReadStats['words (shared, count)'] || (lwReadStats['words (shared, count)'] = { snapshots: 0, fromCache: 0, serverDocs: 0, docs: 0 });
+  s.snapshots++;
+  s.docs = n;
+  s.serverDocs += Math.max(1, Math.ceil(n / 1000));
+  return n;
+}
+
+/* Stamp groups whose shared words changed. Stamps are collected for a moment and
+   written once per group: an import of hundreds of words is one update, not
+   hundreds to the same doc (Firestore sustains about one write per second per
+   doc). Writes from one device apply in order, so the stamp lands after the
+   words. A group deleted meanwhile just fails its update, which is fine. */
+const lwTouchPending = new Set();
+let lwTouchTimer = null;
+/* groupId → when this device last stamped it: the stamp that comes back is our
+   own edit, already in the cache, so watchers take it over without a re-read
+   (if another admin edits the same group in those seconds, their change shows
+   with the group's next stamp) */
+const lwOwnTouches = new Map();
+const LW_OWN_TOUCH_MS = 15000;
+const lwOwnTouchRecent = (groupId) => Date.now() - (lwOwnTouches.get(groupId) || 0) < LW_OWN_TOUCH_MS;
+function lwTouchGroups(groupIds) {
+  groupIds.filter(Boolean).forEach((id) => lwTouchPending.add(id));
+  clearTimeout(lwTouchTimer);
+  lwTouchTimer = setTimeout(() => {
+    const ids = [...lwTouchPending];
+    lwTouchPending.clear();
+    ids.forEach((id) => lwOwnTouches.set(id, Date.now()));
+    ids.forEach((id) => updateDoc(ref(LW_COLLECTIONS.groups, id), { updatedAt: serverTimestamp() })
+      .catch((e) => console.warn('Could not stamp group ' + id + ':', e.code || e)));
+  }, 500);
+}
+
+/* the cached shared word with this id, from any active watcher */
+function lwKnownSharedWord(id) {
+  for (const w of lwWordWatchers) { const x = w.find(id); if (x) return x; }
+  return null;
+}
+
+/* Watch the words of `lang` this user sees: own ones live, shared ones from the
+   device cache. Call syncGroups(sharedGroups) whenever the shared groups (with
+   updatedAt) change. onChange gets the merged list. Returns { syncGroups, stop }. */
+function lwWatchWords({ uid, isAdmin, lang }, onChange) {
+  const key = 'words:' + uid + ':' + lang;
+  let own = null;
+  let cache = null;
+  let groups = null;
+  let stopped = false;
+  let running = false;
+  let rerun = false;
+  let readAll = false;
+  let checked = false;
+  let runTimer = null;
+  let checkTimer = null;
+
+  const emit = () => { if (own && cache) onChange(lwMergeWords(own, lwCachedWords(cache), uid, isAdmin)); };
+  const store = () => lwCacheSet(key, cache);
+
+  const ownQuery = isAdmin
+    ? query(col(LW_COLLECTIONS.words), where('userId', '==', uid), where('shared', '==', false), where('lang', '==', lang))
+    : query(col(LW_COLLECTIONS.words), where('userId', '==', uid), where('lang', '==', lang));
+  const unsubOwn = lwListen(ownQuery, 'words (own)', (snap) => { own = lwSnapItems(snap); emit(); });
+
+  const schedule = (ms) => { clearTimeout(runTimer); runTimer = setTimeout(run, ms); };
+
+  /* re-read the groups that changed, then (once, when things have settled)
+     compare the server count of shared words with the cache */
+  async function run() {
+    if (stopped || !cache || !groups) return;
+    if (running) { rerun = true; return; }
+    running = true;
+    const full = readAll;
+    readAll = false;
+    try {
+      const plan = lwWordSyncPlan(groups, cache, full);
+      cache = lwWithoutGroups(cache, plan.drop);
+      const stampOf = Object.fromEntries(groups.map((g) => [g.id, g.stamp]));
+      const own = full ? { fetch: plan.fetch, cache } : lwAdoptOwnStamps(plan.fetch, cache, stampOf, lwOwnTouchRecent);
+      const adopted = plan.fetch.length - own.fetch.length;
+      cache = own.cache;
+      await Promise.all(own.fetch.map(async (gid) => {
+        const snap = await lwFetch(query(col(LW_COLLECTIONS.words), where('groupId', '==', gid), where('shared', '==', true)),
+          'words (shared, by group)');
+        if (!stopped) cache = lwWithGroupWords(cache, gid, stampOf[gid], lwSnapItems(snap));
+      }));
+      if (stopped) return;
+      if (full) {
+        /* after a full re-read the cache is as right as it can be: accept any
+           remaining difference (shared words outside visible groups) */
+        const n = await lwCountSharedWords(lang);
+        const offset = n - lwCachedWords(cache).length;
+        if (offset) console.warn('Shared ' + lang + ' words outside visible groups: ' + offset);
+        cache = { ...cache, countOffset: offset };
+      }
+      if (plan.fetch.length || plan.drop.length || full || adopted) { store(); emit(); }
+      if (!checked) { clearTimeout(checkTimer); checkTimer = setTimeout(check, 3000); }
+    } catch (e) {
+      console.warn('Shared words sync failed (cached words stay):', e.code || e);
+    } finally {
+      running = false;
+      if (rerun && !stopped) { rerun = false; schedule(0); }
+    }
+  }
+
+  async function check() {
+    if (stopped || checked || running) return;
+    checked = true;
+    try {
+      const n = await lwCountSharedWords(lang);
+      if (!stopped && !lwWordsCountOk(n, cache)) {
+        console.warn('Shared ' + lang + ' words: ' + n + ' on the server, ' + lwCachedWords(cache).length + ' cached — reading them all again.');
+        readAll = true;
+        schedule(0);
+      }
+    } catch (e) {
+      console.warn('Shared words count failed:', e.code || e);
+    }
+  }
+
+  lwCacheGet(key).then((raw) => {
+    if (stopped) return;
+    cache = lwNormWordsCache(raw);
+    emit();
+    schedule(0);
+  });
+
+  const watcher = {
+    /* shared groups of this language, as App has them (with updatedAt) */
+    syncGroups(list) {
+      const first = !groups;
+      groups = list.map((g) => ({ id: g.id, stamp: lwStampMs(g.updatedAt) }));
+      schedule(first ? 0 : 800); // let a burst of stamp changes settle
+    },
+    /* this device wrote or deleted a word: show it now, before its group is re-read */
+    put(word) { if (cache) { cache = lwPutCachedWord(cache, word); store(); emit(); } },
+    remove(id) { if (cache) { cache = lwRemoveCachedWord(cache, id); store(); emit(); } },
+    find(id) { return lwFindCachedWord(cache, id); },
+    stop() {
+      stopped = true;
+      clearTimeout(runTimer);
+      clearTimeout(checkTimer);
+      unsubOwn();
+      lwWordWatchers.delete(watcher);
+    },
+  };
+  lwWordWatchers.add(watcher);
+  return watcher;
+}
+
 /* Content collections whose docs belong to one learning language (`lang`). */
 const LW_LANG_COLLECTIONS = [LW_COLLECTIONS.groups, LW_COLLECTIONS.words, LW_COLLECTIONS.collocations, LW_COLLECTIONS.lessons, LW_COLLECTIONS.texts];
 
@@ -331,10 +498,24 @@ function lwSetDoc(collectionName, item) {
   if (LW_LANG_COLLECTIONS.includes(collectionName) && !data.lang) data.lang = lwCurrentLang();
   // Romanian is read as written: a word saved without a transcription gets one by rule.
   if (collectionName === LW_COLLECTIONS.words && data.lang === 'ro' && !data.ipa && data.word) data.ipa = lwRoIpa(data.word, data.pos);
-  return setDoc(ref(collectionName, id), data);
+  // A group's stamp tells devices to re-read its shared words (lwWatchWords).
+  if (collectionName === LW_COLLECTIONS.groups) data.updatedAt = serverTimestamp();
+  const done = setDoc(ref(collectionName, id), data);
+  if (collectionName === LW_COLLECTIONS.words) {
+    // a shared word stamps its group, and the group it left if it moved or went private
+    const prev = lwKnownSharedWord(id);
+    lwTouchGroups([data.shared ? data.groupId : null, prev && prev.groupId !== (data.shared ? data.groupId : null) ? prev.groupId : null]);
+    lwWordWatchers.forEach((w) => w.put({ id, ...data }));
+  }
+  return done;
 }
 
 function lwDeleteDoc(collectionName, id) {
+  if (collectionName === LW_COLLECTIONS.words) {
+    const prev = lwKnownSharedWord(id);
+    if (prev) lwTouchGroups([prev.groupId]);
+    lwWordWatchers.forEach((w) => w.remove(id));
+  }
   return deleteDoc(ref(collectionName, id));
 }
 
@@ -347,6 +528,8 @@ async function lwDeleteWordsByGroup(groupId, userId) {
   const snap = await lwFetch(q, 'words (delete group)');
   const batch = writeBatch(lwDb);
   snap.docs.forEach((d) => batch.delete(d.ref));
+  // the group goes too, so it needs no stamp: devices drop it with its words
+  snap.docs.forEach((d) => lwWordWatchers.forEach((w) => w.remove(d.id)));
   return batch.commit();
 }
 
@@ -516,8 +699,8 @@ async function lwAdminFetchAllData() {
 
 export {
   LW_COLLECTIONS, lwReadReport, lwWatchCollection, lwWatchUserCollection,
-  lwWatchUserAndSharedCollection, lwSetDoc, lwDeleteDoc, lwDeleteWordsByGroup,
-  lwRecordAnswer, lwAddPracticeTime, lwSaveText, lwDeleteText, lwGetChapter,
+  lwWatchUserAndSharedCollection, lwWatchWords, lwTouchGroups, lwSetDoc, lwDeleteDoc,
+  lwDeleteWordsByGroup, lwRecordAnswer, lwAddPracticeTime, lwSaveText, lwDeleteText, lwGetChapter,
   lwSaveReadingProgress, lwDeleteReadingProgress, lwDeleteProgressForWords,
   lwWatchLessons, lwWatchLevelQuestions, lwWatchClips, lwSaveLessonProgress,
   lwAddBonusXp, lwRegister, lwLogin, lwLogout, lwResetPassword, lwDeleteAccount,
@@ -531,6 +714,7 @@ export {
 Object.assign(window, {
   firebase: lwConsoleFirebase(lwDb, lwAuth),
   LW_COLLECTIONS,
+  lwTouchGroups, // scripts that write shared words call it with the groups they touched
   lwReadReport,
   lwWatchCollection,
   lwWatchUserCollection,

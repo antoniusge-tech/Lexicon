@@ -8,7 +8,7 @@ import {
   LW_COLLECTIONS, lwAddBonusXp, lwAddPracticeTime, lwAuthInfo, lwDeleteDoc,
   lwDeleteReadingProgress, lwDeleteText, lwLogout, lwRecordAnswer, lwSaveLessonProgress,
   lwSaveText, lwSetDoc, lwUpdateUser, lwWatchAuth, lwWatchClips, lwWatchCollection,
-  lwWatchLessons, lwWatchUserAndSharedCollection, lwWatchUserCollection, lwWatchUserDoc,
+  lwWatchLessons, lwWatchUserAndSharedCollection, lwWatchUserCollection, lwWatchUserDoc, lwWatchWords,
 } from './firebase.js';
 import {
   LW_KEYS, LW_READING_BATCH, lwAiFillWords, lwAiGenerateBatch, lwCefrField,
@@ -335,12 +335,24 @@ function App() {
      snapshot arrives the state still holds the old one, which the scoped lists
      below (inLang) filter out. */
   const ownerIsAdmin = userDoc ? userDoc.role === 'admin' : null;
+  /* Words: own ones live, shared ones from the device cache, re-read per group
+     when the group's updatedAt changes (lwWatchWords, wordsync.ts). The shared
+     groups drive that, but only once this language's groups have arrived: an
+     empty list before then would look like "every group was deleted". */
+  const wordsWatchRef = useRef(null);
+  const [groupsLang, setGroupsLang] = useState(null); // language of the groups now in state
   useEffect(() => {
-    if (!authUser || ownerIsAdmin === null || !lang) { setGroups([]); setWords([]); return; }
-    const unsubGroups = lwWatchUserAndSharedCollection(LW_COLLECTIONS.groups, authUser.uid, setGroups, ownerIsAdmin, lang);
-    const unsubWords = lwWatchUserAndSharedCollection(LW_COLLECTIONS.words, authUser.uid, setWords, ownerIsAdmin, lang);
-    return () => { unsubGroups(); unsubWords(); };
+    if (!authUser || ownerIsAdmin === null || !lang) { setGroups([]); setWords([]); setGroupsLang(null); return; }
+    const unsubGroups = lwWatchUserAndSharedCollection(LW_COLLECTIONS.groups, authUser.uid,
+      (items) => { setGroups(items); setGroupsLang(lang); }, ownerIsAdmin, lang);
+    const watch = lwWatchWords({ uid: authUser.uid, isAdmin: ownerIsAdmin, lang }, setWords);
+    wordsWatchRef.current = watch;
+    return () => { unsubGroups(); watch.stop(); wordsWatchRef.current = null; };
   }, [authUser, ownerIsAdmin, lang]);
+  useEffect(() => {
+    if (!wordsWatchRef.current || groupsLang !== lang) return;
+    wordsWatchRef.current.syncGroups(groups.filter((g) => g.shared && lwDocLang(g) === lang));
+  }, [groups, groupsLang, lang]);
 
   /* admins import into anyone's group: while Import is open they see every
      group and word (other users' private ones too; the rules allow admins). */

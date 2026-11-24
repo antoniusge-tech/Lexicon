@@ -78,6 +78,9 @@ export interface Group extends Owned {
   name: string;
   parentId?: string | null;
   color?: string;
+  /** server time of the last change to the group or one of its shared words;
+      devices re-read the group's shared words when it changes (wordsync.ts) */
+  updatedAt?: unknown;
 }
 
 /** Principal forms of a word (forms.ts, LW_FORM_SLOTS): what the paradigm follows
