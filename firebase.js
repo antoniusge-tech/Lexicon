@@ -15,9 +15,9 @@ import {
 import { lwCurrentLang, lwRoIpa } from './data.js';
 import { lwCacheGet, lwCacheSet } from './idb-cache.js';
 import {
-  lwEmptyProgressCache, lwNormProgressCache, lwProgressByWord, lwProgressCountOk,
-  lwPutLocalProgress, lwPutProgressDocs, lwRemoveProgressDocs,
-} from './progsync.ts';
+  lwDeltaCountOk, lwDeltaFullDue, lwDeltaList, lwEmptyDeltaCache, lwNormDeltaCache,
+  lwProgressByWord, lwPutDeltaDocs, lwPutLocalDoc, lwRemoveDeltaDocs,
+} from './deltasync.ts';
 import {
   lwCachedWords, lwEmptyWordsCache, lwFindCachedWord, lwMergeWords, lwNormWordsCache,
   lwAdoptOwnStamps, lwPutCachedWord, lwRemoveCachedWord, lwStampMs, lwWithGroupWords, lwWithoutGroups,
@@ -503,7 +503,10 @@ function lwSetDoc(collectionName, item) {
   // Romanian is read as written: a word saved without a transcription gets one by rule.
   if (collectionName === LW_COLLECTIONS.words && data.lang === 'ro' && !data.ipa && data.word) data.ipa = lwRoIpa(data.word, data.pos);
   // A group's stamp tells devices to re-read its shared words (lwWatchWords).
-  if (collectionName === LW_COLLECTIONS.groups) data.updatedAt = serverTimestamp();
+  // Stamps: a group's tells devices to re-read its shared words (lwWatchWords);
+  // a lesson's lets devices ask only for changed lessons (lwWatchSince).
+  if (collectionName === LW_COLLECTIONS.groups || collectionName === LW_COLLECTIONS.lessons) data.updatedAt = serverTimestamp();
+  if (collectionName === LW_COLLECTIONS.lessons) lwSinceLocal(collectionName, (w) => w.put(id, data));
   const done = setDoc(ref(collectionName, id), data);
   if (collectionName === LW_COLLECTIONS.words) {
     // a shared word stamps its group, and the group it left if it moved or went private
@@ -520,6 +523,7 @@ function lwDeleteDoc(collectionName, id) {
     if (prev) lwTouchGroups([prev.groupId]);
     lwWordWatchers.forEach((w) => w.remove(id));
   }
+  lwSinceLocal(collectionName, (w) => w.remove([id]));
   return deleteDoc(ref(collectionName, id));
 }
 
@@ -556,7 +560,7 @@ function lwRecordAnswer({ uid, lang, progress, date, correct, xp, goalBonus, ms 
     // updatedAt (server time) lets devices ask only for changed progress (lwWatchProgress)
     const id = uid + '_' + progress.wordId;
     batch.set(ref(LW_COLLECTIONS.progress, id), { ...progress, userId: uid, updatedAt: serverTimestamp() });
-    lwProgressWatchers.forEach((w) => w.put(id, { ...progress, userId: uid }));
+    lwSinceLocal(LW_COLLECTIONS.progress, (w) => w.put(id, { ...progress, userId: uid }));
   }
   const day = {
     userId: uid, lang: lang || 'en', date,
@@ -580,45 +584,52 @@ async function lwDeleteProgressForWords(uid, wordIds) {
     wordIds.slice(i, i + 400).forEach((id) => batch.delete(ref(LW_COLLECTIONS.progress, uid + '_' + id)));
     await batch.commit();
   }
-  lwProgressWatchers.forEach((w) => w.remove(wordIds.map((id) => uid + '_' + id)));
+  lwSinceLocal(LW_COLLECTIONS.progress, (w) => w.remove(wordIds.map((id) => uid + '_' + id)));
 }
 
-/* ---------------- Progress: from the device cache ----------------
-   The user's progress docs live in IndexedDB (progsync.ts). A load reads only
-   the docs changed since the latest updatedAt the device has seen, through a
-   live listener that keeps bringing new answers (other devices too). The first
-   load, or a cache that disagrees with a count() of the docs, reads them all.
-   Without the composite index progress(userId, updatedAt) the "changed since"
-   query fails; then the old full listener takes over, so nothing breaks. */
+/* ---------------- Cached queries: progress and lessons ----------------
+   A query whose docs carry updatedAt (server time) is kept in IndexedDB
+   (deltasync.ts). A load reads only docs changed since the latest updatedAt the
+   device has seen, through a live listener that keeps bringing changes (other
+   devices too). The first load, a weekly full read, or a cache that disagrees
+   with a count() of the query reads everything. The "changed since" query needs
+   a composite index (firestore.indexes.json); without one the watcher falls
+   back to a plain listener on the whole query, so nothing breaks. */
 
-const lwProgressWatchers = new Set();
+const lwSinceWatchers = new Set();
 
-/* onChange gets { wordId: progress doc }. Returns { put, remove, stop }. */
-function lwWatchProgress(uid, onChange) {
-  const key = 'progress:' + uid;
-  const own = query(col(LW_COLLECTIONS.progress), where('userId', '==', uid));
+/* key: IndexedDB key; base: the query; label: for lwReadReport; collection:
+   where local writes come from (lwSetDoc/lwDeleteDoc, lwRecordAnswer).
+   onChange(cache) gets the DeltaCache. Returns { put, remove, stop }. */
+function lwWatchSince({ key, base, label, collection: collectionName }, onChange) {
   let cache = null;
   let stopped = false;
   let unsub = () => {};
   let checkTimer = null;
 
-  const emit = () => { if (cache) onChange(lwProgressByWord(cache)); };
+  const emit = () => { if (cache) onChange(cache); };
   const store = () => lwCacheSet(key, cache);
+  const meterCount = (n) => {
+    const s = lwReadStats[label + ' (count)'] || (lwReadStats[label + ' (count)'] = { snapshots: 0, fromCache: 0, serverDocs: 0, docs: 0 });
+    s.snapshots++;
+    s.docs = n;
+    s.serverDocs += Math.max(1, Math.ceil(n / 1000));
+  };
 
-  async function readAll(label) {
-    const snap = await lwFetch(own, label);
+  async function readAll() {
+    const snap = await lwFetch(base, label + ' (full)');
     if (stopped) return;
-    cache = lwPutProgressDocs(lwEmptyProgressCache(), lwSnapItems(snap));
+    cache = lwPutDeltaDocs(lwEmptyDeltaCache(Date.now()), lwSnapItems(snap));
     store();
     emit();
   }
 
-  /* the old way: one listener on every progress doc of the user */
+  /* the old way: one listener on the whole query */
   function fallback(err) {
-    console.warn('Progress: the "changed since" query failed, reading all progress live instead.', (err && err.message) || err);
+    console.warn(label + ': the "changed since" query failed, listening to all of it instead.', (err && err.message) || err);
     unsub();
-    unsub = lwListen(own, 'progress', (snap) => {
-      cache = lwPutProgressDocs(lwEmptyProgressCache(), lwSnapItems(snap));
+    unsub = lwListen(base, label, (snap) => {
+      cache = lwPutDeltaDocs(lwEmptyDeltaCache(Date.now()), lwSnapItems(snap));
       store();
       emit();
     });
@@ -626,49 +637,46 @@ function lwWatchProgress(uid, onChange) {
 
   function listenSince() {
     let synced = false;
-    const changed = query(own, where('updatedAt', '>', Timestamp.fromMillis(cache.since)));
+    const changed = query(base, where('updatedAt', '>', Timestamp.fromMillis(cache.since)));
     unsub = onSnapshot(changed, { includeMetadataChanges: true }, (snap) => {
-      lwMeter('progress (changed)', snap, !synced && !snap.metadata.fromCache);
+      lwMeter(label + ' (changed)', snap, !synced && !snap.metadata.fromCache);
       if (!snap.metadata.fromCache) synced = true;
       const docs = snap.docChanges().filter((c) => c.type !== 'removed').map((c) => ({ id: c.doc.id, ...c.doc.data() }));
       if (!docs.length) return;
-      cache = lwPutProgressDocs(cache, docs);
+      cache = lwPutDeltaDocs(cache, docs);
       store();
       emit();
     }, (err) => {
       // no index yet: fall back to the full listener; other errors (quota,
-      // offline) leave the cached progress in place
+      // offline) leave the cached docs in place
       if (err && err.code === 'failed-precondition') fallback(err);
-      else console.warn('Progress listener failed (cached progress stays):', (err && err.code) || err);
+      else console.warn(label + ' listener failed (cached docs stay):', (err && err.code) || err);
     });
   }
 
-  /* safety net: progress deleted on another device isn't "changed since" */
+  /* safety net: docs deleted (or a lesson unpublished) aren't "changed since" */
   async function check() {
     if (stopped) return;
     try {
-      const n = (await getCountFromServer(own)).data().count;
-      const s = lwReadStats['progress (count)'] || (lwReadStats['progress (count)'] = { snapshots: 0, fromCache: 0, serverDocs: 0, docs: 0 });
-      s.snapshots++;
-      s.docs = n;
-      s.serverDocs += Math.max(1, Math.ceil(n / 1000));
-      if (!stopped && !lwProgressCountOk(n, cache)) {
-        console.warn('Progress: ' + n + ' docs on the server, ' + Object.keys(cache.docs).length + ' cached — reading them all again.');
-        await readAll('progress (full)');
+      const n = (await getCountFromServer(base)).data().count;
+      meterCount(n);
+      if (!stopped && !lwDeltaCountOk(n, cache)) {
+        console.warn(label + ': ' + n + ' on the server, ' + Object.keys(cache.docs).length + ' cached — reading them all again.');
+        await readAll();
       }
     } catch (e) {
-      console.warn('Progress count failed:', e.code || e);
+      console.warn(label + ' count failed:', e.code || e);
     }
   }
 
   lwCacheGet(key).then(async (raw) => {
     if (stopped) return;
-    cache = lwNormProgressCache(raw);
+    cache = lwNormDeltaCache(raw);
     try {
-      if (cache) emit();
-      else await readAll('progress (full)');
+      if (cache && !lwDeltaFullDue(cache, Date.now())) emit();
+      else await readAll();
     } catch (e) {
-      console.warn('Progress could not be read:', e.code || e);
+      console.warn(label + ' could not be read:', e.code || e);
       fallback(e);
       return;
     }
@@ -678,18 +686,31 @@ function lwWatchProgress(uid, onChange) {
   });
 
   const watcher = {
-    /* this device's answer: show it now */
-    put(id, doc) { if (cache) { cache = lwPutLocalProgress(cache, id, doc); store(); emit(); } },
-    remove(ids) { if (cache) { cache = lwRemoveProgressDocs(cache, ids); store(); emit(); } },
+    collection: collectionName,
+    /* this device's write: show it now */
+    put(id, doc) { if (cache) { cache = lwPutLocalDoc(cache, id, doc); store(); emit(); } },
+    remove(ids) { if (cache) { cache = lwRemoveDeltaDocs(cache, ids); store(); emit(); } },
     stop() {
       stopped = true;
       clearTimeout(checkTimer);
       unsub();
-      lwProgressWatchers.delete(watcher);
+      lwSinceWatchers.delete(watcher);
     },
   };
-  lwProgressWatchers.add(watcher);
+  lwSinceWatchers.add(watcher);
   return watcher;
+}
+
+const lwSinceLocal = (collectionName, fn) => lwSinceWatchers.forEach((w) => { if (w.collection === collectionName) fn(w); });
+
+/* The user's progress, as { wordId: doc }. Returns { stop }. */
+function lwWatchProgress(uid, onChange) {
+  return lwWatchSince({
+    key: 'progress:' + uid,
+    base: query(col(LW_COLLECTIONS.progress), where('userId', '==', uid)),
+    label: 'progress',
+    collection: LW_COLLECTIONS.progress,
+  }, (cache) => onChange(lwProgressByWord(cache)));
 }
 
 /* ---------------- Grammar lessons ---------------- */
@@ -700,7 +721,15 @@ function lwWatchLessons(isAdmin, onChange, lang) {
   const inLang = lang ? [where('lang', '==', lang)] : [];
   const q = isAdmin ? query(col(LW_COLLECTIONS.lessons), ...inLang)
     : query(col(LW_COLLECTIONS.lessons), where('published', '==', true), ...inLang);
-  return lwListen(q, 'lessons', (snap) => onChange(lwSnapItems(snap)));
+  /* from the device cache plus lessons changed since (lwWatchSince); admins and
+     users cache apart, since their queries differ (drafts) */
+  const w = lwWatchSince({
+    key: 'lessons:' + (isAdmin ? 'all' : 'published') + ':' + (lang || 'any'),
+    base: q,
+    label: 'lessons',
+    collection: LW_COLLECTIONS.lessons,
+  }, (cache) => onChange(lwDeltaList(cache)));
+  return () => w.stop();
 }
 
 /* level test question bank of one language (shared content, admins write it) */
@@ -834,6 +863,7 @@ Object.assign(window, {
   firebase: lwConsoleFirebase(lwDb, lwAuth),
   LW_COLLECTIONS,
   lwTouchGroups, // scripts that write shared words call it with the groups they touched
+  lwServerTime: () => serverTimestamp(), // scripts that write lessons set updatedAt: window.lwServerTime()
   lwReadReport,
   lwWatchCollection,
   lwWatchUserCollection,
